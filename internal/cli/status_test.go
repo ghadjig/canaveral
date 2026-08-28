@@ -198,3 +198,48 @@ func TestStateLabelIsColoredWhenUseColorIsOn(t *testing.T) {
 		t.Errorf("stateLabel = %q, want an ANSI escape code when useColor is on", got)
 	}
 }
+
+func TestAgentSummaryLineShowsTodoProgress(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateBusy),
+		TodoTotal:  9, TodoDone: 6, Sessions: 1,
+	})
+	want := "  agent main: busy · todo 6/9 · 1 session(s)"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestAgentSummaryLineShowsCurrentTaskOnItsOwnLine(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateBusy),
+		TodoTotal:  9, TodoDone: 6, TodoNow: "Wire the notch widget",
+	})
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[0], "todo 6/9") {
+		t.Errorf("first line missing progress: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "now: Wire the notch widget") {
+		t.Errorf("second line missing the current task: %q", lines[1])
+	}
+}
+
+func TestAgentSummaryLineOmitsTodosWhenUnused(t *testing.T) {
+	// Most short one-shot sessions never build a list; the line must not
+	// grow a stray "todo 0/0".
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateIdle),
+	})
+	if strings.Contains(got, "todo") {
+		t.Errorf("got %q, want no todo segment", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("got a second line with no current task: %q", got)
+	}
+}
