@@ -1,0 +1,274 @@
+package watch
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/state"
+)
+
+// testRunner builds a Runner with the network and disk seams stubbed out.
+func testRunner(t *testing.T, features []*state.Feature, probe func(ctx context.Context, url, dir string) agent.Health) *Runner {
+	t.Helper()
+	r := NewRunner(Options{Debounce: 10 * time.Millisecond, Rescan: time.Hour, Safety: time.Hour})
+	r.load = func(string) ([]*state.Feature, error) { return features, nil }
+	r.probe = probe
+	return r
+}
+
+func decodeLines(t *testing.T, s string) []Snapshot {
+	t.Helper()
+	var out []Snapshot
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		if line == "" {
+			continue
+		}
+		var snap Snapshot
+		if err := json.Unmarshal([]byte(line), &snap); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		out = append(out, snap)
+	}
+	return out
+}
+
+func TestRunEmitsAnInitialSnapshotImmediately(t *testing.T) {
+	// A widget that has just launched must have something to render rather
+	// than staying blank until the first event happens to arrive.
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		return agent.Health{Reachable: true, State: agent.StateIdle}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var buf bytes.Buffer
+	if err := r.Run(ctx, &buf); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	snaps := decodeLines(t, buf.String())
+	if len(snaps) == 0 {
+		t.Fatal("no snapshot emitted at startup")
+	}
+	if len(snaps[0].Features) != 1 || snaps[0].Features[0].Key != "norules/alpha" {
+		t.Errorf("first snapshot = %+v", snaps[0].Features)
+	}
+}
+
+func TestRunFlushesTheStartupSnapshotBeforeExiting(t *testing.T) {
+	// Regression test: the startup snapshot must reach the consumer while
+	// the process is still running. Buffered without an explicit flush it
+	// would sit unsent until enough later output filled the buffer, so a
+	// widget watching a quiet set of features would stay blank
+	// indefinitely — and a test that only inspected output after shutdown
+	// would not notice, because exiting flushes.
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		return agent.Health{Reachable: true, State: agent.StateIdle}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	go func() {
+		_ = r.Run(ctx, bufio.NewWriter(pw))
+		_ = pw.Close()
+	}()
+
+	type res struct {
+		line string
+		err  error
+	}
+	got := make(chan res, 1)
+	go func() {
+		line, err := bufio.NewReader(pr).ReadString('\n')
+		got <- res{line, err}
+	}()
+
+	select {
+	case v := <-got:
+		if v.err != nil {
+			t.Fatalf("reading startup snapshot: %v", v.err)
+		}
+		var snap Snapshot
+		if err := json.Unmarshal([]byte(v.line), &snap); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(snap.Features) != 1 {
+			t.Errorf("got %d features, want 1", len(snap.Features))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup snapshot never arrived while running (not flushed)")
+	}
+}
+
+func TestRunEmitsOnStateChange(t *testing.T) {
+	var mu sync.Mutex
+	st := agent.StateIdle
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		mu.Lock()
+		defer mu.Unlock()
+		return agent.Health{Reachable: true, State: st}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var buf lockedBuffer
+	done := make(chan struct{})
+	go func() { _ = r.Run(ctx, &buf); close(done) }()
+
+	time.Sleep(80 * time.Millisecond)
+	mu.Lock()
+	st = agent.StateWaiting
+	mu.Unlock()
+	r.wake()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+
+	snaps := decodeLines(t, buf.String())
+	if len(snaps) < 2 {
+		t.Fatalf("got %d snapshots, want at least 2 (initial + change): %s", len(snaps), buf.String())
+	}
+	last := snaps[len(snaps)-1]
+	if last.Features[0].Status != StatusWaiting {
+		t.Errorf("final status = %q, want waiting", last.Features[0].Status)
+	}
+	if last.Summary.NeedsAttention != 1 {
+		t.Errorf("NeedsAttention = %d, want 1", last.Summary.NeedsAttention)
+	}
+}
+
+func TestRunDoesNotReEmitWhenNothingChanged(t *testing.T) {
+	// Waking repeatedly with an unchanged world must stay quiet, otherwise
+	// a busy turn's event burst would spam the consumer with identical
+	// snapshots.
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		return agent.Health{Reachable: true, State: agent.StateBusy}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var buf lockedBuffer
+	done := make(chan struct{})
+	go func() { _ = r.Run(ctx, &buf); close(done) }()
+
+	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		r.wake()
+		time.Sleep(30 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if n := len(decodeLines(t, buf.String())); n != 1 {
+		t.Errorf("got %d snapshots, want only the initial one: %s", n, buf.String())
+	}
+}
+
+func TestRefreshPreservesSinceAcrossRepeatedBusyEvents(t *testing.T) {
+	// End-to-end version of the Build-level guarantee: opencode emits
+	// several identical "busy" statuses per turn, and the gauge must not
+	// reset each time.
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		return agent.Health{Reachable: true, State: agent.StateBusy}
+	})
+
+	ctx := context.Background()
+	first, _ := r.refresh(ctx)
+	time.Sleep(20 * time.Millisecond)
+	second, changed := r.refresh(ctx)
+
+	if changed {
+		t.Error("second refresh reported a change with an unchanged world")
+	}
+	if !first.Features[0].Since.Equal(second.Features[0].Since) {
+		t.Errorf("Since moved: %v -> %v", first.Features[0].Since, second.Features[0].Since)
+	}
+}
+
+func TestRefreshDetectsChange(t *testing.T) {
+	var mu sync.Mutex
+	st := agent.StateIdle
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		mu.Lock()
+		defer mu.Unlock()
+		return agent.Health{Reachable: true, State: st}
+	})
+
+	ctx := context.Background()
+	if _, changed := r.refresh(ctx); !changed {
+		t.Error("first refresh should report a change (nothing to nothing is still new)")
+	}
+	mu.Lock()
+	st = agent.StateWaiting
+	mu.Unlock()
+	if _, changed := r.refresh(ctx); !changed {
+		t.Error("refresh after a real state change should report changed")
+	}
+}
+
+func TestRelevantFiltersTheFirehose(t *testing.T) {
+	want := []string{
+		"session.idle", "session.error", "session.status",
+		"permission.asked", "permission.v2.asked",
+		"question.asked", "question.v2.asked", "question.v2.replied",
+		"server.connected",
+	}
+	for _, e := range want {
+		if !relevant(e) {
+			t.Errorf("relevant(%q) = false, want true", e)
+		}
+	}
+	// The high-frequency streaming events must be ignored, or every token
+	// would trigger a re-probe of every agent.
+	ignore := []string{
+		"message.part.delta", "message.part.updated", "session.next.text.delta",
+		"session.next.reasoning.delta", "plugin.added", "server.heartbeat",
+		"file.watcher.updated", "todo.updated",
+	}
+	for _, e := range ignore {
+		if relevant(e) {
+			t.Errorf("relevant(%q) = true, want false", e)
+		}
+	}
+}
+
+func TestOptionsDefaults(t *testing.T) {
+	o := Options{}.withDefaults()
+	if o.Debounce <= 0 || o.Rescan <= 0 || o.Safety <= 0 {
+		t.Errorf("defaults not applied: %+v", o)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for the runner goroutine to write
+// while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}

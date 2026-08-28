@@ -46,6 +46,7 @@ $ canaveral small-fixes
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral hyprwatch [--install]` | Event-driven waybar refresh (see below) instead of polling |
+| `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
 `canaveral <feature>` and `canaveral reset` run the same reconcile pass, so both
 are idempotent: run them any number of times and only the missing pieces start.
@@ -265,20 +266,83 @@ are computed live from git, not cached.
 
 | State | Meaning |
 | --- | --- |
+| `waiting` | blocked on you: a question it asked, or a permission request |
 | `busy` | actively generating |
-| `waiting` | idle, but a permission request (e.g. "may I run this command?") is unanswered |
 | `retrying` | the provider errored and opencode is auto-retrying |
 | `idle` | none of the above |
 
-`waiting` only ever means a pending *permission* request — opencode's API has
-no way to tell "the assistant asked a free-text question and stopped" apart
-from plain idle, so that case isn't distinguishable.
+`waiting` covers both things that block an agent on you: a **question** (the
+assistant asked you something and stopped) and a **permission** request
+("may I run this command?"). It deliberately outranks `busy`, because
+opencode keeps a session's own status "busy" while a question or permission
+sits unanswered — the turn hasn't ended, it's blocked inside a tool call —
+but an agent that cannot move without you is the more useful thing to
+report.
 
 `IDLE` is time since the last turn finished (blank while busy). `WORKED` is
 the sum of actual generation time across every finished turn in the current
 session — not wall-clock span, so time spent reading or away from the
 keyboard doesn't count — plus a running `+12s`-style suffix for whichever
 turn is currently in flight.
+
+## Watching from a status widget
+
+`canaveral watch` streams one JSON snapshot per line to stdout, emitting only
+when something actually changes:
+
+```
+canaveral watch          # this project
+canaveral watch --all    # every project
+```
+
+```jsonc
+{
+  "time": "2026-08-28T12:41:54+03:00",
+  "features": [{
+    "project": "norules", "name": "small-fixes", "key": "norules/small-fixes",
+    "branch": "small-fixes", "workspace": "norules:small-fixes",
+    "status": "waiting",              // waiting|error|retrying|working|idle|offline
+    "since": "2026-08-28T12:39:06+03:00",
+    "created_at": "2026-08-28T11:02:11+03:00",
+    "agents": [{
+      "name": "main", "status": "waiting", "url": "http://127.0.0.1:4096",
+      "model": "claude-opus-5", "tokens": 13574, "cost": 0.0069,
+      "worked_seconds": 92.4,
+      "pending": {                    // present only while status is "waiting"
+        "kind": "question",           // question | permission
+        "header": "Fork trigger",     // short label, <=30 chars
+        "detail": "When should canaveral fork a session?",
+        "options": ["Always", "Never"]
+      }
+    }]
+  }],
+  "summary": {
+    "total": 3, "needs_attention": 1,
+    "waiting": 1, "working": 1, "idle": 1, "errored": 0,
+    "status": "waiting",
+    "oldest_attention_since": "2026-08-28T12:39:06+03:00"
+  }
+}
+```
+
+Features are ordered most-urgent first, and ties are broken by whichever has
+been in that state longest — so the thing you have ignored longest is always
+at the top. `summary.status` is the single most urgent status across
+everything, which is what a one-colour indicator should follow.
+
+`since` is when a feature entered its current status, and is deliberately
+**not** refreshed while the status is unchanged, so a "how long has it been
+working / idle" gauge can tick locally without the stream having to emit on a
+timer. A consumer should render elapsed time itself from `since`.
+
+It is driven by opencode's event stream rather than polling, so it costs
+nothing while nothing is happening. Because which event means what has varied
+between opencode versions — and whether permissions are ever requested at all
+depends on your own permission config — an event is treated only as
+"something changed, go look"; the authoritative state always comes from
+re-reading the HTTP API, with a slow safety-net refresh (`--safety`, default
+30s) so a missed event can leave the view briefly stale but never
+permanently wrong.
 
 ## On disk
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,17 +10,56 @@ import (
 	"time"
 )
 
-// fakeServer serves the two endpoints Probe depends on.
+// asst builds one assistant message in the real wire shape: a
+// {"info": {...}} entry, with "role" and "modelID", returned in a bare
+// array ordered oldest-first.
+func asst(created int64, completed string, tokensIn, tokensOut int, cost float64, extra string) string {
+	comp := ""
+	if completed != "" {
+		comp = `,"completed":` + completed
+	}
+	return fmt.Sprintf(`{"info":{"role":"assistant","modelID":"m1","time":{"created":%d%s},`+
+		`"tokens":{"input":%d,"output":%d,"reasoning":0,"cache":{"read":0,"write":0}},"cost":%v%s}}`,
+		created, comp, tokensIn, tokensOut, cost, extra)
+}
+
+func msgList(msgs ...string) string { return "[" + strings.Join(msgs, ",") + "]" }
+
+// fakeServer serves the endpoints Probe depends on, on the same API surface
+// the real server uses: /api/session for the session list, but the bare
+// /session/{id}/message, /question and /permission for everything else.
 func fakeServer(t *testing.T, sessions, messages string) *httptest.Server {
+	t.Helper()
+	return fakeServerQ(t, sessions, messages, `{}`, `[]`, `[]`)
+}
+
+func fakeServerFull(t *testing.T, sessions, messages, status, permissions string) *httptest.Server {
+	t.Helper()
+	return fakeServerQ(t, sessions, messages, status, permissions, `[]`)
+}
+
+func fakeServerQ(t *testing.T, sessions, messages, status, permissions, questions string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(sessions))
 	})
-	mux.HandleFunc("/api/session/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(messages))
+	})
+	mux.HandleFunc("/session/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(status))
+	})
+	mux.HandleFunc("/permission", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(permissions))
+	})
+	mux.HandleFunc("/question", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(questions))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -32,85 +72,144 @@ const twoDirSessions = `{"data":[
   {"id":"ses_other","location":{"directory":"/w/other"},"time":{"updated":300}}
 ]}`
 
-// fakeServerFull additionally serves /session/status and the per-session
-// permission list, for tests that exercise State classification.
-func fakeServerFull(t *testing.T, sessions, messages, status, permissions string) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(sessions))
-	})
-	mux.HandleFunc("/api/session/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/permission") {
-			_, _ = w.Write([]byte(permissions))
-			return
-		}
-		_, _ = w.Write([]byte(messages))
-	})
-	mux.HandleFunc("/session/status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(status))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
+func TestProbeStateWaitingOnQuestion(t *testing.T) {
+	// The assistant asked something via the question tool. opencode keeps
+	// the session "busy" (the tool call is still open), but the agent
+	// cannot proceed without an answer, so waiting must win over busy.
+	msgs := msgList(asst(1, "", 0, 0, 0, ""))
+	questions := `[{"sessionID":"ses_mine","questions":[{"header":"Fork trigger","question":"When should canaveral fork a session?","options":[{"label":"Always"},{"label":"Never"}]}]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Fatalf("State = %q, want waiting (question outranks busy)", h.State)
+	}
+	if h.Pending == nil {
+		t.Fatal("Pending = nil, want the question details")
+	}
+	if h.Pending.Kind != BlockQuestion || h.Pending.Header != "Fork trigger" {
+		t.Errorf("Pending = %+v", h.Pending)
+	}
+	if len(h.Pending.Options) != 2 || h.Pending.Options[0] != "Always" {
+		t.Errorf("Options = %v", h.Pending.Options)
+	}
+}
+
+func TestProbeIgnoresPendingForAnotherSession(t *testing.T) {
+	// /question and /permission are server-wide; another session's pending
+	// item must not make this agent look blocked.
+	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
+	questions := `[{"sessionID":"ses_somebody_else","questions":[{"header":"Nope","question":"?","options":[]}]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle; another session's question leaked in", h.State)
+	}
+}
+
+func TestProbeQuestionOutranksPermission(t *testing.T) {
+	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
+	questions := `[{"sessionID":"ses_mine","questions":[{"header":"Pick one","question":"Which?","options":[]}]}]`
+	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["rm -rf /"]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, questions)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Pending == nil || h.Pending.Kind != BlockQuestion {
+		t.Errorf("Pending = %+v, want the question to take precedence", h.Pending)
+	}
+}
+
+func TestProbePendingPermissionDetails(t *testing.T) {
+	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
+	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["echo hi"]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Fatalf("State = %q, want waiting", h.State)
+	}
+	if h.Pending == nil || h.Pending.Kind != BlockPermission {
+		t.Fatalf("Pending = %+v, want a permission block", h.Pending)
+	}
+	if len(h.Pending.Resources) != 1 || h.Pending.Resources[0] != "echo hi" {
+		t.Errorf("Resources = %v", h.Pending.Resources)
+	}
+}
+
+func TestProbeWaitingOutranksRetrying(t *testing.T) {
+	msgs := msgList(asst(1, "", 0, 0, 0, ""))
+	status := `{"ses_mine":{"type":"retry","attempt":1,"message":"rate limited","next":5}}`
+	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":[]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, status, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Errorf("State = %q, want waiting (you can act; a retry is automatic)", h.State)
+	}
+}
+
+func TestProbeNoPendingLeavesPendingNil(t *testing.T) {
+	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
+	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Pending != nil {
+		t.Errorf("Pending = %+v, want nil when nothing is blocked", h.Pending)
+	}
 }
 
 func TestProbeStateBusy(t *testing.T) {
-	msgs := `{"data":[{"type":"assistant","time":{"created":1},"model":{"id":"m1"}}]}`
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `{"data":[]}`)
-
-	h := Probe(context.Background(), srv.URL, "/w/mine")
-	if h.State != StateBusy {
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, `[]`)
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateBusy {
 		t.Errorf("State = %q, want busy", h.State)
 	}
 }
 
 func TestProbeStateIdle(t *testing.T) {
-	msgs := `{"data":[{"type":"assistant","time":{"created":1,"completed":2},"finish":"stop","model":{"id":"m1"}}]}`
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `{"data":[]}`)
-
-	h := Probe(context.Background(), srv.URL, "/w/mine")
-	if h.State != StateIdle {
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateIdle {
 		t.Errorf("State = %q, want idle", h.State)
 	}
 }
 
-func TestProbeStateWaitingOnPermission(t *testing.T) {
-	// Idle from opencode's own point of view, but there is an unanswered
-	// permission request — this must classify as waiting, not idle.
-	msgs := `{"data":[{"type":"assistant","time":{"created":1,"completed":2},"finish":"stop","model":{"id":"m1"}}]}`
-	perms := `{"data":[{"id":"perm_1","type":"bash"}]}`
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, perms)
-
-	h := Probe(context.Background(), srv.URL, "/w/mine")
-	if h.State != StateWaiting {
-		t.Errorf("State = %q, want waiting", h.State)
-	}
-}
-
 func TestProbeStateRetrying(t *testing.T) {
-	msgs := `{"data":[{"type":"assistant","time":{"created":1},"model":{"id":"m1"}}]}`
 	status := `{"ses_mine":{"type":"retry","attempt":1,"message":"rate limited","next":5}}`
-	srv := fakeServerFull(t, twoDirSessions, msgs, status, `{"data":[]}`)
-
-	h := Probe(context.Background(), srv.URL, "/w/mine")
-	if h.State != StateRetrying {
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), status, `[]`)
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateRetrying {
 		t.Errorf("State = %q, want retrying", h.State)
 	}
 }
 
+func TestProbeUsesTheLastAssistantMessageAsTheCurrentTurn(t *testing.T) {
+	// Regression test: messages come back oldest-first. Treating the first
+	// as "current" reported the state of the session's opening turn
+	// forever, so a working agent looked permanently idle.
+	msgs := msgList(
+		asst(1000, "2000", 5, 5, 0.01, `,"finish":"stop","modelID":"old-model"`),
+		asst(3000, "", 0, 0, 0, ""), // newest, still generating
+	)
+	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if !h.Busy {
+		t.Error("Busy = false; the newest turn is still generating")
+	}
+	if h.Working <= 0 {
+		t.Errorf("Working = %v, want > 0", h.Working)
+	}
+	if h.Worked != time.Second {
+		t.Errorf("Worked = %v, want 1s (only the completed turn counts)", h.Worked)
+	}
+}
+
 func TestProbeWorkedSumsCompletedTurnsOnly(t *testing.T) {
-	// Two completed turns (1s and 2s) plus one still in flight, which must
-	// contribute to Working, not Worked.
-	msgs := `{"data":[
-      {"type":"assistant","time":{"created":5000},"model":{"id":"m1"}},
-      {"type":"assistant","time":{"created":2000,"completed":4000},"finish":"stop","model":{"id":"m1"}},
-      {"type":"assistant","time":{"created":0,"completed":1000},"finish":"stop","model":{"id":"m1"}}
-    ]}`
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `{"data":[]}`)
+	msgs := msgList(
+		asst(0, "1000", 0, 0, 0, `,"finish":"stop"`),
+		asst(2000, "4000", 0, 0, 0, `,"finish":"stop"`),
+		asst(5000, "", 0, 0, 0, ""),
+	)
+	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
 	if want := 3 * time.Second; h.Worked != want {
@@ -124,7 +223,8 @@ func TestProbeWorkedSumsCompletedTurnsOnly(t *testing.T) {
 func TestProbeFiltersByDirectory(t *testing.T) {
 	// The server exposes the user's whole global history; only sessions rooted
 	// in this agent's directory may be counted.
-	msgs := `{"data":[{"type":"assistant","time":{"created":1,"completed":2},"finish":"stop","tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":1,"write":0}},"cost":0.25,"model":{"id":"m1"}}]}`
+	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1,"completed":2},"finish":"stop",` +
+		`"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":1,"write":0}},"cost":0.25}}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
@@ -150,7 +250,7 @@ func TestProbeFiltersByDirectory(t *testing.T) {
 
 func TestProbeBusyWhenNotCompleted(t *testing.T) {
 	// A missing time.completed is the signal that generation is in flight.
-	msgs := `{"data":[{"type":"assistant","time":{"created":1},"model":{"id":"m1"}}]}`
+	msgs := msgList(asst(1, "", 0, 0, 0, ""))
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
@@ -160,7 +260,8 @@ func TestProbeBusyWhenNotCompleted(t *testing.T) {
 }
 
 func TestProbeSurfacesError(t *testing.T) {
-	msgs := `{"data":[{"type":"assistant","time":{"created":1,"completed":2},"finish":"error","error":{"message":"HTTP 401 bad model"},"model":{"id":"m1"}}]}`
+	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1,"completed":2},"finish":"error",` +
+		`"error":{"name":"UnknownError","data":{"message":"HTTP 401 bad model"}}}}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
@@ -172,11 +273,11 @@ func TestProbeSurfacesError(t *testing.T) {
 func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 	// Token totals live on assistant messages; user messages carry none and the
 	// session list reports zero.
-	msgs := `{"data":[
-      {"type":"assistant","time":{"created":3,"completed":4},"finish":"stop","tokens":{"input":10,"output":10,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0.1,"model":{"id":"m1"}},
-      {"type":"user","time":{"created":2}},
-      {"type":"assistant","time":{"created":1,"completed":2},"finish":"tool-calls","tokens":{"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0.05,"model":{"id":"m1"}}
-    ]}`
+	msgs := msgList(
+		asst(1, "2", 5, 5, 0.05, `,"finish":"tool-calls"`),
+		`{"info":{"role":"user","time":{"created":2}}}`,
+		asst(3, "4", 10, 10, 0.1, `,"finish":"stop"`),
+	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
@@ -193,7 +294,7 @@ func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 }
 
 func TestProbeNoSessionsForDirectory(t *testing.T) {
-	srv := fakeServer(t, twoDirSessions, `{"data":[]}`)
+	srv := fakeServer(t, twoDirSessions, `[]`)
 	h := Probe(context.Background(), srv.URL, "/w/nothing-here")
 	if !h.Reachable {
 		t.Fatal("want reachable")

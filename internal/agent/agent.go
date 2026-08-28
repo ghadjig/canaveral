@@ -90,14 +90,16 @@ func (t Tokens) Total() int64 {
 	return t.Input + t.Output + t.Reasoning + t.Cache.Read + t.Cache.Write
 }
 
-// State classifies what an agent is doing right now, from most to least
-// urgent: retrying (hit a provider error and is auto-retrying), busy
-// (actively generating), waiting (idle, but has a permission request — e.g.
-// "may I run this command?" — sitting unanswered), idle (nothing pending).
+// State classifies what an agent is doing right now: waiting (blocked on a
+// question or permission request that only you can answer), retrying (hit a
+// provider error and is auto-retrying), busy (actively generating), idle
+// (nothing pending).
 //
-// "Waiting" only ever means a pending permission request: opencode's API has
-// no signal for "the assistant asked a free-text clarifying question and
-// stopped", so that case is indistinguishable from plain idle.
+// Waiting deliberately outranks busy. opencode keeps a session's own status
+// "busy" while a question or permission request is outstanding — the turn
+// hasn't ended, it's blocked inside a tool call — but from your point of
+// view the agent has stopped and cannot proceed without you, which is the
+// more useful thing to report.
 type State string
 
 const (
@@ -106,6 +108,29 @@ const (
 	StateWaiting  State = "waiting"
 	StateRetrying State = "retrying"
 )
+
+// BlockKind distinguishes the two things an agent can be blocked on.
+type BlockKind string
+
+const (
+	// BlockQuestion is the assistant asking you something via the question
+	// tool, with a header, full text and a set of options.
+	BlockQuestion BlockKind = "question"
+	// BlockPermission is the assistant asking to be allowed to act, e.g.
+	// run a command or edit a file outside its worktree.
+	BlockPermission BlockKind = "permission"
+)
+
+// Pending describes what an agent is waiting on, for display.
+type Pending struct {
+	Kind BlockKind `json:"kind"`
+	// Header is a short label (opencode caps it at 30 characters), which is
+	// what a compact widget should show; Detail is the full text.
+	Header    string   `json:"header,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
+	Options   []string `json:"options,omitempty"`
+	Resources []string `json:"resources,omitempty"`
+}
 
 // Health summarises what an agent server is doing right now.
 type Health struct {
@@ -116,6 +141,9 @@ type Health struct {
 	Busy bool
 	// State is the fuller busy/waiting/idle/retrying classification.
 	State State
+	// Pending is what the agent is blocked on, set only when State is
+	// StateWaiting.
+	Pending *Pending
 	// Sessions is the number of sessions rooted in the agent's directory.
 	Sessions int
 	Tokens   Tokens
@@ -160,30 +188,59 @@ type sessionStatusInfo struct {
 	Type string `json:"type"`
 }
 
+// messageInfo is the "info" half of a session message.
+//
+// Note the field names: the role is "role" (not "type") and the model is a
+// flat "modelID" (not a nested object). Getting these wrong is silent — the
+// JSON simply decodes to zero values — which is exactly how token, cost and
+// busy reporting stayed broken while looking fine.
 type messageInfo struct {
 	ID   string `json:"id"`
-	Type string `json:"type"`
+	Role string `json:"role"`
 	Time struct {
 		Created   int64  `json:"created"`
 		Completed *int64 `json:"completed"`
 	} `json:"time"`
-	Finish string  `json:"finish"`
-	Tokens Tokens  `json:"tokens"`
-	Cost   float64 `json:"cost"`
-	Model  struct {
-		ID string `json:"id"`
-	} `json:"model"`
-	Error *struct {
-		Message string `json:"message"`
+	Finish  string  `json:"finish"`
+	Tokens  Tokens  `json:"tokens"`
+	Cost    float64 `json:"cost"`
+	ModelID string  `json:"modelID"`
+	Error   *struct {
+		Name string `json:"name"`
+		Data struct {
+			Message string `json:"message"`
+		} `json:"data"`
 	} `json:"error"`
 }
 
-type messageListResp struct {
-	Data []messageInfo `json:"data"`
+// sessionMessage is one entry of GET /session/{id}/message, which returns a
+// bare array of {info, parts} — not a {"data": [...]} envelope, and not the
+// flat message objects the /api/session/{id}/message surface implies.
+type sessionMessage struct {
+	Info messageInfo `json:"info"`
 }
 
-type permissionListResp struct {
-	Data []json.RawMessage `json:"data"`
+// permissionRequest is one entry of GET /permission, the server-wide list of
+// pending permission requests.
+type permissionRequest struct {
+	SessionID  string   `json:"sessionID"`
+	Permission string   `json:"permission"`
+	Patterns   []string `json:"patterns"`
+}
+
+// questionRequest is one entry of GET /question, the server-wide list of
+// pending questions. A request can carry several questions; only the first
+// is surfaced, since a compact widget has room for one headline and the
+// rest are visible in the TUI anyway.
+type questionRequest struct {
+	SessionID string `json:"sessionID"`
+	Questions []struct {
+		Question string `json:"question"`
+		Header   string `json:"header"`
+		Options  []struct {
+			Label string `json:"label"`
+		} `json:"options"`
+	} `json:"questions"`
 }
 
 // Probe reports what the agent rooted at dir is currently doing.
@@ -220,8 +277,8 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	h.Updated = time.UnixMilli(newest.Time.Updated)
 	h.SessionID = newest.ID
 
-	var msgs messageListResp
-	if err := getJSON(ctx, baseURL+"/api/session/"+url.PathEscape(newest.ID)+"/message", &msgs); err != nil {
+	var msgs []sessionMessage
+	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(newest.ID)+"/message", &msgs); err != nil {
 		h.State = StateIdle
 		return h
 	}
@@ -229,10 +286,15 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// Token and cost totals live on assistant messages; the session list
 	// reports them as zero. Only the newest session is summed, since fetching
 	// messages for every session would be an N+1 on every status refresh.
-	first := true
+	//
+	// Messages arrive oldest-first, so the *last* assistant message is the
+	// current turn — taking the first would report the state of whatever
+	// happened at the very start of the session forever.
 	now := time.Now()
-	for _, m := range msgs.Data {
-		if m.Type != "assistant" {
+	var cur *messageInfo
+	for i := range msgs {
+		m := &msgs[i].Info
+		if m.Role != "assistant" {
 			continue
 		}
 		h.Tokens.Input += m.Tokens.Input
@@ -242,50 +304,81 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		h.Tokens.Cache.Write += m.Tokens.Cache.Write
 		h.Cost += m.Cost
 
-		created := time.UnixMilli(m.Time.Created)
 		if m.Time.Completed != nil {
-			h.Worked += time.UnixMilli(*m.Time.Completed).Sub(created)
-		} else if first {
-			// Still generating — this turn hasn't added to Worked yet.
-			h.Working = now.Sub(created)
+			h.Worked += time.UnixMilli(*m.Time.Completed).Sub(time.UnixMilli(m.Time.Created))
 		}
+		cur = m
+	}
+	if cur != nil {
+		h.Model = cur.ModelID
+		h.Busy = cur.Time.Completed == nil
+		if h.Busy {
+			// Still generating; this turn has not contributed to Worked.
+			h.Working = now.Sub(time.UnixMilli(cur.Time.Created))
+		}
+		if cur.Error != nil {
+			h.LastError = cur.Error.Data.Message
+		}
+	}
 
-		if first {
-			// Messages arrive newest-first, so this is the current turn.
-			first = false
-			h.Model = m.Model.ID
-			h.Busy = m.Time.Completed == nil
-			if m.Finish == "error" && m.Error != nil {
-				h.LastError = m.Error.Message
+	h.State, h.Pending = classify(ctx, baseURL, newest.ID, h.Busy)
+	return h
+}
+
+// classify determines the fuller State beyond the plain busy/idle that
+// Health.Busy already carries, and what the agent is blocked on if anything.
+//
+// Order matters. A pending question or permission wins over everything else,
+// including busy: opencode keeps the session "busy" while a tool call sits
+// waiting for your answer, but an agent that cannot move without you is the
+// thing worth surfacing, not the fact that its turn is technically still
+// open.
+func classify(ctx context.Context, baseURL, sessionID string, busy bool) (State, *Pending) {
+	// The server-wide lists are used rather than the per-session ones: they
+	// are a single request no matter how many sessions exist, and they live
+	// on the same API surface as /session/{id}/message, which is the one
+	// verified to actually return data.
+	var qs []questionRequest
+	if err := getJSON(ctx, baseURL+"/question", &qs); err == nil {
+		for _, req := range qs {
+			if req.SessionID != sessionID {
+				continue
+			}
+			for _, q := range req.Questions {
+				p := &Pending{Kind: BlockQuestion, Header: q.Header, Detail: q.Question}
+				for _, o := range q.Options {
+					p.Options = append(p.Options, o.Label)
+				}
+				return StateWaiting, p
 			}
 		}
 	}
 
-	h.State = classify(ctx, baseURL, newest.ID, h.Busy)
-	return h
-}
-
-// classify determines the fuller State beyond the plain busy/idle Health.Busy
-// already carries: a pending permission request means "waiting" even though
-// the session itself is idle from opencode's own point of view, and a
-// provider retry outranks a plain busy classification.
-func classify(ctx context.Context, baseURL, sessionID string, busy bool) State {
-	var statuses map[string]sessionStatusInfo
-	if err := getJSON(ctx, baseURL+"/session/status", &statuses); err == nil {
-		if s, ok := statuses[sessionID]; ok && s.Type == "retry" {
-			return StateRetrying
+	var perms []permissionRequest
+	if err := getJSON(ctx, baseURL+"/permission", &perms); err == nil {
+		for _, req := range perms {
+			if req.SessionID != sessionID {
+				continue
+			}
+			return StateWaiting, &Pending{
+				Kind:      BlockPermission,
+				Header:    req.Permission,
+				Detail:    req.Permission,
+				Resources: req.Patterns,
+			}
 		}
 	}
-	if !busy {
-		var perms permissionListResp
-		if err := getJSON(ctx, baseURL+"/api/session/"+url.PathEscape(sessionID)+"/permission", &perms); err == nil && len(perms.Data) > 0 {
-			return StateWaiting
+
+	var statuses map[string]sessionStatusInfo
+	if err := getJSON(ctx, baseURL+"/session/status", &statuses); err == nil {
+		if st, ok := statuses[sessionID]; ok && st.Type == "retry" {
+			return StateRetrying, nil
 		}
 	}
 	if busy {
-		return StateBusy
+		return StateBusy, nil
 	}
-	return StateIdle
+	return StateIdle, nil
 }
 
 func getJSON(ctx context.Context, u string, out any) error {

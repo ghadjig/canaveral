@@ -33,6 +33,7 @@ func commands() []command {
 		{"attach", "attach a terminal to a feature's agent", runAttach},
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"hyprwatch", "react to Hyprland events instead of polling (waybar refresh)", runHyprwatch},
+		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}
 }
 
