@@ -648,3 +648,45 @@ func TestPreviewTextCaps(t *testing.T) {
 		t.Errorf("want an ellipsis to show it was cut: %q", got[len(got)-10:])
 	}
 }
+
+func TestProbeSeesAPermissionBlockingASubagent(t *testing.T) {
+	// Regression test for a real miss: a subagent stopped for permission
+	// while the TUI showed a prompt, but canaveral reported only "busy".
+	// Pinning the pending lookup to the parent session hid it — a blocked
+	// subagent blocks everything above it, since the parent's turn is
+	// sitting waiting for that subagent's result.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 200, "", 0, 0, 0),
+		sess("ses_sub", "/w/mine", 100, "ses_root", 0, 0, 0),
+	)
+	perms := `[{"sessionID":"ses_sub","permission":"external_directory","patterns":["/gems/ruby_llm/*"]}]`
+	srv := fakeServerQ(t, sessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Fatalf("State = %q, want waiting; a blocked subagent blocks the conversation", h.State)
+	}
+	if h.Pending == nil || h.Pending.Header != "external_directory" {
+		t.Fatalf("Pending = %+v", h.Pending)
+	}
+	if len(h.Pending.Resources) != 1 || h.Pending.Resources[0] != "/gems/ruby_llm/*" {
+		t.Errorf("Resources = %v", h.Pending.Resources)
+	}
+}
+
+func TestProbeIgnoresPendingFromAnUnrelatedConversation(t *testing.T) {
+	// Widening the match to the family must not widen it to the whole
+	// server: another conversation's prompt is not this one's problem.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 200, "", 0, 0, 0),
+		sess("ses_other_root", "/w/mine", 100, "", 0, 0, 0),
+		sess("ses_other_sub", "/w/mine", 50, "ses_other_root", 0, 0, 0),
+	)
+	perms := `[{"sessionID":"ses_other_sub","permission":"bash","patterns":[]}]`
+	srv := fakeServerQ(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle; another conversation's prompt leaked in", h.State)
+	}
+}

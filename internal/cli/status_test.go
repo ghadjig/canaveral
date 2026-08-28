@@ -297,3 +297,40 @@ func TestAgentSummaryLineOmitsMessagesWhenAbsent(t *testing.T) {
 		t.Errorf("got %q, want no message lines", got)
 	}
 }
+
+func TestAgentSummaryLineShowsWhatItIsBlockedOn(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateWaiting),
+		PendKind:   "permission", PendHeader: "external_directory",
+		PendDetail: "external_directory",
+		PendExtra:  "/home/x/gems/ruby_llm/*",
+	})
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[1], "needs:") || !strings.Contains(lines[1], "permission: external_directory") {
+		t.Errorf("needs line = %q", lines[1])
+	}
+	// detail duplicating the header must not be repeated
+	if strings.Count(lines[1], "external_directory") != 1 {
+		t.Errorf("header repeated: %q", lines[1])
+	}
+	if !strings.Contains(lines[1], "ruby_llm") {
+		t.Errorf("missing the resource it wants: %q", lines[1])
+	}
+}
+
+func TestAgentSummaryLineShowsQuestionOptions(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateWaiting),
+		PendKind:   "question", PendHeader: "Fork trigger",
+		PendDetail: "When should canaveral fork a session?",
+		PendExtra:  "Always / Never",
+	})
+	if !strings.Contains(got, "question: Fork trigger") || !strings.Contains(got, "Always / Never") {
+		t.Errorf("got %q", got)
+	}
+}

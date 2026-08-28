@@ -271,6 +271,10 @@ are computed live from git, not cached.
 | `retrying` | the provider errored and opencode is auto-retrying |
 | `idle` | none of the above |
 
+A blocked **subagent** counts too: the Task tool runs subagents in their own
+sessions, and one stopping for permission blocks the whole conversation,
+since the parent's turn is sitting waiting for its result.
+
 `waiting` covers both things that block an agent on you: a **question** (the
 assistant asked you something and stopped) and a **permission** request
 ("may I run this command?"). It deliberately outranks `busy`, because
@@ -285,7 +289,8 @@ reasoning effort, the agent's own task list when it is using one
 of the conversation:
 
 ```
-  agent main: idle · worked 37m57s · idle 1m27s · claude-sonnet-5 (high) · 1 session(s) +4 subagent(s)
+  agent main: waiting · worked 37m57s +5m42s · claude-sonnet-5 (high) · 1 session(s) +5 subagent(s)
+    needs: permission: external_directory [/home/…/gems/ruby_llm/*]
     task: Add a smoke test
     now:  bash: bin/rails test
     you:  cancel workflow shouldn't be here

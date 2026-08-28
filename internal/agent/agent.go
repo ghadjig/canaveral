@@ -412,6 +412,10 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		}
 	}
 	h.SubSessions = len(family) - 1
+	familyIDs := make(map[string]bool, len(family))
+	for _, x := range family {
+		familyIDs[x.ID] = true
+	}
 	for _, x := range family {
 		h.Tokens.Input += x.Tokens.Input
 		h.Tokens.Output += x.Tokens.Output
@@ -506,7 +510,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 
 	h.Todos = fetchTodos(ctx, baseURL, newest.ID)
-	h.State, h.Pending = classify(ctx, baseURL, newest.ID, h.Busy)
+	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy)
 	return h
 }
 
@@ -588,7 +592,21 @@ func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {
 	return t
 }
 
-func classify(ctx context.Context, baseURL, sessionID string, busy bool) (State, *Pending) {
+// classify determines the fuller State beyond the plain busy/idle that
+// Health.Busy already carries, and what the agent is blocked on if
+// anything.
+//
+// Pending items are matched against the whole session family, not just the
+// conversation itself: a subagent that stops for permission blocks
+// everything above it, because the parent's turn is sitting waiting for
+// that subagent's result. Matching only the parent reported such an agent
+// as merely "busy" while the TUI was showing a permission prompt.
+//
+// Order matters. A pending question or permission wins over everything
+// else, including busy: opencode keeps the session "busy" while a tool call
+// sits waiting for your answer, but an agent that cannot move without you
+// is the thing worth surfacing.
+func classify(ctx context.Context, baseURL, sessionID string, family map[string]bool, busy bool) (State, *Pending) {
 	// The server-wide lists are used rather than the per-session ones: they
 	// are a single request no matter how many sessions exist, and they live
 	// on the same API surface as /session/{id}/message, which is the one
@@ -596,7 +614,7 @@ func classify(ctx context.Context, baseURL, sessionID string, busy bool) (State,
 	var qs []questionRequest
 	if err := getJSON(ctx, baseURL+"/question", &qs); err == nil {
 		for _, req := range qs {
-			if req.SessionID != sessionID {
+			if !family[req.SessionID] {
 				continue
 			}
 			for _, q := range req.Questions {
@@ -612,7 +630,7 @@ func classify(ctx context.Context, baseURL, sessionID string, busy bool) (State,
 	var perms []permissionRequest
 	if err := getJSON(ctx, baseURL+"/permission", &perms); err == nil {
 		for _, req := range perms {
-			if req.SessionID != sessionID {
+			if !family[req.SessionID] {
 				continue
 			}
 			return StateWaiting, &Pending{

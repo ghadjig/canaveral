@@ -146,6 +146,10 @@ type row struct {
 	ActTitle   string        `json:"activity_title,omitempty"`
 	LastUser   string        `json:"last_user,omitempty"`
 	LastAgent  string        `json:"last_assistant,omitempty"`
+	PendKind   string        `json:"pending_kind,omitempty"`
+	PendHeader string        `json:"pending_header,omitempty"`
+	PendDetail string        `json:"pending_detail,omitempty"`
+	PendExtra  string        `json:"pending_extra,omitempty"`
 	Tokens     int64         `json:"tokens,omitempty"`
 	Cost       float64       `json:"cost,omitempty"`
 	Model      string        `json:"model,omitempty"`
@@ -300,6 +304,15 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 						r.ActTool, r.ActTitle = h.Activity.Tool, h.Activity.Title
 					}
 					r.LastUser, r.LastAgent = h.LastUser, h.LastAssistant
+					if p := h.Pending; p != nil {
+						r.PendKind, r.PendHeader, r.PendDetail = string(p.Kind), p.Header, p.Detail
+						switch {
+						case len(p.Options) > 0:
+							r.PendExtra = strings.Join(p.Options, " / ")
+						case len(p.Resources) > 0:
+							r.PendExtra = strings.Join(p.Resources, ", ")
+						}
+					}
 					if !h.Reachable {
 						r.Detail = "unreachable"
 					}
@@ -561,6 +574,19 @@ func agentSummaryLine(r row) string {
 		parts = append(parts, sess)
 	}
 	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
+	if r.PendKind != "" {
+		needs := r.PendKind
+		if r.PendHeader != "" {
+			needs += ": " + r.PendHeader
+		}
+		if r.PendDetail != "" && r.PendDetail != r.PendHeader {
+			needs += " — " + r.PendDetail
+		}
+		if r.PendExtra != "" {
+			needs += " [" + r.PendExtra + "]"
+		}
+		line += "\n    " + color(cYellow, "needs: "+shorten(oneLine(needs), 90))
+	}
 	if r.TodoNow != "" {
 		line += "\n    " + dim("task: "+shorten(oneLine(r.TodoNow), 80))
 	}
