@@ -323,13 +323,13 @@ func TestRemoveKeepsNonEmptyNamespaceDir(t *testing.T) {
 }
 
 func TestWorktreePathInUsesConfiguredRoot(t *testing.T) {
-	got, err := WorktreePathIn("/p/norules/.worktrees", "norules", "onboarding/step1")
+	got, err := WorktreePathIn("/p/norules/worktrees", "norules", "onboarding/step1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// No project directory under a configured root: it is already
 	// project-specific.
-	if want := "/p/norules/.worktrees/onboarding/step1"; got != want {
+	if want := "/p/norules/worktrees/onboarding/step1"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

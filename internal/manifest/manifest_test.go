@@ -410,12 +410,12 @@ func TestWorktreeRootRelativeIsAgainstTheProject(t *testing.T) {
 	// Relative must not depend on the working directory, or the setting
 	// would mean different things from different shells.
 	m := &Manifest{Root: "/p/norules"}
-	m.Worktree.Root = ".worktrees"
+	m.Worktree.Root = "worktrees"
 	got, err := m.WorktreeRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/p/norules/.worktrees" {
+	if got != "/p/norules/worktrees" {
 		t.Errorf("WorktreeRoot = %q", got)
 	}
 }

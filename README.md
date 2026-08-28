@@ -131,9 +131,9 @@ isolation = "shared"        # or "suffix"
 # A fresh worktree holds tracked files only; bring across what the app needs.
 [worktree]
 # Where worktrees are created. Relative paths resolve against the project
-# root, so ".worktrees" keeps them beside the code as ./.worktrees/<feature>.
+# root, so "worktrees" keeps them beside the code as ./worktrees/<feature>.
 # Omit to use canaveral's own state directory and leave the repo untouched.
-root = ".worktrees"
+root = "worktrees"
 link  = ["node_modules", "config/master.key"]   # shared, large
 copy  = [".env", "app/assets/builds"]           # per-feature
 setup = "bundle install"
@@ -244,8 +244,8 @@ canaveral exec small-fixes -- bin/rails test
 feature's own services get, and exits with the command's own status, so it
 composes in scripts.
 
-`[worktree] root = ".worktrees"` shortens the paths further by keeping
-worktrees beside the code. Add `.worktrees/` to `.gitignore` if you do:
+`[worktree] root = "worktrees"` shortens the paths further by keeping
+worktrees beside the code. Add `worktrees/` to `.gitignore` if you do:
 `git status` will otherwise show them, though `git clean -xdf` is safe
 (it skips nested repositories) and `rg`/`git grep` respect the ignore.
 Non-gitignore-aware tools such as plain `grep -r` will still descend into

@@ -130,7 +130,7 @@ func LogDir(project, feature string) (string, error) {
 //
 // A configured root holds features directly (<root>/<feature>) rather than
 // nesting a project directory under it: it is already project-specific, and
-// ".worktrees/norules/small-fixes" inside the norules repo would be silly.
+// "worktrees/norules/small-fixes" inside the norules repo would be silly.
 func WorktreePathIn(root, project, feature string) (string, error) {
 	if root != "" {
 		return filepath.Join(root, feature), nil

@@ -121,8 +121,8 @@ type Database struct {
 // the feature's checkout will not build.
 type Worktree struct {
 	// Root is where this project's worktrees are created. A relative path
-	// is resolved against the project root, so ".worktrees" keeps them
-	// beside the code and reachable as ./.worktrees/<feature>; an absolute
+	// is resolved against the project root, so "worktrees" keeps them
+	// beside the code and reachable as ./worktrees/<feature>; an absolute
 	// path (with ~ expanded) puts them wherever you like.
 	//
 	// Empty keeps canaveral's own state directory, which leaves the repo
