@@ -32,6 +32,8 @@ func commands() []command {
 		{"rm", "tear a feature down, keeping its branch", runRm},
 		{"attach", "attach a terminal to a feature's agent", runAttach},
 		{"logs", "print or follow a service or agent log", runLogs},
+		{"path", "print a feature's worktree path", runPath},
+		{"exec", "run a command inside a feature's worktree", runExec},
 		{"hyprwatch", "react to Hyprland events instead of polling (waybar refresh)", runHyprwatch},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}

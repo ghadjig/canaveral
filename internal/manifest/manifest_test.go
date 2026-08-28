@@ -394,3 +394,42 @@ opencode = 0.4
 		t.Fatal("Load should still reject an out-of-range current fraction")
 	}
 }
+
+func TestWorktreeRootDefaultsToStateDir(t *testing.T) {
+	m := &Manifest{Root: "/p/norules"}
+	got, err := m.WorktreeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("WorktreeRoot = %q, want empty (canaveral's state dir)", got)
+	}
+}
+
+func TestWorktreeRootRelativeIsAgainstTheProject(t *testing.T) {
+	// Relative must not depend on the working directory, or the setting
+	// would mean different things from different shells.
+	m := &Manifest{Root: "/p/norules"}
+	m.Worktree.Root = ".worktrees"
+	got, err := m.WorktreeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/p/norules/.worktrees" {
+		t.Errorf("WorktreeRoot = %q", got)
+	}
+}
+
+func TestWorktreeRootAbsoluteAndTilde(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	m := &Manifest{Root: "/p/norules"}
+
+	m.Worktree.Root = "/srv/wt"
+	if got, _ := m.WorktreeRoot(); got != "/srv/wt" {
+		t.Errorf("absolute = %q", got)
+	}
+	m.Worktree.Root = "~/dev/wt"
+	if got, _ := m.WorktreeRoot(); got != filepath.Join(home, "dev/wt") {
+		t.Errorf("tilde = %q", got)
+	}
+}

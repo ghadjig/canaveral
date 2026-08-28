@@ -125,6 +125,19 @@ func LogDir(project, feature string) (string, error) {
 	return dir, nil
 }
 
+// WorktreePathIn returns where a feature's worktree lives, under root when
+// one is configured and in canaveral's own state directory otherwise.
+//
+// A configured root holds features directly (<root>/<feature>) rather than
+// nesting a project directory under it: it is already project-specific, and
+// ".worktrees/norules/small-fixes" inside the norules repo would be silly.
+func WorktreePathIn(root, project, feature string) (string, error) {
+	if root != "" {
+		return filepath.Join(root, feature), nil
+	}
+	return WorktreePath(project, feature)
+}
+
 // WorktreePath returns where a feature's worktree lives.
 func WorktreePath(project, feature string) (string, error) {
 	d, err := Dir()

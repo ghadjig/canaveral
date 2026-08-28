@@ -321,3 +321,27 @@ func TestRemoveKeepsNonEmptyNamespaceDir(t *testing.T) {
 		t.Errorf("sibling should survive: %v", err)
 	}
 }
+
+func TestWorktreePathInUsesConfiguredRoot(t *testing.T) {
+	got, err := WorktreePathIn("/p/norules/.worktrees", "norules", "onboarding/step1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No project directory under a configured root: it is already
+	// project-specific.
+	if want := "/p/norules/.worktrees/onboarding/step1"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestWorktreePathInFallsBackToStateDir(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	got, err := WorktreePathIn("", "norules", "small-fixes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(base, "canaveral", "worktrees", "norules", "small-fixes"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

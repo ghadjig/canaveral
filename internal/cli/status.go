@@ -23,6 +23,7 @@ import (
 func runLs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	all := fs.Bool("all", false, "list features across every project")
+	names := fs.Bool("names", false, "print only feature names, one per line (for shell completion)")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -40,6 +41,12 @@ func runLs(ctx context.Context, args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if *names {
+		for _, f := range features {
+			fmt.Println(f.Name)
+		}
+		return nil
 	}
 	if len(features) == 0 {
 		fmt.Println("no features yet — create one with `canaveral <feature>`")

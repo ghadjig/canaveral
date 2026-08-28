@@ -185,7 +185,13 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 	if err != nil {
 		return nil, false, err
 	}
-	wt, err := state.WorktreePath(m.Name, name)
+	// [worktree] root lets a project keep its worktrees beside the code
+	// instead of in canaveral's state directory.
+	root, err := m.WorktreeRoot()
+	if err != nil {
+		return nil, false, err
+	}
+	wt, err := state.WorktreePathIn(root, m.Name, name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1015,4 +1021,19 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force bool, r R
 		r.OK("removed worktree, kept branch %s", f.Branch)
 	}
 	return state.Remove(f.Project, f.Name)
+}
+
+// EnvFor returns the environment a command run inside a feature's worktree
+// should see: the project's resolved toolchain, canaveral's own variables
+// (ports, worktree, project root) and the manifest's [env].
+//
+// Exported so `canaveral exec` runs commands under exactly the same
+// environment the feature's own services and agents get, rather than
+// whatever the calling shell happens to have.
+func EnvFor(ctx context.Context, m *manifest.Manifest, f *state.Feature) (map[string]string, error) {
+	tc, err := toolchain.Env(ctx, m.ToolchainMode(), f.Worktree)
+	if err != nil {
+		return nil, err
+	}
+	return manifest.MergeEnv(baseEnvFor(m, f, tc), m.Env), nil
 }

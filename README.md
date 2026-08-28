@@ -44,6 +44,8 @@ $ canaveral small-fixes
 | `canaveral rm <feature>` | Stop everything and drop the worktree, keeping the branch |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
+| `canaveral path <feature>` | Print a feature's worktree path |
+| `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral hyprwatch [--install]` | Event-driven waybar refresh (see below) instead of polling |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -128,6 +130,10 @@ isolation = "shared"        # or "suffix"
 
 # A fresh worktree holds tracked files only; bring across what the app needs.
 [worktree]
+# Where worktrees are created. Relative paths resolve against the project
+# root, so ".worktrees" keeps them beside the code as ./.worktrees/<feature>.
+# Omit to use canaveral's own state directory and leave the repo untouched.
+root = ".worktrees"
 link  = ["node_modules", "config/master.key"]   # shared, large
 copy  = [".env", "app/assets/builds"]           # per-feature
 setup = "bundle install"
@@ -223,6 +229,37 @@ overwritten, so re-provisioning cannot discard edits.
 canaveral also copies `canaveral.toml` into the worktree, and every process it
 spawns gets `CANAVERAL_ROOT`, so `canaveral logs ...` works from inside a
 worktree even when the manifest is untracked.
+
+## Getting into a worktree
+
+Worktree paths are long, so two commands exist to avoid typing them:
+
+```bash
+cd "$(canaveral path small-fixes)"
+canaveral exec small-fixes -- git rebase main
+canaveral exec small-fixes -- bin/rails test
+```
+
+`exec` runs in the worktree with the same toolchain and environment the
+feature's own services get, and exits with the command's own status, so it
+composes in scripts.
+
+`[worktree] root = ".worktrees"` shortens the paths further by keeping
+worktrees beside the code. Add `.worktrees/` to `.gitignore` if you do:
+`git status` will otherwise show them, though `git clean -xdf` is safe
+(it skips nested repositories) and `rg`/`git grep` respect the ignore.
+Non-gitignore-aware tools such as plain `grep -r` will still descend into
+every feature's copy.
+
+For a shell shortcut with tab-completion, in `~/.bash_aliases`:
+
+```bash
+cv() {
+    [ -z "$1" ] && { cd "$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")"; return; }
+    cd "$(canaveral path "$1")" || return
+}
+complete -F _cv_complete cv   # completes from `canaveral ls --names`
+```
 
 ## Ports and databases
 
