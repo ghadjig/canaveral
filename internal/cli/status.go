@@ -144,6 +144,8 @@ type row struct {
 	TodoNow    string        `json:"todo_current,omitempty"`
 	ActTool    string        `json:"activity_tool,omitempty"`
 	ActTitle   string        `json:"activity_title,omitempty"`
+	LastUser   string        `json:"last_user,omitempty"`
+	LastAgent  string        `json:"last_assistant,omitempty"`
 	Tokens     int64         `json:"tokens,omitempty"`
 	Cost       float64       `json:"cost,omitempty"`
 	Model      string        `json:"model,omitempty"`
@@ -297,6 +299,7 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 					if h.Activity != nil {
 						r.ActTool, r.ActTitle = h.Activity.Tool, h.Activity.Title
 					}
+					r.LastUser, r.LastAgent = h.LastUser, h.LastAssistant
 					if !h.Reachable {
 						r.Detail = "unreachable"
 					}
@@ -567,6 +570,12 @@ func agentSummaryLine(r row) string {
 			now += ": " + r.ActTitle
 		}
 		line += "\n    " + dim("now:  "+shorten(oneLine(now), 80))
+	}
+	if r.LastUser != "" {
+		line += "\n    " + dim("you:  "+shorten(oneLine(r.LastUser), 80))
+	}
+	if r.LastAgent != "" {
+		line += "\n    " + dim("said: "+shorten(oneLine(r.LastAgent), 80))
 	}
 	return line
 }

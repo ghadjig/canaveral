@@ -596,3 +596,55 @@ func TestDescribeInputPrefersKnownKeys(t *testing.T) {
 		}
 	}
 }
+
+func textMsg(role, text string) string {
+	return fmt.Sprintf(`{"info":{"role":%q,"modelID":"m1","time":{"created":1,"completed":2}},`+
+		`"parts":[{"type":"text","text":%q}]}`, role, text)
+}
+
+func TestProbeReportsLastMessageFromEachSide(t *testing.T) {
+	msgs := msgList(
+		textMsg("user", "first thing I asked"),
+		textMsg("assistant", "first reply"),
+		textMsg("user", "cancel workflow shouldn't be here"),
+		textMsg("assistant", "Removed the cancel button from the onboarding nav."),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.LastUser != "cancel workflow shouldn't be here" {
+		t.Errorf("LastUser = %q", h.LastUser)
+	}
+	if h.LastAssistant != "Removed the cancel button from the onboarding nav." {
+		t.Errorf("LastAssistant = %q", h.LastAssistant)
+	}
+}
+
+func TestProbeIgnoresEmptyTextParts(t *testing.T) {
+	msgs := msgList(
+		textMsg("assistant", "real answer"),
+		textMsg("assistant", "   "),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.LastAssistant != "real answer" {
+		t.Errorf("LastAssistant = %q, want the last non-empty text", h.LastAssistant)
+	}
+}
+
+func TestPreviewTextFlattensAndStripsMarkdown(t *testing.T) {
+	got := previewText("**http://localhost:3000/x**\n\nPlease use   this one, on `port 3000`")
+	want := "http://localhost:3000/x Please use this one, on port 3000"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestPreviewTextCaps(t *testing.T) {
+	got := previewText(strings.Repeat("x", 500))
+	if len([]rune(got)) > 301 {
+		t.Errorf("length %d, want capped", len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("want an ellipsis to show it was cut: %q", got[len(got)-10:])
+	}
+}

@@ -224,7 +224,14 @@ type Health struct {
 	Todos Todos
 	// Activity is the tool call in flight, nil when none is running.
 	Activity *Activity
-	Err      error
+	// LastUser is the most recent thing you said to this agent, and
+	// LastAssistant the most recent thing it said back — each collapsed to
+	// a single line for display. Together they are usually enough to see
+	// what an agent is meant to be doing and what it last concluded,
+	// without attaching to it.
+	LastUser      string
+	LastAssistant string
+	Err           error
 }
 
 type sessionInfo struct {
@@ -290,6 +297,7 @@ type sessionMessage struct {
 // step markers) carry nothing a status view needs.
 type messagePart struct {
 	Type  string `json:"type"`
+	Text  string `json:"text"`
 	Tool  string `json:"tool"`
 	State struct {
 		Status string `json:"status"` // pending | running | completed | error
@@ -441,6 +449,26 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		}
 		cur = m
 	}
+	// The newest text on each side of the conversation. Messages arrive
+	// oldest-first and a message can hold several text parts, so simply
+	// keeping the last non-empty one seen lands on the most recent.
+	for i := range msgs {
+		role := msgs[i].Info.Role
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		for _, part := range msgs[i].Parts {
+			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
+				continue
+			}
+			if role == "user" {
+				h.LastUser = previewText(part.Text)
+			} else {
+				h.LastAssistant = previewText(part.Text)
+			}
+		}
+	}
+
 	// A tool that is pending or running is the agent's current activity.
 	// Only the newest turn is inspected: earlier turns' calls have all
 	// finished by definition.
@@ -503,6 +531,24 @@ func describeInput(in map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// markdownNoise matches the emphasis markers that carry no meaning once a
+// message is flattened to one line.
+var markdownNoise = regexp.MustCompile("(\\*\\*|`)")
+
+// previewText flattens a message to a single display line: markdown
+// emphasis stripped, whitespace collapsed, and capped well above what any
+// caller shows so the wire payload stays small while leaving room for the
+// caller to truncate as it likes.
+func previewText(s string) string {
+	s = markdownNoise.ReplaceAllString(s, "")
+	s = strings.Join(strings.Fields(s), " ")
+	const max = 300
+	if len(s) > max {
+		s = strings.TrimSpace(s[:max]) + "…"
+	}
+	return s
 }
 
 // firstLine trims a possibly long, multi-line tool title down to something

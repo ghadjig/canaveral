@@ -279,9 +279,20 @@ sits unanswered — the turn hasn't ended, it's blocked inside a tool call —
 but an agent that cannot move without you is the more useful thing to
 report.
 
-The `agent` summary line above the table also shows the agent's own task
-list when it is using one (`todo 6/9`) and, on the following line, the task
-it is currently on — the only real progress signal opencode and Claude Code
+The `agent` summary line above the table also shows the model and its
+reasoning effort, the agent's own task list when it is using one
+(`todo 6/9`), the tool call in flight, and the last thing said on each side
+of the conversation:
+
+```
+  agent main: idle · worked 37m57s · idle 1m27s · claude-sonnet-5 (high) · 1 session(s) +4 subagent(s)
+    task: Add a smoke test
+    now:  bash: bin/rails test
+    you:  cancel workflow shouldn't be here
+    said: Confirmed fixed. Here's a fresh link with the corrected data: http://localhost:…
+```
+
+The `task:` line is the task — the only real progress signal opencode and Claude Code
 expose.
 
 `IDLE` is time since the last turn finished (blank while busy). `WORKED` is

@@ -270,3 +270,30 @@ func TestAgentSummaryLineShowsBothTaskAndActivity(t *testing.T) {
 		t.Fatalf("got %d lines, want 3 (summary, task, activity):\n%s", n, got)
 	}
 }
+
+func TestAgentSummaryLineShowsBothSidesOfTheConversation(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateIdle),
+		LastUser:   "cancel workflow shouldn't be here",
+		LastAgent:  "Removed the cancel button from the onboarding nav.",
+	})
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[1], "you:") || !strings.Contains(lines[1], "cancel workflow") {
+		t.Errorf("user line = %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "said:") || !strings.Contains(lines[2], "Removed the cancel button") {
+		t.Errorf("assistant line = %q", lines[2])
+	}
+}
+
+func TestAgentSummaryLineOmitsMessagesWhenAbsent(t *testing.T) {
+	got := agentSummaryLine(row{Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateIdle)})
+	if strings.Contains(got, "you:") || strings.Contains(got, "said:") {
+		t.Errorf("got %q, want no message lines", got)
+	}
+}

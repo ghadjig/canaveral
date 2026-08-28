@@ -96,6 +96,11 @@ type Agent struct {
 	// Activity is the tool call in flight right now — the most literal
 	// answer to "what is it doing" — absent when nothing is running.
 	Activity *agent.Activity `json:"activity,omitempty"`
+	// LastUser and LastAssistant are the most recent thing said on each
+	// side, collapsed to one line — enough to see what an agent was asked
+	// for and what it last concluded without attaching to it.
+	LastUser      string `json:"last_user,omitempty"`
+	LastAssistant string `json:"last_assistant,omitempty"`
 	// Todos is the agent's self-reported task list for the current session,
 	// omitted when it is not using one. This is the only genuine progress
 	// signal available — neither opencode nor Claude Code exposes a
@@ -233,11 +238,14 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			Provider:  h.Provider,
 			SubAgents: h.SubSessions,
 			Activity:  h.Activity,
-			Tokens:    h.Tokens.Total(),
-			Cost:      h.Cost,
-			Pending:   h.Pending,
-			Error:     h.LastError,
-			Worked:    h.Worked.Seconds(),
+
+			LastUser:      h.LastUser,
+			LastAssistant: h.LastAssistant,
+			Tokens:        h.Tokens.Total(),
+			Cost:          h.Cost,
+			Pending:       h.Pending,
+			Error:         h.LastError,
+			Worked:        h.Worked.Seconds(),
 		}
 		if h.Todos.Total > 0 {
 			ag.Todos = &Todos{

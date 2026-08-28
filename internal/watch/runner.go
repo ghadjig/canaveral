@@ -323,7 +323,8 @@ func sameFeature(a, b Feature) bool {
 		x, y := a.Agents[i], b.Agents[i]
 		if x.Name != y.Name || x.Status != y.Status || x.Error != y.Error ||
 			x.Tokens != y.Tokens || x.Cost != y.Cost || x.Model != y.Model ||
-			x.Variant != y.Variant || x.SubAgents != y.SubAgents {
+			x.Variant != y.Variant || x.SubAgents != y.SubAgents ||
+			x.LastUser != y.LastUser || x.LastAssistant != y.LastAssistant {
 			return false
 		}
 		if !sameTodos(x.Todos, y.Todos) {
