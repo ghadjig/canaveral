@@ -279,7 +279,8 @@ func TestForkArgsForUsesRecordedSession(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
-		Feature: "onboarding/step1", SessionID: "ses_recorded", UpdatedAt: time.Now(),
+		Feature: "onboarding/step1", SessionID: "ses_recorded",
+		Worktree: t.TempDir(), UpdatedAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -296,17 +297,19 @@ func TestForkArgsForPrefersMoreRecentLiveSibling(t *testing.T) {
 
 	old := time.Now().Add(-time.Hour)
 	if err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
-		Feature: "onboarding/step1", SessionID: "ses_stale", UpdatedAt: old,
+		Feature: "onboarding/step1", SessionID: "ses_stale",
+		Worktree: t.TempDir(), UpdatedAt: old,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	sessions := `{"data":[{"id":"ses_live","location":{"directory":"/wt/step1"},"time":{"updated":` +
+	sibWorktree := t.TempDir()
+	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + sibWorktree + `"},"time":{"updated":` +
 		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
-	srv := agentFakeServer(t, sessions, `{"data":[]}`)
+	srv := agentFakeServer(t, sessions, `[]`)
 
 	sib := &state.Feature{
-		Project: "norules", Name: "onboarding/step1", Worktree: "/wt/step1",
+		Project: "norules", Name: "onboarding/step1", Worktree: sibWorktree,
 		Agents: []state.Agent{{Name: "main", Tool: "opencode", URL: srv.URL}},
 	}
 	if err := state.Save(sib); err != nil {
@@ -351,4 +354,59 @@ func agentFakeServer(t *testing.T, sessions, messages string) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestForkArgsForSkipsASessionWhoseWorktreeIsGone(t *testing.T) {
+	// Regression test for a real hang: a namespace sibling's session was
+	// recorded on rm, its worktree deleted, and the next feature forked it.
+	// opencode fixes a session's directory at creation and --dir does not
+	// override it, so the agent sat trying to work in a path that no longer
+	// existed and never responded.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/gone", SessionID: "ses_dead",
+		Worktree:  filepath.Join(t.TempDir(), "deleted-worktree"), // never created
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main"); got != "" {
+		t.Errorf("forkArgsFor = %q, want empty when the source worktree is gone", got)
+	}
+}
+
+func TestForkArgsForUsesASessionWhoseWorktreeStillExists(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	live := t.TempDir() // exists
+
+	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/live", SessionID: "ses_live",
+		Worktree: live, UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main")
+	if want := "--session ses_live --fork"; got != want {
+		t.Errorf("forkArgsFor = %q, want %q", got, want)
+	}
+}
+
+func TestForkArgsForSkipsRecordsWithNoWorktreeTracked(t *testing.T) {
+	// Records written before the worktree was tracked cannot be validated,
+	// so they are not resumed rather than risking the same hang.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/old", SessionID: "ses_old", UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main"); got != "" {
+		t.Errorf("forkArgsFor = %q, want empty for an untracked-worktree record", got)
+	}
 }

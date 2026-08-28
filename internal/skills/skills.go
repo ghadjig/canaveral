@@ -123,8 +123,14 @@ func Link(worktree, project, namespace string) (rel string, created bool, err er
 // namespace, recorded so a later sibling feature can fork it — even after
 // the feature that had it is long gone.
 type SessionRecord struct {
-	Feature   string    `json:"feature"`
-	SessionID string    `json:"session_id"`
+	Feature   string `json:"feature"`
+	SessionID string `json:"session_id"`
+	// Worktree is where the session was created. opencode fixes a
+	// session's directory at creation — a fork inherits it, and --dir does
+	// not override it — so a session is only safe to resume while this
+	// path still exists. Empty on records written before this was tracked,
+	// which are therefore treated as unusable.
+	Worktree  string    `json:"worktree,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

@@ -275,7 +275,17 @@ func forkArgsFor(ctx context.Context, project, name, agentName string) string {
 	var best skills.SessionRecord
 	have := false
 	if rec, ok, err := skills.LatestSession(project, ns, agentName); err == nil && ok {
-		best, have = rec, true
+		// A recorded session is only usable while the worktree it was
+		// created in still exists. opencode keeps a session's directory
+		// from where it was first created — a fork inherits it and --dir
+		// does not override it — so forking one whose worktree has been
+		// removed leaves the agent trying to work in a deleted path, where
+		// it simply hangs.
+		if rec.Worktree != "" {
+			if _, statErr := os.Stat(rec.Worktree); statErr == nil {
+				best, have = rec, true
+			}
+		}
 	}
 
 	siblings, err := state.List(project)
@@ -296,8 +306,14 @@ func forkArgsFor(ctx context.Context, project, name, agentName string) string {
 			if !h.Reachable || h.SessionID == "" {
 				continue
 			}
+			if _, statErr := os.Stat(sf.Worktree); statErr != nil {
+				continue
+			}
 			if !have || h.Updated.After(best.UpdatedAt) {
-				best = skills.SessionRecord{Feature: sib, SessionID: h.SessionID, UpdatedAt: h.Updated}
+				best = skills.SessionRecord{
+					Feature: sib, SessionID: h.SessionID,
+					Worktree: sf.Worktree, UpdatedAt: h.Updated,
+				}
 				have = true
 			}
 		}
@@ -971,7 +987,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force bool, r R
 			h := agent.Probe(ctx, a.URL, f.Worktree)
 			if h.Reachable && h.SessionID != "" {
 				_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
-					Feature: f.Name, SessionID: h.SessionID, UpdatedAt: h.Updated,
+					Feature: f.Name, SessionID: h.SessionID,
+					Worktree: f.Worktree, UpdatedAt: h.Updated,
 				})
 			}
 		}
