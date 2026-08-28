@@ -439,6 +439,12 @@ permanently wrong.
   worktrees/<project>/<feature>/      the feature checkout
 ```
 
+Removing a feature closes only the windows canaveral opened — anything you
+opened on that workspace yourself is moved to an ordinary workspace on the
+same monitor rather than closed, since it may hold real work. That also lets
+the feature's workspace be released instead of lingering with your window
+stranded on it.
+
 Services and agents run as transient systemd user units named
 `canaveral-<project>-<feature>-<svc|agent>-<name>.service`, so they survive the
 terminal that started them and `systemctl --user list-units 'canaveral-*'` always

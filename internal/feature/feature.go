@@ -1018,6 +1018,13 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force bool, r R
 				r.OK("closed %d window(s)", closed)
 			}
 		}
+		// Windows the user opened here themselves are not canaveral's to
+		// close — they may hold real work — but leaving them behind
+		// strands them on a workspace named for a feature that no longer
+		// exists, and keeps that workspace alive. Move them somewhere
+		// ordinary on the same monitor instead.
+		rehomeStrays(ctx, f, r)
+
 		// Hyprland won't destroy a workspace while it's a monitor's active
 		// one, even with zero windows left (confirmed empirically) — so
 		// closing the last window above can leave the feature's workspace
@@ -1052,4 +1059,59 @@ func EnvFor(ctx context.Context, m *manifest.Manifest, f *state.Feature) (map[st
 		return nil, err
 	}
 	return manifest.MergeEnv(baseEnvFor(m, f, tc), m.Env), nil
+}
+
+// rehomeStrays moves any window still on a removed feature's workspace to an
+// ordinary workspace on the same monitor.
+//
+// Only windows canaveral did not spawn can be left here, since its own were
+// closed just before; those belong to the user and are never closed on their
+// behalf.
+func rehomeStrays(ctx context.Context, f *state.Feature, r Reporter) {
+	name := f.HyprWorkspace()
+
+	clients, err := hypr.Clients(ctx)
+	if err != nil {
+		return
+	}
+	var strays []hypr.Client
+	for _, c := range clients {
+		if c.Workspace.Name == name {
+			strays = append(strays, c)
+		}
+	}
+	if len(strays) == 0 {
+		return
+	}
+
+	all, err := hypr.Workspaces(ctx)
+	if err != nil {
+		return
+	}
+	monitor := ""
+	for _, w := range all {
+		if w.Name == name {
+			monitor = w.Monitor
+			break
+		}
+	}
+
+	target := hypr.RehomeTarget(all, monitor, name)
+	if target == 0 {
+		// Nothing ordinary on that monitor; a fresh workspace still beats
+		// leaving them on one named after a feature that is gone.
+		if target, err = hypr.NextFreeWorkspaceID(ctx); err != nil {
+			return
+		}
+	}
+
+	moved := 0
+	for _, c := range strays {
+		if err := hypr.MoveWindowToWorkspace(ctx, c.Address, target); err == nil {
+			moved++
+		}
+	}
+	if moved > 0 {
+		r.OK("moved %d window(s) you added to workspace %d", moved, target)
+	}
 }

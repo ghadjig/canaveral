@@ -501,3 +501,66 @@ func clean(s string) string {
 func Class(project, feature, window string) string {
 	return ClassPrefix(project, feature) + clean(window)
 }
+
+// Workspace is one entry of `hyprctl workspaces`.
+type Workspace struct {
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Monitor string `json:"monitor"`
+	Windows int    `json:"windows"`
+}
+
+// Workspaces lists every workspace the compositor currently knows about.
+func Workspaces(ctx context.Context) ([]Workspace, error) {
+	out, err := exec.CommandContext(ctx, "hyprctl", "workspaces", "-j").Output()
+	if err != nil {
+		return nil, fmt.Errorf("hyprctl workspaces: %w", err)
+	}
+	var ws []Workspace
+	if err := json.Unmarshal(out, &ws); err != nil {
+		return nil, fmt.Errorf("parse hyprctl workspaces: %w", err)
+	}
+	return ws, nil
+}
+
+// RehomeTarget picks where windows stranded on a dying workspace should go:
+// the lowest-numbered ordinary workspace already on the same monitor, so they
+// stay on the screen the user had them on. Named workspaces are skipped —
+// they belong to other features — as is the workspace being torn down.
+//
+// Returns 0 when the monitor has no ordinary workspace to fall back to, and
+// the caller should pick a fresh one instead.
+func RehomeTarget(ws []Workspace, monitor, leaving string) int {
+	best := 0
+	for _, w := range ws {
+		if w.Monitor != monitor || w.Name == leaving || w.ID <= 0 {
+			continue
+		}
+		// Ordinary workspaces are the numeric ones; a named workspace is
+		// some other feature's.
+		if strconv.Itoa(w.ID) != w.Name {
+			continue
+		}
+		if best == 0 || w.ID < best {
+			best = w.ID
+		}
+	}
+	return best
+}
+
+// MoveWindowToWorkspace moves one window without following it, so tearing a
+// feature down does not drag the user's view along with it.
+func MoveWindowToWorkspace(ctx context.Context, address string, workspace int) error {
+	cmd := exec.CommandContext(ctx, "hyprctl", "dispatch", "movetoworkspacesilent",
+		fmt.Sprintf("%d,address:%s", workspace, address))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("move window %s to workspace %d: %w: %s", address, workspace, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// NextFreeWorkspaceID is the exported form of nextFreeWorkspaceID, for
+// callers that need somewhere guaranteed empty to put windows.
+func NextFreeWorkspaceID(ctx context.Context) (int, error) { return nextFreeWorkspaceID(ctx) }

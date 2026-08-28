@@ -198,3 +198,35 @@ func TestUsableAreaSubtractsReserved(t *testing.T) {
 		t.Errorf("UsableArea() = (%d,%d,%d,%d), want (8480,38,5120,1402)", x, y, w, h)
 	}
 }
+
+func TestRehomeTargetPrefersLowestOrdinaryOnSameMonitor(t *testing.T) {
+	ws := []Workspace{
+		{ID: 5, Name: "5", Monitor: "eDP-1"},
+		{ID: 2, Name: "2", Monitor: "eDP-1"},
+		{ID: 1, Name: "1", Monitor: "DP-3"},              // other monitor
+		{ID: -1337, Name: "norules:x", Monitor: "eDP-1"}, // another feature
+		{ID: 9, Name: "norules:dying", Monitor: "eDP-1"}, // the one being torn down
+	}
+	if got := RehomeTarget(ws, "eDP-1", "norules:dying"); got != 2 {
+		t.Errorf("RehomeTarget = %d, want 2 (lowest ordinary on that monitor)", got)
+	}
+}
+
+func TestRehomeTargetSkipsNamedWorkspaces(t *testing.T) {
+	// A named workspace belongs to another feature; dumping stray windows
+	// into it would just move the mess somewhere it does not belong.
+	ws := []Workspace{
+		{ID: -100, Name: "norules:other", Monitor: "eDP-1"},
+		{ID: 7, Name: "7", Monitor: "eDP-1"},
+	}
+	if got := RehomeTarget(ws, "eDP-1", "norules:dying"); got != 7 {
+		t.Errorf("RehomeTarget = %d, want 7", got)
+	}
+}
+
+func TestRehomeTargetNoneAvailable(t *testing.T) {
+	ws := []Workspace{{ID: 3, Name: "3", Monitor: "DP-3"}}
+	if got := RehomeTarget(ws, "eDP-1", "norules:dying"); got != 0 {
+		t.Errorf("RehomeTarget = %d, want 0 so the caller picks a fresh one", got)
+	}
+}
