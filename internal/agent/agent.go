@@ -225,10 +225,13 @@ type Health struct {
 	// Activity is the tool call in flight, nil when none is running.
 	Activity *Activity
 	// LastUser is the most recent thing you said to this agent, and
-	// LastAssistant the most recent thing it said back — each collapsed to
-	// a single line for display. Together they are usually enough to see
-	// what an agent is meant to be doing and what it last concluded,
-	// without attaching to it.
+	// LastAssistant the most recent thing it has said in reply to that
+	// prompt — each collapsed to a single line for display.
+	//
+	// LastAssistant is deliberately empty while an agent is working on a
+	// prompt it has not answered yet: the previous turn's closing remarks
+	// describe finished work, and showing them beside a new task reads as
+	// if they were the current state.
 	LastUser      string
 	LastAssistant string
 	Err           error
@@ -456,6 +459,8 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// The newest text on each side of the conversation. Messages arrive
 	// oldest-first and a message can hold several text parts, so simply
 	// keeping the last non-empty one seen lands on the most recent.
+	lastUserIdx, lastAssistantIdx := -1, -1
+	assistantText := ""
 	for i := range msgs {
 		role := msgs[i].Info.Role
 		if role != "user" && role != "assistant" {
@@ -467,10 +472,19 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 			}
 			if role == "user" {
 				h.LastUser = previewText(part.Text)
+				lastUserIdx = i
 			} else {
-				h.LastAssistant = previewText(part.Text)
+				assistantText = previewText(part.Text)
+				lastAssistantIdx = i
 			}
 		}
+	}
+	// Only report what the agent said if it said it *after* the latest
+	// prompt. Once a new prompt arrives, the previous turn's closing
+	// remarks describe finished work, and showing them next to a
+	// now-unrelated task reads as if they were the current state.
+	if lastAssistantIdx > lastUserIdx {
+		h.LastAssistant = assistantText
 	}
 
 	// A tool that is pending or running is the agent's current activity.

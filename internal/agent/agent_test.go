@@ -690,3 +690,60 @@ func TestProbeIgnoresPendingFromAnUnrelatedConversation(t *testing.T) {
 		t.Errorf("State = %q, want idle; another conversation's prompt leaked in", h.State)
 	}
 }
+
+func TestProbeHidesTheAssistantReplyToAnEarlierPrompt(t *testing.T) {
+	// While an agent works on a new prompt, the previous turn's sign-off
+	// describes finished work; showing it alongside the new task reads as
+	// though it were the current state.
+	msgs := msgList(
+		textMsg("user", "first thing"),
+		textMsg("assistant", "Confirmed fixed. Here's a fresh link."),
+		textMsg("user", "if one file is not supported, skip it"),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.LastUser != "if one file is not supported, skip it" {
+		t.Errorf("LastUser = %q", h.LastUser)
+	}
+	if h.LastAssistant != "" {
+		t.Errorf("LastAssistant = %q, want empty until it replies to the new prompt", h.LastAssistant)
+	}
+}
+
+func TestProbeShowsTheAssistantReplyOnceItAnswers(t *testing.T) {
+	msgs := msgList(
+		textMsg("user", "if one file is not supported, skip it"),
+		textMsg("assistant", "Wrapped the parser so unsupported files are skipped."),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.LastAssistant != "Wrapped the parser so unsupported files are skipped." {
+		t.Errorf("LastAssistant = %q, want the reply to the current prompt", h.LastAssistant)
+	}
+}
+
+func TestProbeShowsPartialReplyDuringTheSameTurn(t *testing.T) {
+	// An agent often narrates before calling tools. That text belongs to
+	// the current prompt, so it should show even while it is still working.
+	msgs := msgList(
+		textMsg("user", "do the thing"),
+		`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},`+
+			`"parts":[{"type":"text","text":"Looking into it now."},`+
+			`{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls"},"time":{"start":1}}}]}`,
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.LastAssistant != "Looking into it now." {
+		t.Errorf("LastAssistant = %q, want the in-turn narration", h.LastAssistant)
+	}
+}
+
+func TestProbeShowsAssistantTextWithNoUserMessageAtAll(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions, msgList(textMsg("assistant", "standalone")))
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.LastAssistant != "standalone" {
+		t.Errorf("LastAssistant = %q", h.LastAssistant)
+	}
+}
