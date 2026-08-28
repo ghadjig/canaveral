@@ -75,11 +75,25 @@ func fakeServerT(t *testing.T, sessions, messages, status, permissions, question
 	return srv
 }
 
-const twoDirSessions = `{"data":[
-  {"id":"ses_mine","location":{"directory":"/w/mine"},"time":{"updated":200}},
-  {"id":"ses_old","location":{"directory":"/w/mine"},"time":{"updated":100}},
-  {"id":"ses_other","location":{"directory":"/w/other"},"time":{"updated":300}}
-]}`
+// Sessions carry their own token and cost totals, exactly as the real
+// /api/session list does.
+func sess(id, dir string, updated int64, parent string, in, out int, cost float64) string {
+	pid := ""
+	if parent != "" {
+		pid = fmt.Sprintf(`,"parentID":%q`, parent)
+	}
+	return fmt.Sprintf(`{"id":%q,"location":{"directory":%q},"time":{"updated":%d}%s,`+
+		`"tokens":{"input":%d,"output":%d,"reasoning":0,"cache":{"read":0,"write":0}},"cost":%v}`,
+		id, dir, updated, pid, in, out, cost)
+}
+
+func sessList(ss ...string) string { return `{"data":[` + strings.Join(ss, ",") + `]}` }
+
+var twoDirSessions = sessList(
+	sess("ses_mine", "/w/mine", 200, "", 11, 5, 0.25),
+	sess("ses_old", "/w/mine", 100, "", 0, 0, 0),
+	sess("ses_other", "/w/other", 300, "", 0, 0, 0),
+)
 
 func TestProbeStateWaitingOnQuestion(t *testing.T) {
 	// The assistant asked something via the question tool. opencode keeps
@@ -257,6 +271,98 @@ func TestProbeFiltersByDirectory(t *testing.T) {
 	}
 }
 
+func TestProbeExposesModelVariantAndProvider(t *testing.T) {
+	msgs := msgList(`{"info":{"role":"assistant","modelID":"claude-sonnet-5","variant":"high",` +
+		`"providerID":"github-copilot","time":{"created":1,"completed":2},"finish":"stop"}}`)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Model != "claude-sonnet-5" {
+		t.Errorf("Model = %q", h.Model)
+	}
+	if h.Variant != "high" {
+		t.Errorf("Variant = %q, want the reasoning effort", h.Variant)
+	}
+	if h.Provider != "github-copilot" {
+		t.Errorf("Provider = %q", h.Provider)
+	}
+}
+
+func TestProbeExcludesSubagentSessionsFromTheCount(t *testing.T) {
+	// The Task tool gives every subagent its own session in the same
+	// directory, so one conversation with three helpers must not read as
+	// four separate things you started.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 100, "", 10, 10, 1.0),
+		sess("ses_sub1", "/w/mine", 101, "ses_root", 20, 20, 2.0),
+		sess("ses_sub2", "/w/mine", 102, "ses_root", 30, 30, 3.0),
+	)
+	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Sessions != 1 {
+		t.Errorf("Sessions = %d, want 1 top-level conversation", h.Sessions)
+	}
+	if h.SubSessions != 2 {
+		t.Errorf("SubSessions = %d, want 2", h.SubSessions)
+	}
+}
+
+func TestProbePicksTheNewestRootNotANewerSubagent(t *testing.T) {
+	// A subagent updates a beat after its parent, so selecting the newest
+	// session overall would flip to the subagent and report its model and
+	// state instead of the conversation's.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 100, "", 0, 0, 0),
+		sess("ses_sub", "/w/mine", 999, "ses_root", 0, 0, 0),
+	)
+	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.SessionID != "ses_root" {
+		t.Errorf("SessionID = %q, want the root conversation even though a subagent is newer", h.SessionID)
+	}
+}
+
+func TestProbeAggregatesCostAcrossTheSubagentFamily(t *testing.T) {
+	// Subagent spend is real spend on this feature; counting only the
+	// parent understated a live feature by roughly three times.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 100, "", 1, 1, 1.0),
+		sess("ses_sub1", "/w/mine", 101, "ses_root", 2, 2, 2.0),
+		sess("ses_deep", "/w/mine", 102, "ses_sub1", 4, 4, 4.0), // nested subagent
+		sess("ses_other_root", "/w/mine", 50, "", 100, 100, 99.0),
+	)
+	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Cost != 7.0 {
+		t.Errorf("Cost = %v, want 7.0 (root + both descendants, not the unrelated root)", h.Cost)
+	}
+	if got := h.Tokens.Total(); got != 14 {
+		t.Errorf("Tokens.Total = %d, want 14", got)
+	}
+	if h.SubSessions != 2 {
+		t.Errorf("SubSessions = %d, want 2 (transitive)", h.SubSessions)
+	}
+}
+
+func TestProbeWorkedExcludesSubagentTurns(t *testing.T) {
+	// A parent's turn stays open while its subagent runs, so the parent's
+	// duration already covers that work; adding the subagent's own turns
+	// would double-count wall-clock time.
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 100, "", 0, 0, 0),
+		sess("ses_sub", "/w/mine", 101, "ses_root", 0, 0, 0),
+	)
+	srv := fakeServer(t, sessions, msgList(asst(0, "5000", 0, 0, 0, `,"finish":"stop"`)))
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Worked != 5*time.Second {
+		t.Errorf("Worked = %v, want 5s from the conversation's own turns only", h.Worked)
+	}
+}
+
 func TestProbeBusyWhenNotCompleted(t *testing.T) {
 	// A missing time.completed is the signal that generation is in flight.
 	msgs := msgList(asst(1, "", 0, 0, 0, ""))
@@ -280,8 +386,9 @@ func TestProbeSurfacesError(t *testing.T) {
 }
 
 func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
-	// Token totals live on assistant messages; user messages carry none and the
-	// session list reports zero.
+	// User messages must not be mistaken for turns when finding the current
+	// one, and a non-error finish on an older message must not be reported
+	// as an error.
 	msgs := msgList(
 		asst(1, "2", 5, 5, 0.05, `,"finish":"tool-calls"`),
 		`{"info":{"role":"user","time":{"created":2}}}`,
@@ -290,11 +397,8 @@ func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), srv.URL, "/w/mine")
-	if got := h.Tokens.Total(); got != 30 {
-		t.Errorf("Tokens.Total = %d, want 30", got)
-	}
-	if h.Cost < 0.149 || h.Cost > 0.151 {
-		t.Errorf("Cost = %v, want ~0.15", h.Cost)
+	if h.Worked != 2*time.Millisecond {
+		t.Errorf("Worked = %v, want 2ms across the two completed turns", h.Worked)
 	}
 	// finish=="tool-calls" on an older message must not be reported as an error.
 	if h.LastError != "" {

@@ -311,7 +311,11 @@ canaveral watch --all    # every project
     "created_at": "2026-08-28T11:02:11+03:00",
     "agents": [{
       "name": "main", "status": "waiting", "url": "http://127.0.0.1:4096",
-      "model": "claude-opus-5", "tokens": 13574, "cost": 0.0069,
+      "model": "claude-sonnet-5",
+      "variant": "high",            // provider-specific reasoning effort
+      "provider": "github-copilot",
+      "subagents": 3,               // spawned sessions, already folded into the totals
+      "tokens": 8068183, "cost": 3.56,
       "worked_seconds": 92.4,
       "pending": {                    // present only while status is "waiting"
         "kind": "question",           // question | permission
@@ -334,6 +338,14 @@ Features are ordered most-urgent first, and ties are broken by whichever has
 been in that state longest — so the thing you have ignored longest is always
 at the top. `summary.status` is the single most urgent status across
 everything, which is what a one-colour indicator should follow.
+
+`tokens` and `cost` cover the whole conversation **including its subagents**.
+The Task tool gives every subagent its own session in the same directory, so
+one conversation routinely looks like four; those sessions are folded into
+the parent's totals rather than counted separately, because their spend is
+real spend on this feature. `worked_seconds` deliberately does not include
+them: a parent's turn stays open while a subagent runs, so its duration
+already covers that work.
 
 `todos` is the agent's own task list — the one opencode and Claude Code
 maintain while working through a multi-step job. It is the only genuine

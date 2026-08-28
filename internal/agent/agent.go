@@ -172,12 +172,24 @@ type Health struct {
 	// Pending is what the agent is blocked on, set only when State is
 	// StateWaiting.
 	Pending *Pending
-	// Sessions is the number of sessions rooted in the agent's directory.
+	// Sessions is the number of top-level conversations in the agent's
+	// directory. Subagent sessions are excluded and counted separately, so
+	// this stays the number of things you actually started.
 	Sessions int
-	Tokens   Tokens
-	Cost     float64
+	// SubSessions is how many subagent sessions the current conversation
+	// has spawned. They are separate sessions sharing the directory, which
+	// is why a single conversation can look like four.
+	SubSessions int
+	Tokens      Tokens
+	Cost        float64
 	// Model is the model used by the most recent assistant message.
 	Model string
+	// Variant is the provider-specific reasoning effort ("high", "low", ...)
+	// of the most recent assistant message, empty when the provider has no
+	// such notion.
+	Variant string
+	// Provider is the provider serving the model, e.g. "github-copilot".
+	Provider string
 	// LastError is the error from the most recent assistant turn, if it failed.
 	LastError string
 	// Updated is when the newest session last changed.
@@ -200,7 +212,10 @@ type Health struct {
 }
 
 type sessionInfo struct {
-	ID       string `json:"id"`
+	ID string `json:"id"`
+	// ParentID is set on subagent sessions, which the Task tool creates in
+	// the same directory as the conversation that spawned them.
+	ParentID string `json:"parentID"`
 	Location struct {
 		Directory string `json:"directory"`
 	} `json:"location"`
@@ -232,11 +247,13 @@ type messageInfo struct {
 		Created   int64  `json:"created"`
 		Completed *int64 `json:"completed"`
 	} `json:"time"`
-	Finish  string  `json:"finish"`
-	Tokens  Tokens  `json:"tokens"`
-	Cost    float64 `json:"cost"`
-	ModelID string  `json:"modelID"`
-	Error   *struct {
+	Finish     string  `json:"finish"`
+	Tokens     Tokens  `json:"tokens"`
+	Cost       float64 `json:"cost"`
+	ModelID    string  `json:"modelID"`
+	Variant    string  `json:"variant"`
+	ProviderID string  `json:"providerID"`
+	Error      *struct {
 		Name string `json:"name"`
 		Data struct {
 			Message string `json:"message"`
@@ -305,15 +322,60 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 	sort.Slice(mine, func(i, j int) bool { return mine[i].Time.Updated > mine[j].Time.Updated })
 
-	h.Sessions = len(mine)
-	if len(mine) == 0 {
+	// Subagent sessions (the Task tool spawns one per subagent) live in the
+	// same directory as the conversation that created them, so a single
+	// conversation can look like several sessions. Only top-level ones are
+	// candidates for "the" current session: a subagent updates at almost
+	// the same instant as its parent, so picking the newest of everything
+	// would flip between them and make the reported model, state and
+	// numbers jump around at random.
+	roots := make([]sessionInfo, 0, len(mine))
+	for _, x := range mine {
+		if x.ParentID == "" {
+			roots = append(roots, x)
+		}
+	}
+	h.Sessions = len(roots)
+	if len(roots) == 0 {
 		h.State = StateIdle
 		return h
 	}
 
-	newest := mine[0]
+	newest := roots[0]
 	h.Updated = time.UnixMilli(newest.Time.Updated)
 	h.SessionID = newest.ID
+
+	// Cost and tokens are summed over the whole family — the conversation
+	// plus every subagent beneath it. Subagent work is real spend on this
+	// feature's behalf, and it is easily the larger share; reporting only
+	// the parent understated one live feature by roughly three times.
+	//
+	// The session list already carries per-session totals, so this needs no
+	// extra requests.
+	byParent := map[string][]sessionInfo{}
+	for _, x := range mine {
+		if x.ParentID != "" {
+			byParent[x.ParentID] = append(byParent[x.ParentID], x)
+		}
+	}
+	family := []sessionInfo{newest}
+	for queue := []string{newest.ID}; len(queue) > 0; {
+		id := queue[0]
+		queue = queue[1:]
+		for _, child := range byParent[id] {
+			family = append(family, child)
+			queue = append(queue, child.ID)
+		}
+	}
+	h.SubSessions = len(family) - 1
+	for _, x := range family {
+		h.Tokens.Input += x.Tokens.Input
+		h.Tokens.Output += x.Tokens.Output
+		h.Tokens.Reasoning += x.Tokens.Reasoning
+		h.Tokens.Cache.Read += x.Tokens.Cache.Read
+		h.Tokens.Cache.Write += x.Tokens.Cache.Write
+		h.Cost += x.Cost
+	}
 
 	var msgs []sessionMessage
 	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(newest.ID)+"/message", &msgs); err != nil {
@@ -321,13 +383,16 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		return h
 	}
 
-	// Token and cost totals live on assistant messages; the session list
-	// reports them as zero. Only the newest session is summed, since fetching
-	// messages for every session would be an N+1 on every status refresh.
+	// Messages drive only the current turn and elapsed work; totals come
+	// from the session list above.
 	//
 	// Messages arrive oldest-first, so the *last* assistant message is the
 	// current turn — taking the first would report the state of whatever
 	// happened at the very start of the session forever.
+	//
+	// Worked counts this conversation's turns only. A parent's turn stays
+	// open while a subagent runs, so its duration already covers that work;
+	// adding the subagents' own turns would double-count it.
 	now := time.Now()
 	var cur *messageInfo
 	for i := range msgs {
@@ -335,13 +400,6 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		if m.Role != "assistant" {
 			continue
 		}
-		h.Tokens.Input += m.Tokens.Input
-		h.Tokens.Output += m.Tokens.Output
-		h.Tokens.Reasoning += m.Tokens.Reasoning
-		h.Tokens.Cache.Read += m.Tokens.Cache.Read
-		h.Tokens.Cache.Write += m.Tokens.Cache.Write
-		h.Cost += m.Cost
-
 		if m.Time.Completed != nil {
 			h.Worked += time.UnixMilli(*m.Time.Completed).Sub(time.UnixMilli(m.Time.Created))
 		}
@@ -349,6 +407,8 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 	if cur != nil {
 		h.Model = cur.ModelID
+		h.Variant = cur.Variant
+		h.Provider = cur.ProviderID
 		h.Busy = cur.Time.Completed == nil
 		if h.Busy {
 			// Still generating; this turn has not contributed to Worked.

@@ -73,12 +73,20 @@ func (s Status) NeedsAttention() bool {
 
 // Agent is one agent's live state within a feature.
 type Agent struct {
-	Name   string  `json:"name"`
-	Status Status  `json:"status"`
-	URL    string  `json:"url,omitempty"`
-	Model  string  `json:"model,omitempty"`
-	Tokens int64   `json:"tokens,omitempty"`
-	Cost   float64 `json:"cost,omitempty"`
+	Name   string `json:"name"`
+	Status Status `json:"status"`
+	URL    string `json:"url,omitempty"`
+	Model  string `json:"model,omitempty"`
+	// Variant is the provider-specific reasoning effort ("high", "low"),
+	// empty when the provider has no such notion.
+	Variant  string `json:"variant,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// SubAgents is how many subagent sessions the current conversation has
+	// spawned. Their tokens and cost are already folded into the totals
+	// below.
+	SubAgents int     `json:"subagents,omitempty"`
+	Tokens    int64   `json:"tokens,omitempty"`
+	Cost      float64 `json:"cost,omitempty"`
 	// Pending is what this agent is blocked on, when Status is waiting.
 	Pending *agent.Pending `json:"pending,omitempty"`
 	// Error is the last turn's failure message, when Status is error.
@@ -214,15 +222,18 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		st := statusFor(h)
 		statuses = append(statuses, st)
 		ag := Agent{
-			Name:    a.Name,
-			Status:  st,
-			URL:     a.URL,
-			Model:   h.Model,
-			Tokens:  h.Tokens.Total(),
-			Cost:    h.Cost,
-			Pending: h.Pending,
-			Error:   h.LastError,
-			Worked:  h.Worked.Seconds(),
+			Name:      a.Name,
+			Status:    st,
+			URL:       a.URL,
+			Model:     h.Model,
+			Variant:   h.Variant,
+			Provider:  h.Provider,
+			SubAgents: h.SubSessions,
+			Tokens:    h.Tokens.Total(),
+			Cost:      h.Cost,
+			Pending:   h.Pending,
+			Error:     h.LastError,
+			Worked:    h.Worked.Seconds(),
 		}
 		if h.Todos.Total > 0 {
 			ag.Todos = &Todos{

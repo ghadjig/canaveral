@@ -309,7 +309,8 @@ func sameFeature(a, b Feature) bool {
 	for i := range a.Agents {
 		x, y := a.Agents[i], b.Agents[i]
 		if x.Name != y.Name || x.Status != y.Status || x.Error != y.Error ||
-			x.Tokens != y.Tokens || x.Cost != y.Cost || x.Model != y.Model {
+			x.Tokens != y.Tokens || x.Cost != y.Cost || x.Model != y.Model ||
+			x.Variant != y.Variant || x.SubAgents != y.SubAgents {
 			return false
 		}
 		if !sameTodos(x.Todos, y.Todos) {

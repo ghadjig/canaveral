@@ -145,6 +145,9 @@ type row struct {
 	Tokens     int64         `json:"tokens,omitempty"`
 	Cost       float64       `json:"cost,omitempty"`
 	Model      string        `json:"model,omitempty"`
+	Variant    string        `json:"variant,omitempty"`
+	Provider   string        `json:"provider,omitempty"`
+	SubAgents  int           `json:"subagents,omitempty"`
 	LastError  string        `json:"last_error,omitempty"`
 }
 
@@ -287,6 +290,8 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 					r.TodoNow = h.Todos.Current
 					r.Tokens, r.Cost = h.Tokens.Total(), h.Cost
 					r.Model, r.LastError = h.Model, h.LastError
+					r.Variant, r.Provider = h.Variant, h.Provider
+					r.SubAgents = h.SubSessions
 					if !h.Reachable {
 						r.Detail = "unreachable"
 					}
@@ -533,8 +538,19 @@ func agentSummaryLine(r row) string {
 	if r.TodoTotal > 0 {
 		parts = append(parts, fmt.Sprintf("todo %d/%d", r.TodoDone, r.TodoTotal))
 	}
+	if r.Model != "" {
+		m := r.Model
+		if r.Variant != "" {
+			m += " (" + r.Variant + ")"
+		}
+		parts = append(parts, m)
+	}
 	if r.Sessions > 0 {
-		parts = append(parts, fmt.Sprintf("%d session(s)", r.Sessions))
+		sess := fmt.Sprintf("%d session(s)", r.Sessions)
+		if r.SubAgents > 0 {
+			sess += fmt.Sprintf(" +%d subagent(s)", r.SubAgents)
+		}
+		parts = append(parts, sess)
 	}
 	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
 	if r.TodoNow != "" {
