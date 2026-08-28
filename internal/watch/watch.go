@@ -85,6 +85,25 @@ type Agent struct {
 	Error string `json:"error,omitempty"`
 	// Worked is total generation time in the current session, in seconds.
 	Worked float64 `json:"worked_seconds,omitempty"`
+	// Todos is the agent's self-reported task list for the current session,
+	// omitted when it is not using one. This is the only genuine progress
+	// signal available — neither opencode nor Claude Code exposes a
+	// percentage or an ETA.
+	Todos *Todos `json:"todos,omitempty"`
+}
+
+// Todos is a session's task list plus the derived completion fraction, so a
+// consumer does not have to recompute it.
+type Todos struct {
+	Total      int `json:"total"`
+	Completed  int `json:"completed"`
+	InProgress int `json:"in_progress"`
+	Pending    int `json:"pending"`
+	Cancelled  int `json:"cancelled"`
+	// Current is the task in progress right now, empty when none is.
+	Current string `json:"current,omitempty"`
+	// Done is Completed+Cancelled over Total, in [0,1].
+	Done float64 `json:"done"`
 }
 
 // Feature is one feature's live state.
@@ -194,7 +213,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		}
 		st := statusFor(h)
 		statuses = append(statuses, st)
-		out.Agents = append(out.Agents, Agent{
+		ag := Agent{
 			Name:    a.Name,
 			Status:  st,
 			URL:     a.URL,
@@ -204,7 +223,19 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			Pending: h.Pending,
 			Error:   h.LastError,
 			Worked:  h.Worked.Seconds(),
-		})
+		}
+		if h.Todos.Total > 0 {
+			ag.Todos = &Todos{
+				Total:      h.Todos.Total,
+				Completed:  h.Todos.Completed,
+				InProgress: h.Todos.InProgress,
+				Pending:    h.Todos.Pending,
+				Cancelled:  h.Todos.Cancelled,
+				Current:    h.Todos.Current,
+				Done:       h.Todos.Done(),
+			}
+		}
+		out.Agents = append(out.Agents, ag)
 	}
 	sort.Slice(out.Agents, func(i, j int) bool { return out.Agents[i].Name < out.Agents[j].Name })
 

@@ -132,6 +132,34 @@ type Pending struct {
 	Resources []string `json:"resources,omitempty"`
 }
 
+// Todos is the agent's task list for the current session, which both
+// opencode and Claude Code maintain as they work through a multi-step job.
+//
+// This is the only real progress signal either tool exposes: there is no
+// percentage or ETA anywhere in the API, but "6 of 9 done, currently on X"
+// is genuine, self-reported progress.
+type Todos struct {
+	Total      int `json:"total"`
+	Completed  int `json:"completed"`
+	InProgress int `json:"in_progress"`
+	Pending    int `json:"pending"`
+	Cancelled  int `json:"cancelled"`
+	// Current is the content of the task being worked on right now, empty
+	// when none is in progress. It is the single most useful line for a
+	// compact widget: what is it actually doing.
+	Current string `json:"current,omitempty"`
+}
+
+// Done reports the fraction of tasks completed, in [0,1]. Cancelled tasks
+// count as resolved rather than outstanding, so abandoning work does not
+// leave a bar permanently short of full.
+func (t Todos) Done() float64 {
+	if t.Total == 0 {
+		return 0
+	}
+	return float64(t.Completed+t.Cancelled) / float64(t.Total)
+}
+
 // Health summarises what an agent server is doing right now.
 type Health struct {
 	Reachable bool
@@ -165,7 +193,10 @@ type Health struct {
 	// Working is how long the current turn has been running, set only while
 	// State is StateBusy.
 	Working time.Duration
-	Err     error
+	// Todos is the current session's task list, zero when the agent has not
+	// used one.
+	Todos Todos
+	Err   error
 }
 
 type sessionInfo struct {
@@ -241,6 +272,13 @@ type questionRequest struct {
 			Label string `json:"label"`
 		} `json:"options"`
 	} `json:"questions"`
+}
+
+// todoItem is one entry of GET /session/{id}/todo.
+type todoItem struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
 }
 
 // Probe reports what the agent rooted at dir is currently doing.
@@ -321,6 +359,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		}
 	}
 
+	h.Todos = fetchTodos(ctx, baseURL, newest.ID)
 	h.State, h.Pending = classify(ctx, baseURL, newest.ID, h.Busy)
 	return h
 }
@@ -333,6 +372,33 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 // waiting for your answer, but an agent that cannot move without you is the
 // thing worth surfacing, not the fact that its turn is technically still
 // open.
+// fetchTodos reads the session's task list. A missing or empty list is not
+// an error: most sessions never use one.
+func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {
+	var items []todoItem
+	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(sessionID)+"/todo", &items); err != nil {
+		return Todos{}
+	}
+	var t Todos
+	for _, it := range items {
+		t.Total++
+		switch it.Status {
+		case "completed":
+			t.Completed++
+		case "in_progress":
+			t.InProgress++
+			if t.Current == "" {
+				t.Current = it.Content
+			}
+		case "cancelled":
+			t.Cancelled++
+		default:
+			t.Pending++
+		}
+	}
+	return t
+}
+
 func classify(ctx context.Context, baseURL, sessionID string, busy bool) (State, *Pending) {
 	// The server-wide lists are used rather than the per-session ones: they
 	// are a single request no matter how many sessions exist, and they live

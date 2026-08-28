@@ -231,3 +231,29 @@ func keys(fs []Feature) []string {
 	}
 	return out
 }
+
+func TestBuildSurfacesTodos(t *testing.T) {
+	h := map[string]agent.Health{"main": {
+		Reachable: true, State: agent.StateBusy,
+		Todos: agent.Todos{Total: 4, Completed: 2, InProgress: 1, Pending: 1, Current: "Wire the widget"},
+	}}
+	got := Build(feat("f", "main"), h, nil, time.Now())
+	td := got.Agents[0].Todos
+	if td == nil {
+		t.Fatal("Todos = nil, want them surfaced")
+	}
+	if td.Total != 4 || td.Completed != 2 || td.Current != "Wire the widget" {
+		t.Errorf("Todos = %+v", td)
+	}
+	if td.Done != 0.5 {
+		t.Errorf("Done = %v, want 0.5", td.Done)
+	}
+}
+
+func TestBuildOmitsTodosWhenUnused(t *testing.T) {
+	h := map[string]agent.Health{"main": {Reachable: true, State: agent.StateIdle}}
+	got := Build(feat("f", "main"), h, nil, time.Now())
+	if got.Agents[0].Todos != nil {
+		t.Errorf("Todos = %+v, want nil so the field is omitted entirely", got.Agents[0].Todos)
+	}
+}

@@ -279,6 +279,11 @@ sits unanswered — the turn hasn't ended, it's blocked inside a tool call —
 but an agent that cannot move without you is the more useful thing to
 report.
 
+The `agent` summary line above the table also shows the agent's own task
+list when it is using one (`todo 6/9`) and, on the following line, the task
+it is currently on — the only real progress signal opencode and Claude Code
+expose.
+
 `IDLE` is time since the last turn finished (blank while busy). `WORKED` is
 the sum of actual generation time across every finished turn in the current
 session — not wall-clock span, so time spent reading or away from the
@@ -329,6 +334,14 @@ Features are ordered most-urgent first, and ties are broken by whichever has
 been in that state longest — so the thing you have ignored longest is always
 at the top. `summary.status` is the single most urgent status across
 everything, which is what a one-colour indicator should follow.
+
+`todos` is the agent's own task list — the one opencode and Claude Code
+maintain while working through a multi-step job. It is the only genuine
+progress signal either tool exposes (there is no percentage or ETA anywhere
+in their APIs), and `current` is usually the most informative single line you
+can show: what the agent is actually doing right now. Snapshots are emitted
+when todo progress moves even if the headline status has not changed, so a
+progress gauge keeps up while an agent stays `working`.
 
 `since` is when a feature entered its current status, and is deliberately
 **not** refreshed while the status is unchanged, so a "how long has it been

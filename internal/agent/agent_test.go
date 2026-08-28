@@ -40,6 +40,11 @@ func fakeServerFull(t *testing.T, sessions, messages, status, permissions string
 
 func fakeServerQ(t *testing.T, sessions, messages, status, permissions, questions string) *httptest.Server {
 	t.Helper()
+	return fakeServerT(t, sessions, messages, status, permissions, questions, `[]`)
+}
+
+func fakeServerT(t *testing.T, sessions, messages, status, permissions, questions, todos string) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
@@ -47,6 +52,10 @@ func fakeServerQ(t *testing.T, sessions, messages, status, permissions, question
 	})
 	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/todo") {
+			_, _ = w.Write([]byte(todos))
+			return
+		}
 		_, _ = w.Write([]byte(messages))
 	})
 	mux.HandleFunc("/session/status", func(w http.ResponseWriter, r *http.Request) {
@@ -337,5 +346,49 @@ func TestServeCmdQuotesPath(t *testing.T) {
 	want := "exec '/home/a b/opencode' serve --hostname 127.0.0.1 --port 0"
 	if got != want {
 		t.Errorf("ServeCmd = %q, want %q", got, want)
+	}
+}
+
+func TestProbeReadsTodos(t *testing.T) {
+	todos := `[
+      {"content":"Verify schemas","status":"completed","priority":"high"},
+      {"content":"Fix parsing","status":"completed","priority":"high"},
+      {"content":"Wire the widget","status":"in_progress","priority":"medium"},
+      {"content":"Update README","status":"pending","priority":"low"},
+      {"content":"Dropped idea","status":"cancelled","priority":"low"}
+    ]`
+	srv := fakeServerT(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)),
+		`{}`, `[]`, `[]`, todos)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	got := h.Todos
+	if got.Total != 5 || got.Completed != 2 || got.InProgress != 1 || got.Pending != 1 || got.Cancelled != 1 {
+		t.Errorf("Todos = %+v", got)
+	}
+	if got.Current != "Wire the widget" {
+		t.Errorf("Current = %q, want the in-progress task", got.Current)
+	}
+	// completed(2) + cancelled(1) of 5
+	if d := got.Done(); d < 0.59 || d > 0.61 {
+		t.Errorf("Done() = %v, want ~0.6", d)
+	}
+}
+
+func TestProbeNoTodosIsZeroed(t *testing.T) {
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Todos.Total != 0 || h.Todos.Current != "" {
+		t.Errorf("Todos = %+v, want zeroed when the agent uses no list", h.Todos)
+	}
+	if h.Todos.Done() != 0 {
+		t.Errorf("Done() = %v, want 0 with no tasks (no divide by zero)", h.Todos.Done())
+	}
+}
+
+func TestTodosDoneCountsCancelledAsResolved(t *testing.T) {
+	// Abandoning a task must not leave a progress bar permanently short.
+	td := Todos{Total: 2, Completed: 1, Cancelled: 1}
+	if d := td.Done(); d != 1 {
+		t.Errorf("Done() = %v, want 1", d)
 	}
 }

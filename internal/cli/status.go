@@ -139,6 +139,9 @@ type row struct {
 	Worked     time.Duration `json:"worked_nanos,omitempty"`
 	Working    time.Duration `json:"working_nanos,omitempty"`
 	Sessions   int           `json:"sessions,omitempty"`
+	TodoTotal  int           `json:"todo_total,omitempty"`
+	TodoDone   int           `json:"todo_done,omitempty"`
+	TodoNow    string        `json:"todo_current,omitempty"`
 	Tokens     int64         `json:"tokens,omitempty"`
 	Cost       float64       `json:"cost,omitempty"`
 	Model      string        `json:"model,omitempty"`
@@ -279,6 +282,9 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 					r.AgentState = string(h.State)
 					r.Worked, r.Working = h.Worked, h.Working
 					r.Idle = idleFor(h)
+					r.TodoTotal = h.Todos.Total
+					r.TodoDone = h.Todos.Completed + h.Todos.Cancelled
+					r.TodoNow = h.Todos.Current
 					r.Tokens, r.Cost = h.Tokens.Total(), h.Cost
 					r.Model, r.LastError = h.Model, h.LastError
 					if !h.Reachable {
@@ -524,10 +530,17 @@ func agentSummaryLine(r row) string {
 	if idl := idleDetail(r); idl != "-" {
 		parts = append(parts, "idle "+idl)
 	}
+	if r.TodoTotal > 0 {
+		parts = append(parts, fmt.Sprintf("todo %d/%d", r.TodoDone, r.TodoTotal))
+	}
 	if r.Sessions > 0 {
 		parts = append(parts, fmt.Sprintf("%d session(s)", r.Sessions))
 	}
-	return fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
+	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
+	if r.TodoNow != "" {
+		line += "\n    " + dim("now: "+shorten(oneLine(r.TodoNow), 80))
+	}
+	return line
 }
 
 func runAttach(ctx context.Context, args []string) error {

@@ -226,6 +226,9 @@ func TestRelevantFiltersTheFirehose(t *testing.T) {
 		"session.idle", "session.error", "session.status",
 		"permission.asked", "permission.v2.asked",
 		"question.asked", "question.v2.asked", "question.v2.replied",
+		// Todo progress moves a progress gauge even while the headline
+		// status stays "working".
+		"todo.updated",
 		"server.connected",
 	}
 	for _, e := range want {
@@ -238,7 +241,7 @@ func TestRelevantFiltersTheFirehose(t *testing.T) {
 	ignore := []string{
 		"message.part.delta", "message.part.updated", "session.next.text.delta",
 		"session.next.reasoning.delta", "plugin.added", "server.heartbeat",
-		"file.watcher.updated", "todo.updated",
+		"file.watcher.updated",
 	}
 	for _, e := range ignore {
 		if relevant(e) {
@@ -271,4 +274,34 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func TestRefreshEmitsWhenOnlyTodoProgressChanged(t *testing.T) {
+	// Progress within an unchanged status still matters: the agent stays
+	// "working" from task 5 to task 6, but a progress gauge has to move.
+	var mu sync.Mutex
+	done := 1
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		mu.Lock()
+		defer mu.Unlock()
+		return agent.Health{
+			Reachable: true, State: agent.StateBusy,
+			Todos: agent.Todos{Total: 3, Completed: done, InProgress: 1, Current: "step"},
+		}
+	})
+
+	ctx := context.Background()
+	if _, changed := r.refresh(ctx); !changed {
+		t.Fatal("first refresh should report changed")
+	}
+	if _, changed := r.refresh(ctx); changed {
+		t.Fatal("identical refresh should not report changed")
+	}
+	mu.Lock()
+	done = 2
+	mu.Unlock()
+	if _, changed := r.refresh(ctx); !changed {
+		t.Error("todo progress moved but no snapshot would be emitted")
+	}
 }

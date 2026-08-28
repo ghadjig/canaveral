@@ -201,6 +201,7 @@ func relevant(t string) bool {
 		"permission.v2.asked", "permission.v2.replied",
 		"question.asked", "question.replied", "question.rejected",
 		"question.v2.asked", "question.v2.replied", "question.v2.rejected",
+		"todo.updated",
 		"server.connected":
 		return true
 	}
@@ -287,6 +288,20 @@ func sameView(a, b map[string]Feature) bool {
 	return true
 }
 
+// sameTodos compares task lists, so progress within an unchanged status
+// (still "working", but now 6 of 9 rather than 5) still produces a snapshot.
+func sameTodos(a, b *Todos) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return a.Total == b.Total && a.Completed == b.Completed &&
+		a.InProgress == b.InProgress && a.Cancelled == b.Cancelled &&
+		a.Current == b.Current
+}
+
 func sameFeature(a, b Feature) bool {
 	if a.Status != b.Status || !a.Since.Equal(b.Since) || len(a.Agents) != len(b.Agents) {
 		return false
@@ -295,6 +310,9 @@ func sameFeature(a, b Feature) bool {
 		x, y := a.Agents[i], b.Agents[i]
 		if x.Name != y.Name || x.Status != y.Status || x.Error != y.Error ||
 			x.Tokens != y.Tokens || x.Cost != y.Cost || x.Model != y.Model {
+			return false
+		}
+		if !sameTodos(x.Todos, y.Todos) {
 			return false
 		}
 		if (x.Pending == nil) != (y.Pending == nil) {
