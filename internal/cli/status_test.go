@@ -55,8 +55,10 @@ func TestWorkedDetail(t *testing.T) {
 		want string
 	}{
 		{row{Kind: kindAgent, Worked: 5 * time.Minute}, "5m0s"},
-		{row{Kind: kindAgent, Working: 12 * time.Second}, "+12.0s"},
-		{row{Kind: kindAgent, Worked: 5 * time.Minute, Working: 12 * time.Second}, "5m0s +12.0s"},
+		// The per-message timer resets every tool round trip, so it is not
+		// shown; "on this" is the timer that means something.
+		{row{Kind: kindAgent, Working: 12 * time.Second}, "-"},
+		{row{Kind: kindAgent, Worked: 5 * time.Minute, Working: 12 * time.Second}, "5m0s"},
 		{row{Kind: kindAgent}, "-"},
 		{row{Kind: kindWindow, Worked: time.Minute}, "-"},
 	}
@@ -140,8 +142,11 @@ func TestAgentSummaryLine(t *testing.T) {
 			"  agent main: idle",
 		},
 		{
-			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateBusy), Working: 12 * time.Second},
-			"  agent main: busy · worked +12.0s",
+			// The per-message generation timer is not surfaced; "on this"
+			// (measured from the user's message) is the meaningful one.
+			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateBusy),
+				Worked: 5 * time.Minute, SincePrompt: 90 * time.Second},
+			"  agent main: busy · worked 5m0s · on this 1m30s",
 		},
 		{
 			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateWaiting), Idle: 90 * time.Second, Sessions: 3},
@@ -332,5 +337,27 @@ func TestAgentSummaryLineShowsQuestionOptions(t *testing.T) {
 	})
 	if !strings.Contains(got, "question: Fork trigger") || !strings.Contains(got, "Always / Never") {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestAgentSummaryLineShowsTimeSinceThePrompt(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState:  string(agent.StateBusy),
+		SincePrompt: 3*time.Minute + 37*time.Second,
+	})
+	if !strings.Contains(got, "on this 3m37s") {
+		t.Errorf("got %q, want the prompt timer", got)
+	}
+}
+
+func TestAgentSummaryLineOmitsPromptTimerWhenIdle(t *testing.T) {
+	// Once it has finished, "idle" already says how long it has been sitting.
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateIdle), SincePrompt: time.Hour,
+	})
+	if strings.Contains(got, "on this") {
+		t.Errorf("got %q, want no prompt timer when idle", got)
 	}
 }

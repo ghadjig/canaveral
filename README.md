@@ -289,7 +289,7 @@ reasoning effort, the agent's own task list when it is using one
 of the conversation:
 
 ```
-  agent main: waiting · worked 37m57s +5m42s · claude-sonnet-5 (high) · 1 session(s) +5 subagent(s)
+  agent main: waiting · worked 59m27s · on this 5m2s · claude-sonnet-5 (high) · 1 session(s) +5 subagent(s)
     needs: permission: external_directory [/home/…/gems/ruby_llm/*]
     task: Add a smoke test
     now:  bash: bin/rails test
@@ -303,8 +303,16 @@ expose.
 `IDLE` is time since the last turn finished (blank while busy). `WORKED` is
 the sum of actual generation time across every finished turn in the current
 session — not wall-clock span, so time spent reading or away from the
-keyboard doesn't count — plus a running `+12s`-style suffix for whichever
-turn is currently in flight.
+keyboard doesn't count — and is cumulative across every prompt in that
+session.
+
+`on this` is how long since **your** most recent message: the answer to "how
+long has it been working on what I asked". It is worth distinguishing from
+the per-message generation timer, which is not shown: a single prompt
+produces one assistant message per tool round trip, so that timer resets
+every few seconds and reads like a command timer without being one. It
+remains available as `working_nanos` in `--json` and `since_prompt_seconds`
+in `canaveral watch`.
 
 ## Watching from a status widget
 

@@ -216,9 +216,15 @@ type Health struct {
 	// that has finished in the newest session — actual generation time, not
 	// wall-clock span, so it excludes the gaps where nothing was happening.
 	Worked time.Duration
-	// Working is how long the current turn has been running, set only while
-	// State is StateBusy.
+	// Working is how long the current assistant message has been
+	// generating. Note this is not "how long since I asked": one prompt
+	// produces many assistant messages, one per tool round trip, so this
+	// resets every few seconds. SincePrompt is the human-meaningful timer.
 	Working time.Duration
+	// SincePrompt is how long it has been since your most recent message —
+	// the answer to "how long has it been working on what I asked". Zero
+	// when the session has no user message.
+	SincePrompt time.Duration
 	// Todos is the current session's task list, zero when the agent has not
 	// used one.
 	Todos Todos
@@ -479,6 +485,12 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 			}
 		}
 	}
+	if lastUserIdx >= 0 {
+		if c := msgs[lastUserIdx].Info.Time.Created; c > 0 {
+			h.SincePrompt = now.Sub(time.UnixMilli(c))
+		}
+	}
+
 	// Only report what the agent said if it said it *after* the latest
 	// prompt. Once a new prompt arrives, the previous turn's closing
 	// remarks describe finished work, and showing them next to a

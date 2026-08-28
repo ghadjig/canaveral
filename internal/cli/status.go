@@ -124,39 +124,40 @@ const (
 )
 
 type row struct {
-	Feature    string        `json:"feature"`
-	Kind       rowKind       `json:"kind"`
-	Name       string        `json:"name"`
-	Unit       string        `json:"unit,omitempty"`
-	State      string        `json:"state"`
-	MemBytes   uint64        `json:"mem_bytes,omitempty"`
-	CPUNanos   time.Duration `json:"cpu_nanos,omitempty"`
-	URL        string        `json:"url,omitempty"`
-	Detail     string        `json:"detail,omitempty"`
-	Busy       bool          `json:"busy,omitempty"`
-	AgentState string        `json:"agent_state,omitempty"`
-	Idle       time.Duration `json:"idle_nanos,omitempty"`
-	Worked     time.Duration `json:"worked_nanos,omitempty"`
-	Working    time.Duration `json:"working_nanos,omitempty"`
-	Sessions   int           `json:"sessions,omitempty"`
-	TodoTotal  int           `json:"todo_total,omitempty"`
-	TodoDone   int           `json:"todo_done,omitempty"`
-	TodoNow    string        `json:"todo_current,omitempty"`
-	ActTool    string        `json:"activity_tool,omitempty"`
-	ActTitle   string        `json:"activity_title,omitempty"`
-	LastUser   string        `json:"last_user,omitempty"`
-	LastAgent  string        `json:"last_assistant,omitempty"`
-	PendKind   string        `json:"pending_kind,omitempty"`
-	PendHeader string        `json:"pending_header,omitempty"`
-	PendDetail string        `json:"pending_detail,omitempty"`
-	PendExtra  string        `json:"pending_extra,omitempty"`
-	Tokens     int64         `json:"tokens,omitempty"`
-	Cost       float64       `json:"cost,omitempty"`
-	Model      string        `json:"model,omitempty"`
-	Variant    string        `json:"variant,omitempty"`
-	Provider   string        `json:"provider,omitempty"`
-	SubAgents  int           `json:"subagents,omitempty"`
-	LastError  string        `json:"last_error,omitempty"`
+	Feature     string        `json:"feature"`
+	Kind        rowKind       `json:"kind"`
+	Name        string        `json:"name"`
+	Unit        string        `json:"unit,omitempty"`
+	State       string        `json:"state"`
+	MemBytes    uint64        `json:"mem_bytes,omitempty"`
+	CPUNanos    time.Duration `json:"cpu_nanos,omitempty"`
+	URL         string        `json:"url,omitempty"`
+	Detail      string        `json:"detail,omitempty"`
+	Busy        bool          `json:"busy,omitempty"`
+	AgentState  string        `json:"agent_state,omitempty"`
+	Idle        time.Duration `json:"idle_nanos,omitempty"`
+	Worked      time.Duration `json:"worked_nanos,omitempty"`
+	Working     time.Duration `json:"working_nanos,omitempty"`
+	SincePrompt time.Duration `json:"since_prompt_nanos,omitempty"`
+	Sessions    int           `json:"sessions,omitempty"`
+	TodoTotal   int           `json:"todo_total,omitempty"`
+	TodoDone    int           `json:"todo_done,omitempty"`
+	TodoNow     string        `json:"todo_current,omitempty"`
+	ActTool     string        `json:"activity_tool,omitempty"`
+	ActTitle    string        `json:"activity_title,omitempty"`
+	LastUser    string        `json:"last_user,omitempty"`
+	LastAgent   string        `json:"last_assistant,omitempty"`
+	PendKind    string        `json:"pending_kind,omitempty"`
+	PendHeader  string        `json:"pending_header,omitempty"`
+	PendDetail  string        `json:"pending_detail,omitempty"`
+	PendExtra   string        `json:"pending_extra,omitempty"`
+	Tokens      int64         `json:"tokens,omitempty"`
+	Cost        float64       `json:"cost,omitempty"`
+	Model       string        `json:"model,omitempty"`
+	Variant     string        `json:"variant,omitempty"`
+	Provider    string        `json:"provider,omitempty"`
+	SubAgents   int           `json:"subagents,omitempty"`
+	LastError   string        `json:"last_error,omitempty"`
 }
 
 func runStatus(ctx context.Context, args []string) error {
@@ -292,6 +293,7 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 					r.Busy, r.Sessions = h.Busy, h.Sessions
 					r.AgentState = string(h.State)
 					r.Worked, r.Working = h.Worked, h.Working
+					r.SincePrompt = h.SincePrompt
 					r.Idle = idleFor(h)
 					r.TodoTotal = h.Todos.Total
 					r.TodoDone = h.Todos.Completed + h.Todos.Cancelled
@@ -527,21 +529,18 @@ func idleDetail(r row) string {
 	return humanDuration(r.Idle)
 }
 
-// workedDetail shows cumulative active generation time this session, plus
-// the current turn's running time when one is in flight.
+// workedDetail shows cumulative active generation time for the session.
+//
+// The per-message generation timer is deliberately not shown: one prompt
+// produces an assistant message per tool round trip, so it resets every few
+// seconds and reads like a command timer without being one. "on this",
+// measured from the user's own message, is the timer that answers that
+// question, and is still available as working_nanos in --json.
 func workedDetail(r row) string {
-	if r.Kind != kindAgent {
+	if r.Kind != kindAgent || r.Worked <= 0 {
 		return "-"
 	}
-	switch {
-	case r.Working > 0 && r.Worked > 0:
-		return humanDuration(r.Worked) + " +" + humanDuration(r.Working)
-	case r.Working > 0:
-		return "+" + humanDuration(r.Working)
-	case r.Worked > 0:
-		return humanDuration(r.Worked)
-	}
-	return "-"
+	return humanDuration(r.Worked)
 }
 
 // agentSummaryLine is the at-a-glance line printed once per agent, right
@@ -552,6 +551,11 @@ func agentSummaryLine(r row) string {
 	parts := []string{stateLabel(r)}
 	if w := workedDetail(r); w != "-" {
 		parts = append(parts, "worked "+w)
+	}
+	// How long since you last asked for something. Distinct from worked,
+	// which is cumulative across the whole session.
+	if r.SincePrompt > 0 && (r.AgentState == string(agent.StateBusy) || r.AgentState == string(agent.StateWaiting)) {
+		parts = append(parts, "on this "+humanDuration(r.SincePrompt))
 	}
 	if idl := idleDetail(r); idl != "-" {
 		parts = append(parts, "idle "+idl)

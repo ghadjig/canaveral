@@ -91,8 +91,14 @@ type Agent struct {
 	Pending *agent.Pending `json:"pending,omitempty"`
 	// Error is the last turn's failure message, when Status is error.
 	Error string `json:"error,omitempty"`
-	// Worked is total generation time in the current session, in seconds.
+	// Worked is total generation time in the current session, in seconds,
+	// cumulative across every prompt in it.
 	Worked float64 `json:"worked_seconds,omitempty"`
+	// SincePrompt is how long since the user's most recent message, in
+	// seconds — "how long has it been working on what I asked". Unlike the
+	// per-message generation timer, this does not reset on each tool round
+	// trip.
+	SincePrompt float64 `json:"since_prompt_seconds,omitempty"`
 	// Activity is the tool call in flight right now — the most literal
 	// answer to "what is it doing" — absent when nothing is running.
 	Activity *agent.Activity `json:"activity,omitempty"`

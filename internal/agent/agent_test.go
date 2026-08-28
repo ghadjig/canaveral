@@ -747,3 +747,33 @@ func TestProbeShowsAssistantTextWithNoUserMessageAtAll(t *testing.T) {
 		t.Errorf("LastAssistant = %q", h.LastAssistant)
 	}
 }
+
+func TestProbeSincePromptMeasuresFromTheUserMessage(t *testing.T) {
+	// One prompt produces many assistant messages, one per tool round trip.
+	// The timer a person wants runs from their message, not from whichever
+	// sub-turn happens to be generating.
+	start := time.Now().Add(-5 * time.Minute).UnixMilli()
+	msgs := msgList(
+		fmt.Sprintf(`{"info":{"role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"do it"}]}`, start),
+		asst(start+1000, fmt.Sprint(start+2000), 0, 0, 0, `,"finish":"stop"`),
+		asst(time.Now().Add(-2*time.Second).UnixMilli(), "", 0, 0, 0, ""),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.SincePrompt < 4*time.Minute || h.SincePrompt > 6*time.Minute {
+		t.Errorf("SincePrompt = %v, want ~5m (from the user's message)", h.SincePrompt)
+	}
+	// The per-message timer is the small resetting one, and must not be
+	// confused with it.
+	if h.Working > 30*time.Second {
+		t.Errorf("Working = %v, want the current sub-turn only (~2s)", h.Working)
+	}
+}
+
+func TestProbeSincePromptZeroWithNoUserMessage(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
+	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.SincePrompt != 0 {
+		t.Errorf("SincePrompt = %v, want 0", h.SincePrompt)
+	}
+}
