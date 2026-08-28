@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -692,6 +693,64 @@ func getJSON(ctx context.Context, u string, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// ForkInto copies a session and re-homes the copy to dir, returning the new
+// session's ID.
+//
+// opencode fixes a session's directory when it is created, and a fork
+// inherits the original's — so a fork alone would leave the copy pointing at
+// whichever worktree the source came from. That directory may since have
+// been deleted (leaving an agent hanging in a path that no longer exists),
+// and even when it still exists it is the wrong feature's, which hides the
+// session from anything scoping sessions by directory.
+//
+// Moving the copy afterwards fixes both. The move endpoint is experimental
+// and cannot cross projects, which is not a limit here: a project's features
+// all live under the same project root.
+func ForkInto(ctx context.Context, baseURL, sessionID, dir string) (string, error) {
+	var forked struct {
+		ID string `json:"id"`
+	}
+	if err := postJSON(ctx, baseURL+"/session/"+url.PathEscape(sessionID)+"/fork", struct{}{}, &forked); err != nil {
+		return "", fmt.Errorf("fork %s: %w", sessionID, err)
+	}
+	if forked.ID == "" {
+		return "", fmt.Errorf("fork %s: no session id returned", sessionID)
+	}
+
+	body := map[string]any{
+		"sessionID":   forked.ID,
+		"destination": map[string]string{"directory": dir},
+	}
+	if err := postJSON(ctx, baseURL+"/experimental/control-plane/move-session", body, nil); err != nil {
+		return "", fmt.Errorf("move forked session into %s: %w", dir, err)
+	}
+	return forked.ID, nil
+}
+
+func postJSON(ctx context.Context, u string, in, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("POST %s: status %d", u, resp.StatusCode)
+	}
+	if out == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

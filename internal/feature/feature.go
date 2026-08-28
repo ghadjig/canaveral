@@ -233,8 +233,8 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 	agents := map[string]tmpl.AgentRef{}
 	for _, a := range f.Agents {
 		ref := tmpl.AgentRef{URL: a.URL}
-		if fresh && a.Tool == "opencode" {
-			ref.Fork = forkArgsFor(ctx, f.Project, f.Name, a.Name)
+		if fresh && a.Tool == "opencode" && a.URL != "" {
+			ref.Fork = forkArgsFor(ctx, f.Project, f.Name, a.Name, a.URL, f.Worktree)
 		}
 		agents[a.Name] = ref
 	}
@@ -266,7 +266,7 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 // fresh argument) — once a feature has its own session building up,
 // re-forking on every later reset would silently discard it in favour of a
 // sibling's, possibly stale, history.
-func forkArgsFor(ctx context.Context, project, name, agentName string) string {
+func forkArgsFor(ctx context.Context, project, name, agentName, baseURL, worktree string) string {
 	ns := Namespace(name)
 	if ns == "" {
 		return ""
@@ -275,17 +275,7 @@ func forkArgsFor(ctx context.Context, project, name, agentName string) string {
 	var best skills.SessionRecord
 	have := false
 	if rec, ok, err := skills.LatestSession(project, ns, agentName); err == nil && ok {
-		// A recorded session is only usable while the worktree it was
-		// created in still exists. opencode keeps a session's directory
-		// from where it was first created — a fork inherits it and --dir
-		// does not override it — so forking one whose worktree has been
-		// removed leaves the agent trying to work in a deleted path, where
-		// it simply hangs.
-		if rec.Worktree != "" {
-			if _, statErr := os.Stat(rec.Worktree); statErr == nil {
-				best, have = rec, true
-			}
-		}
+		best, have = rec, true
 	}
 
 	siblings, err := state.List(project)
@@ -306,9 +296,6 @@ func forkArgsFor(ctx context.Context, project, name, agentName string) string {
 			if !h.Reachable || h.SessionID == "" {
 				continue
 			}
-			if _, statErr := os.Stat(sf.Worktree); statErr != nil {
-				continue
-			}
 			if !have || h.Updated.After(best.UpdatedAt) {
 				best = skills.SessionRecord{
 					Feature: sib, SessionID: h.SessionID,
@@ -322,7 +309,19 @@ func forkArgsFor(ctx context.Context, project, name, agentName string) string {
 	if !have {
 		return ""
 	}
-	return fmt.Sprintf("--session %s --fork", best.SessionID)
+
+	// Fork here rather than letting `opencode attach --fork` do it, so the
+	// copy's ID is known and it can be re-homed into this feature's
+	// worktree. Without that the copy keeps the source's directory: it
+	// would operate in another feature's checkout, or in one that has since
+	// been deleted, and would be invisible to anything scoping sessions by
+	// directory (canaveral status included).
+	forked, err := agent.ForkInto(ctx, baseURL, best.SessionID, worktree)
+	if err != nil {
+		// Continuity is a convenience; a fresh session is a fine outcome.
+		return ""
+	}
+	return fmt.Sprintf("--session %s", forked)
 }
 
 // baseEnvFor layers canaveral's own variables over the toolchain environment.

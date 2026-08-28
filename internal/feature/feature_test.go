@@ -2,11 +2,13 @@ package feature
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,14 +265,14 @@ func TestSplitRatioChainEmptyOrder(t *testing.T) {
 
 func TestForkArgsForNoNamespaceIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkArgsFor(context.Background(), "norules", "small-fixes", "main"); got != "" {
+	if got := forkArgsFor(context.Background(), "norules", "small-fixes", "main", "http://x", "/wt"); got != "" {
 		t.Errorf("forkArgsFor for an unnamespaced feature = %q, want empty", got)
 	}
 }
 
 func TestForkArgsForNothingToForkFromIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main"); got != "" {
+	if got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt"); got != "" {
 		t.Errorf("forkArgsFor with no siblings = %q, want empty", got)
 	}
 }
@@ -286,9 +288,17 @@ func TestForkArgsForUsesRecordedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main")
-	if want := "--session ses_recorded --fork"; got != want {
-		t.Errorf("forkArgsFor = %q, want %q", got, want)
+	var moved string
+	srv := forkFakeServer(t, `{"data":[]}`, "ses_forked", &moved)
+
+	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", srv.URL, "/wt/step2")
+	if want := "--session ses_forked"; got != want {
+		t.Errorf("forkArgsFor = %q, want %q (the forked copy, not the source)", got, want)
+	}
+	// The copy must be re-homed, or it would operate in the source's
+	// worktree and stay invisible to anything scoping by directory.
+	if want := "ses_forked -> /wt/step2"; moved != want {
+		t.Errorf("move = %q, want %q", moved, want)
 	}
 }
 
@@ -316,9 +326,31 @@ func TestForkArgsForPrefersMoreRecentLiveSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main")
-	if want := "--session ses_live --fork"; got != want {
-		t.Errorf("forkArgsFor = %q, want %q (the live, more recent session)", got, want)
+	var moved string
+	fsrv := forkFakeServer(t, `{"data":[]}`, "ses_forked_live", &moved)
+
+	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", fsrv.URL, "/wt/step2")
+	if want := "--session ses_forked_live"; got != want {
+		t.Errorf("forkArgsFor = %q, want %q", got, want)
+	}
+	if !strings.Contains(moved, "-> /wt/step2") {
+		t.Errorf("move = %q, want it re-homed into this feature's worktree", moved)
+	}
+}
+
+func TestForkArgsForFallsBackToAFreshSessionWhenForkFails(t *testing.T) {
+	// Continuity is a convenience; if the fork or move fails the feature
+	// should still come up, just without the previous conversation.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/step1", SessionID: "ses_x",
+		Worktree: t.TempDir(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing listening: fork cannot succeed.
+	if got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", "http://127.0.0.1:1", "/wt"); got != "" {
+		t.Errorf("forkArgsFor = %q, want empty when the fork fails", got)
 	}
 }
 
@@ -331,10 +363,49 @@ func TestForkArgsForOnlyMatchesSameNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main")
+	got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt")
 	if got != "" {
 		t.Errorf("forkArgsFor leaked across namespaces: got %q, want empty", got)
 	}
+}
+
+// forkFakeServer answers Probe's endpoints plus fork and move, returning
+// the ID it hands back from the fork so a test can assert on it.
+func forkFakeServer(t *testing.T, sessions, newID string, moved *string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(sessions))
+	})
+	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/fork") {
+			_, _ = w.Write([]byte(`{"id":"` + newID + `"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/experimental/control-plane/move-session", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SessionID   string `json:"sessionID"`
+			Destination struct {
+				Directory string `json:"directory"`
+			} `json:"destination"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if moved != nil {
+			*moved = body.SessionID + " -> " + body.Destination.Directory
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 // agentFakeServer serves the endpoints agent.Probe depends on, mirroring
@@ -354,59 +425,4 @@ func agentFakeServer(t *testing.T, sessions, messages string) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-func TestForkArgsForSkipsASessionWhoseWorktreeIsGone(t *testing.T) {
-	// Regression test for a real hang: a namespace sibling's session was
-	// recorded on rm, its worktree deleted, and the next feature forked it.
-	// opencode fixes a session's directory at creation and --dir does not
-	// override it, so the agent sat trying to work in a path that no longer
-	// existed and never responded.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-
-	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
-		Feature: "onboarding/gone", SessionID: "ses_dead",
-		Worktree:  filepath.Join(t.TempDir(), "deleted-worktree"), // never created
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main"); got != "" {
-		t.Errorf("forkArgsFor = %q, want empty when the source worktree is gone", got)
-	}
-}
-
-func TestForkArgsForUsesASessionWhoseWorktreeStillExists(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	live := t.TempDir() // exists
-
-	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
-		Feature: "onboarding/live", SessionID: "ses_live",
-		Worktree: live, UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main")
-	if want := "--session ses_live --fork"; got != want {
-		t.Errorf("forkArgsFor = %q, want %q", got, want)
-	}
-}
-
-func TestForkArgsForSkipsRecordsWithNoWorktreeTracked(t *testing.T) {
-	// Records written before the worktree was tracked cannot be validated,
-	// so they are not resumed rather than risking the same hang.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
-		Feature: "onboarding/old", SessionID: "ses_old", UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := forkArgsFor(context.Background(), "norules", "onboarding/next", "main"); got != "" {
-		t.Errorf("forkArgsFor = %q, want empty for an untracked-worktree record", got)
-	}
 }

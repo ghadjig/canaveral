@@ -101,7 +101,7 @@ name = "opencode"
 run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Fork}}"
 ```
 
-`{{.Agent.main.Fork}}` renders as `--session <id> --fork` when a namespace
+`{{.Agent.main.Fork}}` renders as `--session <id>` when a namespace
 sibling has a session to hand off (picking whichever sibling was most
 recently active, whether it's still running or was already removed), or as
 nothing at all otherwise — safe to include unconditionally. `--dir` matters
