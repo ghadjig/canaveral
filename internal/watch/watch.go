@@ -93,6 +93,9 @@ type Agent struct {
 	Error string `json:"error,omitempty"`
 	// Worked is total generation time in the current session, in seconds.
 	Worked float64 `json:"worked_seconds,omitempty"`
+	// Activity is the tool call in flight right now — the most literal
+	// answer to "what is it doing" — absent when nothing is running.
+	Activity *agent.Activity `json:"activity,omitempty"`
 	// Todos is the agent's self-reported task list for the current session,
 	// omitted when it is not using one. This is the only genuine progress
 	// signal available — neither opencode nor Claude Code exposes a
@@ -229,6 +232,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			Variant:   h.Variant,
 			Provider:  h.Provider,
 			SubAgents: h.SubSessions,
+			Activity:  h.Activity,
 			Tokens:    h.Tokens.Total(),
 			Cost:      h.Cost,
 			Pending:   h.Pending,

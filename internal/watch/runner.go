@@ -202,6 +202,7 @@ func relevant(t string) bool {
 		"question.asked", "question.replied", "question.rejected",
 		"question.v2.asked", "question.v2.replied", "question.v2.rejected",
 		"todo.updated",
+		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
 		"server.connected":
 		return true
 	}
@@ -288,6 +289,18 @@ func sameView(a, b map[string]Feature) bool {
 	return true
 }
 
+// sameActivity compares the in-flight tool call, so moving from one command
+// to the next produces a snapshot even while the status stays "working".
+func sameActivity(a, b *agent.Activity) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return a.Tool == b.Tool && a.Title == b.Title && a.Since.Equal(b.Since)
+}
+
 // sameTodos compares task lists, so progress within an unchanged status
 // (still "working", but now 6 of 9 rather than 5) still produces a snapshot.
 func sameTodos(a, b *Todos) bool {
@@ -314,6 +327,9 @@ func sameFeature(a, b Feature) bool {
 			return false
 		}
 		if !sameTodos(x.Todos, y.Todos) {
+			return false
+		}
+		if !sameActivity(x.Activity, y.Activity) {
 			return false
 		}
 		if (x.Pending == nil) != (y.Pending == nil) {

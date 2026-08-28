@@ -305,3 +305,31 @@ func TestRefreshEmitsWhenOnlyTodoProgressChanged(t *testing.T) {
 		t.Error("todo progress moved but no snapshot would be emitted")
 	}
 }
+
+func TestRefreshEmitsWhenTheRunningToolChanges(t *testing.T) {
+	// Moving from one command to the next is exactly the kind of progress a
+	// widget should show, even though the status stays "working".
+	var mu sync.Mutex
+	title := "bin/rails test"
+	f := feat("alpha", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+		mu.Lock()
+		defer mu.Unlock()
+		return agent.Health{
+			Reachable: true, State: agent.StateBusy,
+			Activity: &agent.Activity{Tool: "bash", Title: title},
+		}
+	})
+
+	ctx := context.Background()
+	r.refresh(ctx)
+	if _, changed := r.refresh(ctx); changed {
+		t.Fatal("identical refresh should not report changed")
+	}
+	mu.Lock()
+	title = "bin/rubocop"
+	mu.Unlock()
+	if _, changed := r.refresh(ctx); !changed {
+		t.Error("the running command changed but no snapshot would be emitted")
+	}
+}

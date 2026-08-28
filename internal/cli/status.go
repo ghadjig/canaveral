@@ -142,6 +142,8 @@ type row struct {
 	TodoTotal  int           `json:"todo_total,omitempty"`
 	TodoDone   int           `json:"todo_done,omitempty"`
 	TodoNow    string        `json:"todo_current,omitempty"`
+	ActTool    string        `json:"activity_tool,omitempty"`
+	ActTitle   string        `json:"activity_title,omitempty"`
 	Tokens     int64         `json:"tokens,omitempty"`
 	Cost       float64       `json:"cost,omitempty"`
 	Model      string        `json:"model,omitempty"`
@@ -292,6 +294,9 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 					r.Model, r.LastError = h.Model, h.LastError
 					r.Variant, r.Provider = h.Variant, h.Provider
 					r.SubAgents = h.SubSessions
+					if h.Activity != nil {
+						r.ActTool, r.ActTitle = h.Activity.Tool, h.Activity.Title
+					}
 					if !h.Reachable {
 						r.Detail = "unreachable"
 					}
@@ -554,7 +559,14 @@ func agentSummaryLine(r row) string {
 	}
 	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
 	if r.TodoNow != "" {
-		line += "\n    " + dim("now: "+shorten(oneLine(r.TodoNow), 80))
+		line += "\n    " + dim("task: "+shorten(oneLine(r.TodoNow), 80))
+	}
+	if r.ActTool != "" {
+		now := r.ActTool
+		if r.ActTitle != "" {
+			now += ": " + r.ActTitle
+		}
+		line += "\n    " + dim("now:  "+shorten(oneLine(now), 80))
 	}
 	return line
 }

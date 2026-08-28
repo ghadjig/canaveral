@@ -224,7 +224,7 @@ func TestAgentSummaryLineShowsCurrentTaskOnItsOwnLine(t *testing.T) {
 	if !strings.Contains(lines[0], "todo 6/9") {
 		t.Errorf("first line missing progress: %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "now: Wire the notch widget") {
+	if !strings.Contains(lines[1], "task: Wire the notch widget") {
 		t.Errorf("second line missing the current task: %q", lines[1])
 	}
 }
@@ -241,5 +241,32 @@ func TestAgentSummaryLineOmitsTodosWhenUnused(t *testing.T) {
 	}
 	if strings.Contains(got, "\n") {
 		t.Errorf("got a second line with no current task: %q", got)
+	}
+}
+
+func TestAgentSummaryLineShowsCurrentToolActivity(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateBusy),
+		ActTool:    "bash", ActTitle: "bin/rails test",
+	})
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[1], "now:") || !strings.Contains(lines[1], "bash: bin/rails test") {
+		t.Errorf("activity line = %q", lines[1])
+	}
+}
+
+func TestAgentSummaryLineShowsBothTaskAndActivity(t *testing.T) {
+	got := agentSummaryLine(row{
+		Kind: kindAgent, Name: "main", State: "active",
+		AgentState: string(agent.StateBusy),
+		TodoTotal:  9, TodoDone: 6, TodoNow: "Add a smoke test",
+		ActTool: "bash", ActTitle: "bin/rails test",
+	})
+	if n := len(strings.Split(got, "\n")); n != 3 {
+		t.Fatalf("got %d lines, want 3 (summary, task, activity):\n%s", n, got)
 	}
 }

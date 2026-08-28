@@ -160,6 +160,20 @@ func (t Todos) Done() float64 {
 	return float64(t.Completed+t.Cancelled) / float64(t.Total)
 }
 
+// Activity is the tool call an agent is executing right now — the most
+// literal answer to "what is it doing": a bash command it is waiting on, a
+// file it is editing, a search it is running.
+type Activity struct {
+	// Tool is the tool's name, e.g. "bash", "edit", "grep".
+	Tool string `json:"tool"`
+	// Title is opencode's own human-readable description of the call: the
+	// command line for bash, the path for a file tool. It can be long and
+	// multi-line, so a consumer should expect to truncate it.
+	Title string `json:"title,omitempty"`
+	// Since is when the call started.
+	Since time.Time `json:"since"`
+}
+
 // Health summarises what an agent server is doing right now.
 type Health struct {
 	Reachable bool
@@ -208,7 +222,9 @@ type Health struct {
 	// Todos is the current session's task list, zero when the agent has not
 	// used one.
 	Todos Todos
-	Err   error
+	// Activity is the tool call in flight, nil when none is running.
+	Activity *Activity
+	Err      error
 }
 
 type sessionInfo struct {
@@ -265,7 +281,27 @@ type messageInfo struct {
 // bare array of {info, parts} — not a {"data": [...]} envelope, and not the
 // flat message objects the /api/session/{id}/message surface implies.
 type sessionMessage struct {
-	Info messageInfo `json:"info"`
+	Info  messageInfo   `json:"info"`
+	Parts []messagePart `json:"parts"`
+}
+
+// messagePart is one part of a message. Only tool parts are used, to report
+// what the agent is executing right now; the rest (text, reasoning,
+// step markers) carry nothing a status view needs.
+type messagePart struct {
+	Type  string `json:"type"`
+	Tool  string `json:"tool"`
+	State struct {
+		Status string `json:"status"` // pending | running | completed | error
+		// Title is only filled in once a call finishes, so a call that is
+		// still running — precisely the one worth reporting — has none, and
+		// its arguments have to stand in. Confirmed against a live server.
+		Title string         `json:"title"`
+		Input map[string]any `json:"input"`
+		Time  struct {
+			Start int64 `json:"start"`
+		} `json:"time"`
+	} `json:"state"`
 }
 
 // permissionRequest is one entry of GET /permission, the server-wide list of
@@ -405,6 +441,28 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 		}
 		cur = m
 	}
+	// A tool that is pending or running is the agent's current activity.
+	// Only the newest turn is inspected: earlier turns' calls have all
+	// finished by definition.
+	if len(msgs) > 0 {
+		for _, part := range msgs[len(msgs)-1].Parts {
+			if part.Type != "tool" {
+				continue
+			}
+			if st := part.State.Status; st == "running" || st == "pending" {
+				title := part.State.Title
+				if title == "" {
+					title = describeInput(part.State.Input)
+				}
+				h.Activity = &Activity{
+					Tool:  part.Tool,
+					Title: firstLine(title),
+					Since: time.UnixMilli(part.State.Time.Start),
+				}
+			}
+		}
+	}
+
 	if cur != nil {
 		h.Model = cur.ModelID
 		h.Variant = cur.Variant
@@ -432,6 +490,31 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 // waiting for your answer, but an agent that cannot move without you is the
 // thing worth surfacing, not the fact that its turn is technically still
 // open.
+// describeInput picks the argument that best describes a tool call, for the
+// running calls that have no title yet. The keys are the ones opencode's
+// built-in tools use; an unrecognised tool simply gets no description
+// rather than a dump of its whole input.
+func describeInput(in map[string]any) string {
+	for _, k := range []string{"command", "filePath", "path", "pattern", "query", "url", "description"} {
+		if v, ok := in[k]; ok {
+			if str, ok := v.(string); ok && str != "" {
+				return str
+			}
+		}
+	}
+	return ""
+}
+
+// firstLine trims a possibly long, multi-line tool title down to something
+// a single status line can hold.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
 // fetchTodos reads the session's task list. A missing or empty list is not
 // an error: most sessions never use one.
 func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {

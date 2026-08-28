@@ -496,3 +496,103 @@ func TestTodosDoneCountsCancelledAsResolved(t *testing.T) {
 		t.Errorf("Done() = %v, want 1", d)
 	}
 }
+
+// msgWithTool builds an assistant message carrying one tool part.
+func msgWithTool(tool, status, title string, start int64) string {
+	return fmt.Sprintf(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},`+
+		`"parts":[{"type":"text"},{"type":"tool","tool":%q,"state":{"status":%q,"title":%q,"time":{"start":%d}}}]}`,
+		tool, status, title, start)
+}
+
+func TestProbeReportsTheRunningToolAsActivity(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions,
+		msgList(msgWithTool("bash", "running", "bin/rails test", 1700000000000)))
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity == nil {
+		t.Fatal("Activity = nil, want the running tool call")
+	}
+	if h.Activity.Tool != "bash" || h.Activity.Title != "bin/rails test" {
+		t.Errorf("Activity = %+v", h.Activity)
+	}
+	if h.Activity.Since.UnixMilli() != 1700000000000 {
+		t.Errorf("Since = %v", h.Activity.Since)
+	}
+}
+
+func TestProbeTreatsPendingToolsAsActivity(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("edit", "pending", "app/models/user.rb", 1)))
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity == nil || h.Activity.Tool != "edit" {
+		t.Errorf("Activity = %+v, want the pending call", h.Activity)
+	}
+}
+
+func TestProbeNoActivityWhenToolsHaveFinished(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("bash", "completed", "ls", 1)))
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity != nil {
+		t.Errorf("Activity = %+v, want nil once the call has completed", h.Activity)
+	}
+}
+
+func TestProbeActivityIgnoresEarlierTurns(t *testing.T) {
+	// Only the newest turn can have a call in flight; a stale "running"
+	// left on an older message must not be reported as current.
+	srv := fakeServer(t, twoDirSessions, msgList(
+		msgWithTool("bash", "running", "old and stuck", 1),
+		msgWithTool("grep", "completed", "done", 2),
+	))
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity != nil {
+		t.Errorf("Activity = %+v, want nil (the newest turn has nothing running)", h.Activity)
+	}
+}
+
+func TestProbeActivityTitleIsTrimmedToOneLine(t *testing.T) {
+	srv := fakeServer(t, twoDirSessions,
+		msgList(msgWithTool("bash", "running", "cd /somewhere \u0026\u0026 \\n  bin/rails test \\n  --verbose", 1)))
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity == nil {
+		t.Fatal("Activity = nil")
+	}
+	if strings.Contains(h.Activity.Title, "\n") {
+		t.Errorf("Title still multi-line: %q", h.Activity.Title)
+	}
+}
+
+func TestProbeActivityFallsBackToInputWhileRunning(t *testing.T) {
+	// A running call has no title yet — only its arguments — and that is
+	// exactly the call worth describing.
+	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},` +
+		`"parts":[{"type":"tool","tool":"bash","state":{"status":"running",` +
+		`"input":{"command":"bin/rails test","timeout":120000},"time":{"start":5}}}]}`)
+	srv := fakeServer(t, twoDirSessions, msgs)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Activity == nil {
+		t.Fatal("Activity = nil")
+	}
+	if h.Activity.Title != "bin/rails test" {
+		t.Errorf("Title = %q, want the command from the input", h.Activity.Title)
+	}
+}
+
+func TestDescribeInputPrefersKnownKeys(t *testing.T) {
+	cases := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"command": "ls"}, "ls"},
+		{map[string]any{"filePath": "a.go"}, "a.go"},
+		{map[string]any{"pattern": "func .*"}, "func .*"},
+		{map[string]any{"timeout": 5}, ""},  // nothing descriptive
+		{map[string]any{"command": 42}, ""}, // wrong type, not a crash
+		{nil, ""},
+	}
+	for _, c := range cases {
+		if got := describeInput(c.in); got != c.want {
+			t.Errorf("describeInput(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
