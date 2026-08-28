@@ -1,0 +1,110 @@
+package tmpl
+
+import (
+	"strings"
+	"testing"
+)
+
+func vars() Vars {
+	ports := map[string]int{"web": 3001, "vite": 5174}
+	return Vars{
+		Project:  "norules",
+		Feature:  "small-fixes",
+		Slot:     1,
+		Branch:   "small-fixes",
+		Worktree: "/wt/small-fixes",
+		Root:     "/p/norules",
+		Port:     ports,
+		URL:      URLsFor(ports),
+		Agent:    map[string]AgentRef{"main": {URL: "http://127.0.0.1:4096"}, "reviewer": {URL: "http://127.0.0.1:4097", Fork: "--session abc --fork"}},
+		DBSuffix: "_small_fixes",
+	}
+}
+
+func TestRenderPortsAndURLs(t *testing.T) {
+	cases := map[string]string{
+		"bin/rails server -p {{.Port.web}}":                            "bin/rails server -p 3001",
+		"{{.URL.web}}/up":                                              "http://localhost:3001/up",
+		"localhost:{{.Port.vite}}":                                     "localhost:5174",
+		"opencode attach {{.Agent.main}}":                              "opencode attach http://127.0.0.1:4096",
+		"opencode attach {{.Agent.reviewer}} {{.Agent.reviewer.Fork}}": "opencode attach http://127.0.0.1:4097 --session abc --fork",
+		"cd {{.Worktree}}":                                             "cd /wt/small-fixes",
+		"{{.Project}}/{{.Feature}}":                                    "norules/small-fixes",
+		"db{{.DBSuffix}}":                                              "db_small_fixes",
+		"no placeholders here":                                         "no placeholders here",
+	}
+	for in, want := range cases {
+		got, err := Render("t", in, vars())
+		if err != nil {
+			t.Errorf("Render(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("Render(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRenderUndefinedPortFailsLoudly(t *testing.T) {
+	// A typo must not silently produce "http://localhost:/up".
+	_, err := Render("service.web.ready.http", "http://localhost:{{.Port.wbe}}/up", vars())
+	if err == nil {
+		t.Fatal("Render succeeded with an undefined port, want error")
+	}
+	// The error must name both the field and the bad key so it is actionable.
+	if !strings.Contains(err.Error(), "service.web.ready.http") || !strings.Contains(err.Error(), "wbe") {
+		t.Errorf("error should name field and key: %v", err)
+	}
+}
+
+func TestRenderUnknownFieldErrors(t *testing.T) {
+	if _, err := Render("t", "{{.Nope}}", vars()); err == nil {
+		t.Error("unknown field: want error")
+	}
+}
+
+func TestRenderBadTemplateErrors(t *testing.T) {
+	if _, err := Render("t", "{{", vars()); err == nil {
+		t.Error("bad template: want error")
+	}
+}
+
+func TestRenderMap(t *testing.T) {
+	got, err := RenderMap("service.web.env", map[string]string{
+		"PORT":     "{{.Port.web}}",
+		"BASE_URL": "{{.URL.web}}",
+		"PLAIN":    "value",
+	}, vars())
+	if err != nil {
+		t.Fatalf("RenderMap: %v", err)
+	}
+	want := map[string]string{"PORT": "3001", "BASE_URL": "http://localhost:3001", "PLAIN": "value"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("RenderMap[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestRenderMapPropagatesError(t *testing.T) {
+	if _, err := RenderMap("env", map[string]string{"A": "{{.Nope}}"}, vars()); err == nil {
+		t.Error("RenderMap should propagate template errors")
+	}
+}
+
+func TestRenderMapEmpty(t *testing.T) {
+	got, err := RenderMap("env", nil, vars())
+	if err != nil || got != nil {
+		t.Errorf("RenderMap(nil) = %v, %v", got, err)
+	}
+}
+
+func TestURLsFor(t *testing.T) {
+	got := URLsFor(map[string]int{"web": 3000})
+	if got["web"] != "http://localhost:3000" {
+		t.Errorf("URLsFor = %v", got)
+	}
+	if len(URLsFor(nil)) != 0 {
+		t.Error("URLsFor(nil) should be empty")
+	}
+}

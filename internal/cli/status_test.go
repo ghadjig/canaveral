@@ -1,0 +1,200 @@
+package cli
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/state"
+)
+
+func TestStateLabelAgentStates(t *testing.T) {
+	cases := []struct {
+		r    row
+		want string
+	}{
+		{row{Kind: kindAgent, State: "active", AgentState: string(agent.StateIdle)}, "idle"},
+		{row{Kind: kindAgent, State: "active", AgentState: string(agent.StateBusy)}, "busy"},
+		{row{Kind: kindAgent, State: "active", AgentState: string(agent.StateWaiting)}, "waiting"},
+		{row{Kind: kindAgent, State: "active", AgentState: string(agent.StateRetrying)}, "retrying"},
+		{row{Kind: kindAgent, State: "active", AgentState: string(agent.StateIdle), LastError: "boom"}, "error"},
+		{row{Kind: kindAgent, State: "active", Detail: "unreachable"}, "no-api"},
+		{row{Kind: kindService, State: "active"}, "active"},
+	}
+	for _, c := range cases {
+		if got := stateLabel(c.r); got != c.want {
+			t.Errorf("stateLabel(%+v) = %q, want %q", c.r, got, c.want)
+		}
+	}
+}
+
+func TestIdleDetail(t *testing.T) {
+	cases := []struct {
+		r    row
+		want string
+	}{
+		{row{Kind: kindAgent, Idle: 90 * time.Second}, "1m30s"},
+		{row{Kind: kindAgent, Idle: 0}, "-"},
+		{row{Kind: kindService, Idle: 90 * time.Second}, "-"}, // only agents report idle
+	}
+	for _, c := range cases {
+		if got := idleDetail(c.r); got != c.want {
+			t.Errorf("idleDetail(%+v) = %q, want %q", c.r, got, c.want)
+		}
+	}
+}
+
+func TestWorkedDetail(t *testing.T) {
+	cases := []struct {
+		r    row
+		want string
+	}{
+		{row{Kind: kindAgent, Worked: 5 * time.Minute}, "5m0s"},
+		{row{Kind: kindAgent, Working: 12 * time.Second}, "+12.0s"},
+		{row{Kind: kindAgent, Worked: 5 * time.Minute, Working: 12 * time.Second}, "5m0s +12.0s"},
+		{row{Kind: kindAgent}, "-"},
+		{row{Kind: kindWindow, Worked: time.Minute}, "-"},
+	}
+	for _, c := range cases {
+		if got := workedDetail(c.r); got != c.want {
+			t.Errorf("workedDetail(%+v) = %q, want %q", c.r, got, c.want)
+		}
+	}
+}
+
+func TestCollectBranchStatus(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "feature work")
+
+	features := []*state.Feature{{Name: "small-fixes", Worktree: dir}}
+	got := collectBranchStatus(context.Background(), features)
+	bs, ok := got["small-fixes"]
+	if !ok {
+		t.Fatalf("no branch status for small-fixes, got %v", got)
+	}
+	if bs.Ahead != 1 || bs.Behind != 0 {
+		t.Errorf("Ahead=%d Behind=%d, want 1/0", bs.Ahead, bs.Behind)
+	}
+}
+
+func TestCollectBranchStatusSkipsFeaturesWithoutAWorktree(t *testing.T) {
+	features := []*state.Feature{{Name: "no-worktree", Worktree: ""}}
+	got := collectBranchStatus(context.Background(), features)
+	if _, ok := got["no-worktree"]; ok {
+		t.Error("expected no entry for a feature with no worktree")
+	}
+}
+
+func TestIdleForNeverReportsHugeDurationForANeverUsedAgent(t *testing.T) {
+	// Regression test: Health.Updated is the zero Time when an agent has
+	// never had a session, and time.Since of a zero Time is a
+	// multi-million-hour nonsense duration if not guarded against.
+	got := idleFor(agent.Health{Reachable: true})
+	if got != 0 {
+		t.Errorf("idleFor(never used) = %v, want 0", got)
+	}
+}
+
+func TestIdleForZeroWhileBusy(t *testing.T) {
+	got := idleFor(agent.Health{Busy: true, Updated: time.Now().Add(-time.Hour)})
+	if got != 0 {
+		t.Errorf("idleFor(busy) = %v, want 0", got)
+	}
+}
+
+func TestIdleForReportsElapsedSinceLastUpdate(t *testing.T) {
+	got := idleFor(agent.Health{Updated: time.Now().Add(-90 * time.Second)})
+	if got < 89*time.Second || got > 91*time.Second {
+		t.Errorf("idleFor = %v, want ~90s", got)
+	}
+}
+
+func TestAgentSummaryLine(t *testing.T) {
+	cases := []struct {
+		r    row
+		want string
+	}{
+		{
+			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateIdle)},
+			"  agent main: idle",
+		},
+		{
+			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateBusy), Working: 12 * time.Second},
+			"  agent main: busy · worked +12.0s",
+		},
+		{
+			row{Kind: kindAgent, Name: "main", State: "active", AgentState: string(agent.StateWaiting), Idle: 90 * time.Second, Sessions: 3},
+			"  agent main: waiting · idle 1m30s · 3 session(s)",
+		},
+	}
+	for _, c := range cases {
+		if got := agentSummaryLine(c.r); got != c.want {
+			t.Errorf("agentSummaryLine(%+v) = %q, want %q", c.r, got, c.want)
+		}
+	}
+}
+
+// TestStateLabelPlainNeverContainsANSICodes is a regression test for a real
+// bug: tabwriter measures raw byte length, invisible ANSI escape codes
+// included. A colored cell in a table where the header (or other cells)
+// aren't colored the same way inflates that column's computed width, and
+// every column after it drifts out of alignment with its header. Forcing
+// color on here (as a real terminal would) and asserting the table-safe
+// variant never emits an escape code is what would have caught it.
+func TestStateLabelPlainNeverContainsANSICodes(t *testing.T) {
+	old := useColor
+	useColor = true
+	defer func() { useColor = old }()
+
+	rows := []row{
+		{Kind: kindAgent, State: "active", AgentState: string(agent.StateBusy)},
+		{Kind: kindAgent, State: "active", AgentState: string(agent.StateWaiting)},
+		{Kind: kindAgent, State: "active", AgentState: string(agent.StateRetrying)},
+		{Kind: kindAgent, State: "active", AgentState: string(agent.StateIdle)},
+		{Kind: kindAgent, State: "active", Detail: "unreachable"},
+		{Kind: kindService, State: "active"},
+		{Kind: kindService, State: "gone"},
+		{Kind: kindWindow, State: "open"},
+		{Kind: kindWindow, State: "closed"},
+		{Kind: kindService, State: "inactive"},
+	}
+	for _, r := range rows {
+		if got := stateLabelPlain(r); strings.Contains(got, "\033") {
+			t.Errorf("stateLabelPlain(%+v) = %q, contains an ANSI escape code", r, got)
+		}
+	}
+}
+
+// TestStateLabelIsColoredWhenUseColorIsOn confirms the colored variant still
+// does its job for the free-form (non-tabwriter) agentSummaryLine.
+func TestStateLabelIsColoredWhenUseColorIsOn(t *testing.T) {
+	old := useColor
+	useColor = true
+	defer func() { useColor = old }()
+
+	got := stateLabel(row{Kind: kindAgent, State: "active", AgentState: string(agent.StateBusy)})
+	if !strings.Contains(got, "\033") {
+		t.Errorf("stateLabel = %q, want an ANSI escape code when useColor is on", got)
+	}
+}
