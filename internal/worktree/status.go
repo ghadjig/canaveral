@@ -27,6 +27,11 @@ type BranchStatus struct {
 	FilesChanged int
 	Insertions   int
 	Deletions    int
+	// Uncommitted is how many files have changes that are not committed at
+	// all — staged, unstaged or untracked. The counts above compare commits,
+	// so work in progress is invisible to them; this is the only field that
+	// reflects the working tree itself.
+	Uncommitted int
 }
 
 // Label summarises Ahead/Behind as a short phrase.
@@ -69,6 +74,14 @@ func Status(ctx context.Context, dir string) (BranchStatus, error) {
 	// that landed on Base after this branch forked from it.
 	if diff, err := gitOutput(ctx, dir, "diff", "--shortstat", base, "HEAD"); err == nil {
 		s.FilesChanged, s.Insertions, s.Deletions = parseShortstat(diff)
+	}
+
+	// --porcelain gives one line per changed path, which is stable across
+	// git versions in a way the human output is not. Untracked files count:
+	// "nothing committed yet" and "committed, but three files still lying
+	// around" are different situations to a person reading a status bar.
+	if st, err := gitOutput(ctx, dir, "status", "--porcelain"); err == nil && st != "" {
+		s.Uncommitted = strings.Count(st, "\n") + 1
 	}
 	return s, nil
 }

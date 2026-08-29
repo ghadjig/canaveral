@@ -128,6 +128,10 @@ const (
 	kindService rowKind = "service"
 	kindAgent   rowKind = "agent"
 	kindWindow  rowKind = "window"
+	// kindBranch carries a feature's git position. It is a row rather than a
+	// new top-level shape so that --json stays a flat array and existing
+	// consumers, which already switch on Kind, are unaffected.
+	kindBranch rowKind = "branch"
 )
 
 type row struct {
@@ -165,6 +169,45 @@ type row struct {
 	Provider    string        `json:"provider,omitempty"`
 	SubAgents   int           `json:"subagents,omitempty"`
 	LastError   string        `json:"last_error,omitempty"`
+
+	// Set only on kindBranch rows. Not omitempty: "+0 -0, nothing committed"
+	// is a meaningful answer and must survive the round trip.
+	Base         string `json:"base,omitempty"`
+	Ahead        *int   `json:"ahead,omitempty"`
+	Behind       *int   `json:"behind,omitempty"`
+	FilesChanged *int   `json:"files_changed,omitempty"`
+	Insertions   *int   `json:"insertions,omitempty"`
+	Deletions    *int   `json:"deletions,omitempty"`
+	Uncommitted  *int   `json:"uncommitted,omitempty"`
+}
+
+// branchRows renders each feature's git status as its own row, so --json
+// carries what the human output has always printed. Before this, the JSON
+// path returned one line before collectBranchStatus was even called.
+func branchRows(features []*state.Feature, branches map[string]worktree.BranchStatus) []row {
+	out := make([]row, 0, len(branches))
+	for _, f := range features {
+		bs, ok := branches[f.Name]
+		if !ok {
+			continue
+		}
+		// bs is declared fresh each iteration, so these pointers are all
+		// distinct.
+		out = append(out, row{
+			Feature:      f.Name,
+			Kind:         kindBranch,
+			Name:         bs.Base,
+			State:        bs.Label(),
+			Base:         bs.Base,
+			Ahead:        &bs.Ahead,
+			Behind:       &bs.Behind,
+			FilesChanged: &bs.FilesChanged,
+			Insertions:   &bs.Insertions,
+			Deletions:    &bs.Deletions,
+			Uncommitted:  &bs.Uncommitted,
+		})
+	}
+	return out
 }
 
 func runStatus(ctx context.Context, args []string) error {
@@ -219,12 +262,12 @@ func runStatus(ctx context.Context, args []string) error {
 			return nil
 		}
 		rows := collect(ctx, fsList)
+		branches := collectBranchStatus(ctx, fsList)
 		if *asJSON {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(rows)
+			return enc.Encode(append(rows, branchRows(fsList, branches)...))
 		}
-		branches := collectBranchStatus(ctx, fsList)
 		printStatus(fsList, rows, branches)
 		return nil
 	}
@@ -431,6 +474,9 @@ func printStatus(features []*state.Feature, rows []row, branches map[string]work
 			line := fmt.Sprintf("  vs %s: %s", bs.Base, bs.Label())
 			if bs.FilesChanged > 0 {
 				line += fmt.Sprintf("  +%d/-%d across %d file(s)", bs.Insertions, bs.Deletions, bs.FilesChanged)
+			}
+			if bs.Uncommitted > 0 {
+				line += fmt.Sprintf("  %d uncommitted", bs.Uncommitted)
 			}
 			fmt.Println(dim(line))
 		}

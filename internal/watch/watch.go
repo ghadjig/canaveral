@@ -128,6 +128,26 @@ type Todos struct {
 	Done float64 `json:"done"`
 }
 
+// Git is a feature's branch position relative to the project's default
+// branch, plus how much uncommitted work is lying around.
+//
+// It is refreshed on a slower cadence than everything else in a snapshot —
+// see gitCache in runner.go — so it can lag a commit by up to Options.Git.
+// A nil Git means "not measured yet", which is deliberately distinct from a
+// measured all-zero, since "+0 -0, no commits" is a thing worth showing.
+type Git struct {
+	// Base is what the comparison is against, e.g. "origin/main".
+	Base         string `json:"base,omitempty"`
+	Ahead        int    `json:"ahead"`
+	Behind       int    `json:"behind"`
+	FilesChanged int    `json:"files_changed"`
+	Insertions   int    `json:"insertions"`
+	Deletions    int    `json:"deletions"`
+	// Uncommitted counts working-tree changes, which the commit-based
+	// counts above cannot see.
+	Uncommitted int `json:"uncommitted"`
+}
+
 // Feature is one feature's live state.
 type Feature struct {
 	Project string `json:"project"`
@@ -145,6 +165,7 @@ type Feature struct {
 	// CreatedAt is when the feature was first created.
 	CreatedAt time.Time `json:"created_at"`
 	Agents    []Agent   `json:"agents,omitempty"`
+	Git       *Git      `json:"git,omitempty"`
 }
 
 // NeedsAttention reports whether this feature wants a person.

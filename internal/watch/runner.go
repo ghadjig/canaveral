@@ -28,6 +28,11 @@ type Options struct {
 	// a missed or unrecognised event can leave the view briefly stale but
 	// never permanently wrong.
 	Safety time.Duration
+	// Git is how often each feature's branch status is remeasured. Far
+	// slower than the rest deliberately: it costs several git subprocesses
+	// per feature, and commit counts do not move on the timescale the other
+	// fields do. See gitCache.
+	Git time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -39,6 +44,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Safety <= 0 {
 		o.Safety = 30 * time.Second
+	}
+	if o.Git <= 0 {
+		o.Git = 30 * time.Second
 	}
 	return o
 }
@@ -52,6 +60,8 @@ type Runner struct {
 	subs map[string]context.CancelFunc
 
 	trigger chan struct{}
+	// git is measured out of band; see gitCache.
+	git *gitCache
 	// probe is swappable so tests do not need real agent servers.
 	probe func(ctx context.Context, url, dir string) agent.Health
 	// load is swappable for the same reason.
@@ -66,6 +76,7 @@ func NewRunner(opt Options) *Runner {
 		prev:    map[string]Feature{},
 		subs:    map[string]context.CancelFunc{},
 		trigger: make(chan struct{}, 1),
+		git:     newGitCache(),
 		probe:   agent.Probe,
 		load:    loadFeatures,
 		now:     time.Now,
@@ -102,6 +113,7 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 	}
 
 	r.resubscribe(ctx)
+	go r.runGit(ctx)
 	snap, _ := r.refresh(ctx)
 	write(snap)
 
@@ -263,6 +275,9 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 			prev = &p
 		}
 		v := Build(f, results[f.Key()], prev, now)
+		// Measured on its own schedule, so it is attached here rather than
+		// computed inside Build.
+		v.Git = r.git.get(f.Key())
 		next[f.Key()] = v
 		built = append(built, v)
 	}
@@ -317,6 +332,11 @@ func sameTodos(a, b *Todos) bool {
 
 func sameFeature(a, b Feature) bool {
 	if a.Status != b.Status || !a.Since.Equal(b.Since) || len(a.Agents) != len(b.Agents) {
+		return false
+	}
+	// Without this a commit would never reach the consumer: the git refresh
+	// wakes the runner, but the rebuild would compare equal and be dropped.
+	if !sameGit(a.Git, b.Git) {
 		return false
 	}
 	for i := range a.Agents {

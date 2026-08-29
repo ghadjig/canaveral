@@ -384,7 +384,13 @@ canaveral watch --all    # every project
         "detail": "When should canaveral fork a session?",
         "options": ["Always", "Never"]
       }
-    }]
+    }],
+    "git": {                          // branch position; measured slowly, see below
+      "base": "origin/main",
+      "ahead": 6, "behind": 0,
+      "files_changed": 9, "insertions": 148, "deletions": 32,
+      "uncommitted": 2                // working-tree changes, staged or not
+    }
   }],
   "summary": {
     "total": 3, "needs_attention": 1,
@@ -415,6 +421,21 @@ in their APIs), and `current` is usually the most informative single line you
 can show: what the agent is actually doing right now. Snapshots are emitted
 when todo progress moves even if the headline status has not changed, so a
 progress gauge keeps up while an agent stays `working`.
+
+`git` is where the feature's branch stands relative to the project's default
+branch: `ahead` and `behind` in commits, `insertions` and `deletions` from the
+diff against the base's current tip, and `uncommitted` as a count of files with
+changes that are not committed at all — the only field that reflects the
+working tree rather than committed history.
+
+It is measured on its own slow ticker (`--git`, 30 seconds by default) instead
+of during a snapshot rebuild. A rebuild is cheap, reads a few small files and
+runs on a 150ms debounce; worktree status is not, and spawns several git
+subprocesses per feature. Computing it inline would put dozens of git processes
+a second into a daemon that otherwise does no repository I/O at all, so expect
+`git` to lag a commit by up to that interval. The object is absent entirely
+until the first measurement lands, which is deliberately distinct from a
+measured all-zero: "nothing committed yet" is a real answer worth showing.
 
 `since` is when a feature entered its current status, and is deliberately
 **not** refreshed while the status is unchanged, so a "how long has it been

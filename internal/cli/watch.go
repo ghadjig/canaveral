@@ -25,6 +25,7 @@ func runWatch(ctx context.Context, args []string) error {
 		debounce = fs.Duration("debounce", 150*time.Millisecond, "coalesce bursts of events into one refresh")
 		rescan   = fs.Duration("rescan", 3*time.Second, "how often to look for new or removed features")
 		safety   = fs.Duration("safety", 30*time.Second, "full refresh interval, in case an event is missed")
+		git      = fs.Duration("git", 30*time.Second, "how often to remeasure branch stats (costs git subprocesses)")
 	)
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
@@ -44,6 +45,7 @@ func runWatch(ctx context.Context, args []string) error {
 		Debounce: *debounce,
 		Rescan:   *rescan,
 		Safety:   *safety,
+		Git:      *git,
 	})
 
 	// Line-buffered: a consumer reads this a line at a time, so each
