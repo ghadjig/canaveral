@@ -30,7 +30,7 @@ func commands() []command {
 		{"ls", "list features", runLs},
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
-		{"merge", "rebase and merge a feature's branch, then tear it down", runMerge},
+		{"merge", "rebase and merge the current (or named) feature, then tear it down", runMerge},
 		{"attach", "attach a terminal to a feature's agent", runAttach},
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"path", "print a feature's worktree path", runPath},

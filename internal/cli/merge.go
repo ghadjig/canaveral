@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/state"
@@ -22,7 +23,7 @@ import (
 func runMerge(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral merge <feature> [flags]\n\nRebase a feature's branch onto the target branch, merge it in, then tear\nthe feature's workspace down. Refuses if the worktree has uncommitted\nchanges.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral merge [feature] [flags]\n\nRebase a feature's branch onto the target branch, merge it in, then tear\nthe feature's workspace down. Defaults to whichever feature's worktree\nyou're currently in. Refuses if the worktree has uncommitted changes.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (
@@ -34,18 +35,24 @@ func runMerge(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 {
-		return fmt.Errorf("specify exactly one feature name, e.g. `canaveral merge small-fixes`")
+	if len(pos) > 1 {
+		return fmt.Errorf("expected at most one feature name, got %d: %s", len(pos), strings.Join(pos, " "))
 	}
 
 	m, err := loadManifest()
 	if err != nil {
 		return err
 	}
-	name := feature.Slug(pos[0])
-	f, err := state.Load(m.Name, name)
-	if err != nil {
-		return fmt.Errorf("%s: %w", name, err)
+	var f *state.Feature
+	if len(pos) == 1 {
+		name := feature.Slug(pos[0])
+		if f, err = state.Load(m.Name, name); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	} else {
+		if f, err = currentFeature(m); err != nil {
+			return err
+		}
 	}
 
 	target := *into
