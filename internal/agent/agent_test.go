@@ -25,6 +25,19 @@ func asst(created int64, completed string, tokensIn, tokensOut int, cost float64
 
 func msgList(msgs ...string) string { return "[" + strings.Join(msgs, ",") + "]" }
 
+// msgWithID builds an assistant message carrying an explicit "id" and,
+// optionally, extra top-level fields (e.g. "error":{...}) — needed to
+// exercise classify's staleness check, which matches a question or
+// permission's tool.messageID against a specific message.
+func msgWithID(id string, created int64, completed string, extra string) string {
+	comp := ""
+	if completed != "" {
+		comp = `,"completed":` + completed
+	}
+	return fmt.Sprintf(`{"info":{"id":%q,"role":"assistant","modelID":"m1","time":{"created":%d%s}%s}}`,
+		id, created, comp, extra)
+}
+
 // fakeServer serves the endpoints Probe depends on, on the same API surface
 // the real server uses: /api/session for the session list, but the bare
 // /session/{id}/message, /question and /permission for everything else.
@@ -140,6 +153,76 @@ func TestProbeQuestionOutranksPermission(t *testing.T) {
 	h := Probe(context.Background(), srv.URL, "/w/mine")
 	if h.Pending == nil || h.Pending.Kind != BlockQuestion {
 		t.Errorf("Pending = %+v, want the question to take precedence", h.Pending)
+	}
+}
+
+func TestProbeIgnoresAStaleQuestionFromAnAbortedTurn(t *testing.T) {
+	// Regression test: opencode crashing (or being killed) mid-question can
+	// leave /question listing that request forever — there is no live TUI
+	// left to answer it, and nothing times it out. Once the message the
+	// request names has actually completed (here, aborted) and the
+	// conversation has moved on, the request is stale and must not keep
+	// reporting the agent as blocked.
+	msgs := msgList(
+		msgWithID("msg_aborted", 1, "2", `,"error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}`),
+		asst(3, "4", 0, 0, 0, `,"finish":"stop"`), // the conversation continued past it
+	)
+	questions := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_aborted"},` +
+		`"questions":[{"header":"Stale","question":"Still here?","options":[]}]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle; the question's turn already ended", h.State)
+	}
+	if h.Pending != nil {
+		t.Errorf("Pending = %+v, want nil for a stale question", h.Pending)
+	}
+}
+
+func TestProbeHonoursAQuestionStillOpen(t *testing.T) {
+	// Same shape as the staleness test above, but the named message has not
+	// completed: the question is genuinely still pending and must still
+	// block.
+	msgs := msgList(msgWithID("msg_open", 1, "", ""))
+	questions := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_open"},` +
+		`"questions":[{"header":"Pick","question":"Which?","options":[]}]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Errorf("State = %q, want waiting; the question's message is still open", h.State)
+	}
+}
+
+func TestProbeIgnoresAStalePermissionFromAnAbortedTurn(t *testing.T) {
+	// Same bug, on the permission side: a crash mid-permission-request can
+	// leave /permission listing it forever even though its turn is long
+	// over.
+	msgs := msgList(
+		msgWithID("msg_aborted", 1, "2", `,"error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}`),
+		asst(3, "4", 0, 0, 0, `,"finish":"stop"`),
+	)
+	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_aborted"},"permission":"bash","patterns":["rm -rf /"]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle; the permission's turn already ended", h.State)
+	}
+	if h.Pending != nil {
+		t.Errorf("Pending = %+v, want nil for a stale permission", h.Pending)
+	}
+}
+
+func TestProbeHonoursAPermissionStillOpen(t *testing.T) {
+	msgs := msgList(msgWithID("msg_open", 1, "", ""))
+	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_open"},"permission":"bash","patterns":["echo hi"]}]`
+	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.State != StateWaiting {
+		t.Errorf("State = %q, want waiting; the permission's message is still open", h.State)
 	}
 }
 

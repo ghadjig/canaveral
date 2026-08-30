@@ -322,12 +322,20 @@ type messagePart struct {
 	} `json:"state"`
 }
 
+// requestTool identifies the message and tool call a question or
+// permission request was raised from, which is what lets classify tell a
+// genuinely open request from one whose turn has since ended.
+type requestTool struct {
+	MessageID string `json:"messageID"`
+}
+
 // permissionRequest is one entry of GET /permission, the server-wide list of
 // pending permission requests.
 type permissionRequest struct {
-	SessionID  string   `json:"sessionID"`
-	Permission string   `json:"permission"`
-	Patterns   []string `json:"patterns"`
+	SessionID  string      `json:"sessionID"`
+	Permission string      `json:"permission"`
+	Patterns   []string    `json:"patterns"`
+	Tool       requestTool `json:"tool"`
 }
 
 // questionRequest is one entry of GET /question, the server-wide list of
@@ -335,7 +343,8 @@ type permissionRequest struct {
 // is surfaced, since a compact widget has room for one headline and the
 // rest are visible in the TUI anyway.
 type questionRequest struct {
-	SessionID string `json:"sessionID"`
+	SessionID string      `json:"sessionID"`
+	Tool      requestTool `json:"tool"`
 	Questions []struct {
 		Question string `json:"question"`
 		Header   string `json:"header"`
@@ -453,8 +462,15 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// adding the subagents' own turns would double-count it.
 	now := time.Now()
 	var cur *messageInfo
+	// completedByID records whether each of this session's own messages has
+	// finished, keyed by message ID. classify uses it to tell a genuinely
+	// open question or permission request from one whose turn has already
+	// ended — see classify's comment for why /question and /permission
+	// cannot always be trusted alone.
+	completedByID := make(map[string]bool, len(msgs))
 	for i := range msgs {
 		m := &msgs[i].Info
+		completedByID[m.ID] = m.Time.Completed != nil
 		if m.Role != "assistant" {
 			continue
 		}
@@ -537,7 +553,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 
 	h.Todos = fetchTodos(ctx, baseURL, newest.ID)
-	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy)
+	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, completedByID)
 	return h
 }
 
@@ -633,7 +649,16 @@ func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {
 // else, including busy: opencode keeps the session "busy" while a tool call
 // sits waiting for your answer, but an agent that cannot move without you
 // is the thing worth surfacing.
-func classify(ctx context.Context, baseURL, sessionID string, family map[string]bool, busy bool) (State, *Pending) {
+//
+// Neither list can be trusted blindly, though: if opencode crashes (or is
+// killed) while a question or permission tool call is outstanding, restarting
+// it can leave that request listed forever — there is no one left to answer
+// it, and nothing left to time it out. The message the request names is
+// checked before honouring it: once that message has a completed time, its
+// turn has ended one way or another (answered through a channel this poll
+// missed, aborted, or superseded by a restart) and the request is stale,
+// no matter what /question or /permission still say.
+func classify(ctx context.Context, baseURL, sessionID string, family map[string]bool, busy bool, completedByID map[string]bool) (State, *Pending) {
 	// The server-wide lists are used rather than the per-session ones: they
 	// are a single request no matter how many sessions exist, and they live
 	// on the same API surface as /session/{id}/message, which is the one
@@ -642,6 +667,9 @@ func classify(ctx context.Context, baseURL, sessionID string, family map[string]
 	if err := getJSON(ctx, baseURL+"/question", &qs); err == nil {
 		for _, req := range qs {
 			if !family[req.SessionID] {
+				continue
+			}
+			if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
 				continue
 			}
 			for _, q := range req.Questions {
@@ -658,6 +686,9 @@ func classify(ctx context.Context, baseURL, sessionID string, family map[string]
 	if err := getJSON(ctx, baseURL+"/permission", &perms); err == nil {
 		for _, req := range perms {
 			if !family[req.SessionID] {
+				continue
+			}
+			if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
 				continue
 			}
 			return StateWaiting, &Pending{
@@ -679,6 +710,44 @@ func classify(ctx context.Context, baseURL, sessionID string, family map[string]
 		return StateBusy, nil
 	}
 	return StateIdle, nil
+}
+
+// toolCallStillOpen reports whether the message a question or permission
+// request names (via its "tool" field) is still an open turn, i.e. the
+// request is genuinely blocking rather than a leftover from a turn that has
+// already ended.
+//
+// messageID is empty on an opencode version that predates the tool field;
+// such a request is trusted as-is, since there is nothing to check it
+// against and treating "unknown" as "stale" would hide real blocks.
+//
+// newestSessionID/completedByID cover the one session Probe already fetched
+// the transcript for, which is the common case (the request belongs to the
+// conversation itself, or the conversation is blocked on its own turn). A
+// request from a different family member — a subagent asking its own
+// question or permission — needs its own message fetched, which happens
+// rarely enough that the extra round trip is not worth avoiding.
+func toolCallStillOpen(ctx context.Context, baseURL, reqSessionID, messageID, newestSessionID string, completedByID map[string]bool) bool {
+	if messageID == "" {
+		return true
+	}
+	if reqSessionID == newestSessionID {
+		done, ok := completedByID[messageID]
+		if !ok {
+			return true
+		}
+		return !done
+	}
+	var msgs []sessionMessage
+	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(reqSessionID)+"/message", &msgs); err != nil {
+		return true
+	}
+	for _, m := range msgs {
+		if m.Info.ID == messageID {
+			return m.Info.Time.Completed == nil
+		}
+	}
+	return true
 }
 
 func getJSON(ctx context.Context, u string, out any) error {
