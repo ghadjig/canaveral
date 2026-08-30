@@ -41,7 +41,8 @@ $ canaveral small-fixes
 | `canaveral reset [feature...]` | Bring up whatever is missing; `--all` for every feature |
 | `canaveral ls` | Features, branches, ports, service and window counts |
 | `canaveral status [feature...]` | Per-item state, idle/worked time, CPU, memory, tokens, cost, branch status |
-| `canaveral rm <feature>` | Stop everything and drop the worktree, keeping the branch |
+| `canaveral rm <feature>` | Stop everything and drop the worktree; deletes the branch too once merged |
+| `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
 | `canaveral path <feature>` | Print a feature's worktree path |

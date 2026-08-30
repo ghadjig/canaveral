@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
+	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -24,6 +26,39 @@ func resolveFeature(name string) (*state.Feature, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// currentFeature finds the feature whose worktree contains the working
+// directory, for commands willing to default to "whichever feature you're
+// currently in" when no name is given (e.g. `canaveral merge` run from
+// inside a feature's own worktree).
+func currentFeature(m *manifest.Manifest) (*state.Feature, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	if resolved, err := filepath.EvalSymlinks(wd); err == nil {
+		wd = resolved
+	}
+
+	names, err := state.List(m.Name)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		f, err := state.Load(m.Name, name)
+		if err != nil {
+			continue
+		}
+		wt := f.Worktree
+		if resolved, err := filepath.EvalSymlinks(wt); err == nil {
+			wt = resolved
+		}
+		if wd == wt || strings.HasPrefix(wd, wt+string(filepath.Separator)) {
+			return f, nil
+		}
+	}
+	return nil, fmt.Errorf("not inside a feature worktree; specify a feature name")
 }
 
 func runPath(ctx context.Context, args []string) error {
