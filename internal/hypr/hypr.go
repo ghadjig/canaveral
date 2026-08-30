@@ -486,6 +486,54 @@ func Close(ctx context.Context, address string) error {
 	return exec.CommandContext(ctx, "hyprctl", "dispatch", "closewindow", "address:"+address).Run()
 }
 
+// IsSelf reports whether c is the window hosting the calling process — i.e.
+// whether c.PID is an ancestor of (or is) os.Getpid(). This lets callers that
+// are about to close a batch of windows they own recognize and defer closing
+// the one they're themselves running in, since dispatching closewindow
+// against it can terminate the calling process immediately.
+func IsSelf(c Client) bool {
+	if c.PID <= 0 {
+		return false
+	}
+	pid := os.Getpid()
+	for depth := 0; depth < 64 && pid > 1; depth++ {
+		if pid == c.PID {
+			return true
+		}
+		ppid, err := parentPID(pid)
+		if err != nil {
+			return false
+		}
+		pid = ppid
+	}
+	return false
+}
+
+// parentPID reads the parent PID of pid from /proc, for walking the process
+// ancestry chain in IsSelf.
+func parentPID(pid int) (int, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	// Format: pid (comm) state ppid ... — comm may itself contain spaces or
+	// parens, so find the last ')' and split from there.
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+2 >= len(s) {
+		return 0, fmt.Errorf("unexpected /proc/%d/stat format", pid)
+	}
+	fields := strings.Fields(s[i+2:])
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("unexpected /proc/%d/stat format", pid)
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, err
+	}
+	return ppid, nil
+}
+
 var classSafe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
 // ClassPrefix is the shared prefix of every window class for a feature.

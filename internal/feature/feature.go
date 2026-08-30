@@ -1009,37 +1009,15 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	}
 	r.OK("stopped %d service(s), %d agent(s)", len(f.Services), len(f.Agents))
 
-	if err := hypr.Available(ctx); err == nil && len(f.Windows) > 0 {
-		if clients, err := hypr.Clients(ctx); err == nil {
-			open := hypr.ByClass(clients)
-			closed := 0
-			for _, w := range f.Windows {
-				if c, ok := open[w.Class]; ok {
-					if err := hypr.Close(ctx, c.Address); err == nil {
-						closed++
-					}
-				}
-			}
-			if closed > 0 {
-				r.OK("closed %d window(s)", closed)
-			}
-		}
-		// Windows the user opened here themselves are not canaveral's to
-		// close — they may hold real work — but leaving them behind
-		// strands them on a workspace named for a feature that no longer
-		// exists, and keeps that workspace alive. Move them somewhere
-		// ordinary on the same monitor instead.
-		rehomeStrays(ctx, f, r)
-
-		// Hyprland won't destroy a workspace while it's a monitor's active
-		// one, even with zero windows left (confirmed empirically) — so
-		// closing the last window above can leave the feature's workspace
-		// dangling forever on whatever monitor last displayed it, as a
-		// phantom entry in the waybar pill list. Release it explicitly.
-		if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
-			r.Warn("%v", err)
-		}
-	}
+	// Windows are closed last, deliberately. `canaveral merge` (and `remove`)
+	// is very often invoked from a terminal that is itself one of this
+	// feature's own windows, so closing windows can terminate the very
+	// process running this function. If that happens partway through, we
+	// want it to happen *after* every step that leaves durable state behind
+	// (worktree, branch, state file) has already succeeded — never before.
+	// Otherwise the feature space survives as an orphaned worktree/branch/
+	// state record with no windows left to manage it, and the terminal that
+	// invoked the command is left stuck talking to a dead shell.
 
 	if !keepWorktree && f.Worktree != "" {
 		if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
@@ -1063,7 +1041,59 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 			r.OK("kept branch %s", f.Branch)
 		}
 	}
-	return state.Remove(f.Project, f.Name)
+
+	if err := state.Remove(f.Project, f.Name); err != nil {
+		return err
+	}
+
+	if err := hypr.Available(ctx); err == nil && len(f.Windows) > 0 {
+		if clients, err := hypr.Clients(ctx); err == nil {
+			open := hypr.ByClass(clients)
+			closed := 0
+			var self *hypr.Client
+			for _, w := range f.Windows {
+				if c, ok := open[w.Class]; ok {
+					if hypr.IsSelf(c) {
+						// Close our own window last of all, and after
+						// everything above has already returned
+						// successfully, so the report below reaches the
+						// user before their terminal potentially dies.
+						cc := c
+						self = &cc
+						continue
+					}
+					if err := hypr.Close(ctx, c.Address); err == nil {
+						closed++
+					}
+				}
+			}
+			if closed > 0 {
+				r.OK("closed %d window(s)", closed)
+			}
+			if self != nil {
+				r.OK("closing this window")
+				_ = hypr.Close(ctx, self.Address)
+				closed++
+			}
+		}
+		// Windows the user opened here themselves are not canaveral's to
+		// close — they may hold real work — but leaving them behind
+		// strands them on a workspace named for a feature that no longer
+		// exists, and keeps that workspace alive. Move them somewhere
+		// ordinary on the same monitor instead.
+		rehomeStrays(ctx, f, r)
+
+		// Hyprland won't destroy a workspace while it's a monitor's active
+		// one, even with zero windows left (confirmed empirically) — so
+		// closing the last window above can leave the feature's workspace
+		// dangling forever on whatever monitor last displayed it, as a
+		// phantom entry in the waybar pill list. Release it explicitly.
+		if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
+			r.Warn("%v", err)
+		}
+	}
+
+	return nil
 }
 
 // EnvFor returns the environment a command run inside a feature's worktree
