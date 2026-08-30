@@ -395,8 +395,20 @@ opencode = 0.4
 	}
 }
 
-func TestWorktreeRootDefaultsToStateDir(t *testing.T) {
+func TestWorktreeRootDefaultsToWorktreesBesideTheProject(t *testing.T) {
 	m := &Manifest{Root: "/p/norules"}
+	got, err := m.WorktreeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/p/norules/worktrees" {
+		t.Errorf("WorktreeRoot = %q, want worktrees beside the project by default", got)
+	}
+}
+
+func TestWorktreeRootStateOptsIntoCanaveralsStateDir(t *testing.T) {
+	m := &Manifest{Root: "/p/norules"}
+	m.Worktree.Root = "state"
 	got, err := m.WorktreeRoot()
 	if err != nil {
 		t.Fatal(err)

@@ -17,7 +17,7 @@ tailed server logs, a browser.
 ```
 $ canaveral small-fixes
 :: norules/small-fixes  ~/projects/norules
- ok worktree ~/.local/state/canaveral/worktrees/norules/small-fixes on small-fixes
+ ok worktree ~/projects/norules/worktrees/small-fixes on small-fixes
     linked node_modules
     copied .env
 :: service web  bin/rails server -p 3000
@@ -29,7 +29,7 @@ $ canaveral small-fixes
  ok window chrome
  ok norules/small-fixes ready
     branch   small-fixes
-    worktree ~/.local/state/canaveral/worktrees/norules/small-fixes
+    worktree ~/projects/norules/worktrees/small-fixes
     ports    web=3000
 ```
 
@@ -131,9 +131,9 @@ isolation = "shared"        # or "suffix"
 # A fresh worktree holds tracked files only; bring across what the app needs.
 [worktree]
 # Where worktrees are created. Relative paths resolve against the project
-# root, so "worktrees" keeps them beside the code as ./worktrees/<feature>.
-# Omit to use canaveral's own state directory and leave the repo untouched.
-root = "worktrees"
+# root, so "worktrees" (the default, no need to set it) keeps them beside
+# the code as ./worktrees/<feature>. Set to "state" to use canaveral's own
+# state directory instead and leave the repo untouched.
 link  = ["node_modules", "config/master.key"]   # shared, large
 copy  = [".env", "app/assets/builds"]           # per-feature
 setup = "bundle install"
@@ -244,12 +244,13 @@ canaveral exec small-fixes -- bin/rails test
 feature's own services get, and exits with the command's own status, so it
 composes in scripts.
 
-`[worktree] root = "worktrees"` shortens the paths further by keeping
-worktrees beside the code. Add `worktrees/` to `.gitignore` if you do:
-`git status` will otherwise show them, though `git clean -xdf` is safe
-(it skips nested repositories) and `rg`/`git grep` respect the ignore.
-Non-gitignore-aware tools such as plain `grep -r` will still descend into
-every feature's copy.
+Worktrees live beside the code by default (`./worktrees/<feature>`), so add
+`worktrees/` to `.gitignore`: `git status` will otherwise show them, though
+`git clean -xdf` is safe (it skips nested repositories) and `rg`/`git grep`
+respect the ignore. Non-gitignore-aware tools such as plain `grep -r` will
+still descend into every feature's copy. Set `[worktree] root = "state"` to
+put them in canaveral's own state directory instead and leave the repo
+completely untouched.
 
 For a shell shortcut with tab-completion, in `~/.bash_aliases`:
 
@@ -457,8 +458,11 @@ permanently wrong.
 ~/.local/state/canaveral/
   features/<project>/<feature>.json   slot, branch, ports, units, windows
   logs/<project>/<feature>/*.log      service and agent logs
-  worktrees/<project>/<feature>/      the feature checkout
+  worktrees/<project>/<feature>/      the feature checkout, only with [worktree] root = "state"
 ```
+
+By default a feature's checkout lives beside its project instead, at
+`<project_root>/worktrees/<feature>/` (see `[worktree] root` above).
 
 Removing a feature closes only the windows canaveral opened — anything you
 opened on that workspace yourself is moved to an ordinary workspace on the

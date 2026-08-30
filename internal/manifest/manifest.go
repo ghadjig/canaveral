@@ -121,14 +121,15 @@ type Database struct {
 // the feature's checkout will not build.
 type Worktree struct {
 	// Root is where this project's worktrees are created. A relative path
-	// is resolved against the project root, so "worktrees" keeps them
-	// beside the code and reachable as ./worktrees/<feature>; an absolute
-	// path (with ~ expanded) puts them wherever you like.
+	// is resolved against the project root, so "worktrees" (the default)
+	// keeps them beside the code and reachable as ./worktrees/<feature>;
+	// an absolute path (with ~ expanded) puts them wherever you like.
 	//
-	// Empty keeps canaveral's own state directory, which leaves the repo
-	// completely untouched. Putting them in the repo costs a .gitignore
-	// line and means non-gitignore-aware tools (plain grep -r, find) will
-	// descend into every feature's copy.
+	// The special value "state" opts back into canaveral's own state
+	// directory instead, leaving the repo completely untouched. Putting
+	// worktrees in the repo costs a .gitignore line and means
+	// non-gitignore-aware tools (plain grep -r, find) will descend into
+	// every feature's copy.
 	Root string `toml:"root"`
 	// Link creates a symlink in the worktree pointing at the main checkout.
 	// Best for large or shared artifacts such as node_modules.
@@ -537,14 +538,19 @@ func MergeEnv(maps ...map[string]string) map[string]string {
 }
 
 // WorktreeRoot resolves where this project's worktrees belong, or "" to use
-// canaveral's own state directory.
+// canaveral's own state directory (the "state" opt-out).
 //
-// Relative paths are resolved against the project root rather than the
-// working directory, so the setting means the same thing no matter where a
-// command is run from.
+// Unset defaults to "worktrees", so a project gets worktrees beside its code
+// without having to configure anything -- matching how every other feature
+// of a project lives in the repo. Relative paths are resolved against the
+// project root rather than the working directory, so the setting means the
+// same thing no matter where a command is run from.
 func (m *Manifest) WorktreeRoot() (string, error) {
 	raw := strings.TrimSpace(m.Worktree.Root)
 	if raw == "" {
+		raw = "worktrees"
+	}
+	if raw == "state" {
 		return "", nil
 	}
 	if strings.HasPrefix(raw, "~") {
