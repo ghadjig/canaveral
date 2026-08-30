@@ -200,3 +200,97 @@ func currentBranch(ctx context.Context, dir string) (string, error) {
 func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	return currentBranch(ctx, dir)
 }
+
+// DefaultBranch guesses a repo's main integration branch: the remote's HEAD
+// if one is configured, falling back to a local "main" or "master".
+func DefaultBranch(ctx context.Context, repo string) (string, error) {
+	if out, err := exec.CommandContext(ctx, "git", "-C", repo,
+		"symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output(); err == nil {
+		if name := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/"); name != "" {
+			return name, nil
+		}
+	}
+	for _, name := range []string{"main", "master"} {
+		if branchExists(ctx, repo, name) {
+			return name, nil
+		}
+	}
+	return "", errors.New("could not determine the default branch; pass --into explicitly")
+}
+
+// Checkout switches repo's working tree to branch.
+func Checkout(ctx context.Context, repo, branch string) error {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "checkout", branch)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git checkout %s: %w: %s", branch, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// Rebase replays dir's checked-out branch on top of onto, aborting cleanly
+// (rather than leaving a half-finished rebase behind) if it conflicts.
+func Rebase(ctx context.Context, dir, onto string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rebase", onto)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		_ = exec.CommandContext(ctx, "git", "-C", dir, "rebase", "--abort").Run()
+		return fmt.Errorf("rebase onto %s: %w: %s", onto, err, strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
+// MergeBranch merges branch into repo's currently checked-out branch, aborting
+// cleanly on conflict. With ffOnly it refuses to create a merge commit at all;
+// otherwise it always creates one (--no-ff), even when a fast-forward would
+// do, so the merge point stays visible in history.
+func MergeBranch(ctx context.Context, repo, branch string, ffOnly bool) error {
+	args := []string{"-C", repo, "merge"}
+	if ffOnly {
+		args = append(args, "--ff-only")
+	} else {
+		args = append(args, "--no-ff", "-m", "Merge branch '"+branch+"'")
+	}
+	args = append(args, branch)
+
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		_ = exec.CommandContext(ctx, "git", "-C", repo, "merge", "--abort").Run()
+		return fmt.Errorf("merge %s: %w: %s", branch, err, strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
+// IsMerged reports whether branch's history is fully contained in target.
+func IsMerged(ctx context.Context, repo, branch, target string) (bool, error) {
+	err := exec.CommandContext(ctx, "git", "-C", repo,
+		"merge-base", "--is-ancestor", branch, target).Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeleteBranch removes a local branch. force uses -D instead of -d, allowing
+// deletion of a branch that is not merged into its upstream.
+func DeleteBranch(ctx context.Context, repo, branch string, force bool) error {
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "branch", flag, branch)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git branch %s %s: %w: %s", flag, branch, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}

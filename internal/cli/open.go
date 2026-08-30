@@ -191,13 +191,14 @@ func runReset(ctx context.Context, args []string) error {
 func runRm(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral rm <feature...> [flags]\n\nStop a feature and remove its worktree. The branch is kept.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral rm <feature...> [flags]\n\nStop a feature and remove its worktree. The branch is deleted too if it has\nalready been fully merged into the default branch; otherwise it is kept.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (
-		keep  = fs.Bool("keep-worktree", false, "leave the worktree on disk")
-		force = fs.Bool("force", false, "remove the worktree even with uncommitted changes")
-		all   = fs.Bool("all", false, "remove every feature of the project")
+		keep       = fs.Bool("keep-worktree", false, "leave the worktree on disk")
+		force      = fs.Bool("force", false, "remove the worktree even with uncommitted changes")
+		keepBranch = fs.Bool("keep-branch", false, "never delete the branch, even if merged")
+		all        = fs.Bool("all", false, "remove every feature of the project")
 	)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -227,7 +228,7 @@ func runRm(ctx context.Context, args []string) error {
 			continue
 		}
 		r.Step("removing %s", color(cBold, f.Key()))
-		if err := feature.Remove(ctx, f, *keep, *force, r); err != nil {
+		if err := feature.Remove(ctx, f, *keep, *force, *keepBranch, r); err != nil {
 			if len(names) == 1 {
 				return err
 			}

@@ -971,7 +971,13 @@ func portOf(url string) int {
 }
 
 // Remove tears a feature down: units, windows, worktree and state.
-func Remove(ctx context.Context, f *state.Feature, keepWorktree, force bool, r Reporter) error {
+//
+// Once the worktree is gone, the branch is deleted too if (and only if) it
+// has been fully merged into the repo's default branch — merge history is
+// what makes it safe, not the caller's say-so, so unmerged work is always
+// kept regardless of keepBranch. keepBranch exists purely to opt out of
+// deletion even when merged, e.g. to keep it around for a while longer.
+func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
 	// Best-effort: if this feature is namespaced, remember its newest
 	// opencode session before tearing down its agent, so a later sibling
 	// under the same namespace can still fork from it even though this
@@ -1040,8 +1046,22 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force bool, r R
 			return err
 		}
 		_ = worktree.Prune(ctx, f.Root)
-		// The worktree is disposable; the branch holds the work and is kept.
-		r.OK("removed worktree, kept branch %s", f.Branch)
+		r.OK("removed worktree")
+
+		deleted := false
+		if !keepBranch {
+			if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
+				if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
+					if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
+						deleted = true
+						r.OK("deleted merged branch %s", f.Branch)
+					}
+				}
+			}
+		}
+		if !deleted {
+			r.OK("kept branch %s", f.Branch)
+		}
 	}
 	return state.Remove(f.Project, f.Name)
 }
