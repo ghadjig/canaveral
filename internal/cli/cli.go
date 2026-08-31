@@ -54,6 +54,7 @@ func commands() []command {
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
 		{"hyprwatch", "react to Hyprland events instead of polling (waybar refresh)", runHyprwatch},
+		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}
 }

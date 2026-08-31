@@ -49,6 +49,7 @@ $ canaveral small-fixes
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral hyprwatch [--install]` | Event-driven waybar refresh (see below) instead of polling |
+| `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
 `canaveral <feature>` and `canaveral reset` run the same reconcile pass, so both
@@ -546,11 +547,26 @@ of one module rendering a list:
 // ...canaveral-2 through canaveral-6, same shape, slot number changed
 ```
 
-`canaveral-ws-slot.sh N` prints slot N's feature workspace as compact JSON
-(`{"text": "...", "class": "active|inactive|hidden"}`); style `.active`,
-`.inactive` and `.hidden` in your waybar CSS for real padding, rounded corners
-and colour. `canaveral-goto N` jumps to the same workspace slot N refers to,
-pulling it onto your current monitor first if canaveral built it elsewhere.
+`canaveral-ws-slot.sh N` is a thin wrapper around `canaveral ws-slot N --json`,
+which prints slot N's feature workspace as compact JSON (`{"text": "...",
+"class": "active|inactive|hidden"}`); style `.active`, `.inactive` and `.hidden`
+in your waybar CSS for real padding, rounded corners and colour. `canaveral-goto
+N` asks the same command for the workspace name and jumps to it, pulling it onto
+your current monitor first if canaveral built it elsewhere.
+
+Slot numbers are stable. A feature is assigned the lowest free number when it is
+created and keeps it until it is removed, so `super+ctrl+2` means the same
+workspace tomorrow; removing a feature frees its number for the next one, which
+keeps the list dense enough for a fixed row of widgets. The numbering is global
+across projects, unlike the per-project slot that derives ports, since the bar
+shows every project at once. Inspect the whole mapping with:
+
+```
+$ canaveral ws-slot
+SLOT  WORKSPACE                 FEATURE
+1     norules:small-fixes       norules/small-fixes
+2     canaveral:install-script  canaveral/install-script
+```
 
 `hyprwatch` sends `SIGRTMIN+8`; `"signal": 8` in the waybar config is what maps
 that back to "re-run these modules now." Change both together if you repurpose

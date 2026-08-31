@@ -14,6 +14,26 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Added
+
+- `canaveral ws-slot [n]` maps a stable, 1-indexed slot number to a feature's
+  workspace, with `--json` for waybar custom modules. Bare, it prints the whole
+  mapping.
+
+### Changed
+
+- Status-bar slot numbers are stable. They were derived by sorting the Hyprland
+  workspaces that existed at that instant, so slot N meant whatever sorted Nth
+  right then: opening a feature that sorted earlier, or closing one, renumbered
+  the bar underneath you. A feature is now assigned the lowest free number when
+  created and keeps it until removed, numbered globally across projects since
+  the bar shows them all at once. Existing features are assigned numbers on
+  first use, ordered by creation time, so they change once and then hold.
+
+  The waybar and keybind scripts should become thin wrappers around
+  `canaveral ws-slot`, which also removes the sort logic that was duplicated
+  between them.
+
 ### Fixed
 
 - `merge` no longer refuses with "is on ... with uncommitted changes" naming the
