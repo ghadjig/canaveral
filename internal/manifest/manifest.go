@@ -334,7 +334,35 @@ func Load(root string) (*Manifest, error) {
 	return &m, nil
 }
 
+// normalize fills in defaults and validates every section of a parsed
+// manifest. Sections are independent of one another, so each gets its own
+// method; this is just their fixed call order.
 func (m *Manifest) normalize() error {
+	if err := m.normalizeCore(); err != nil {
+		return err
+	}
+	if err := m.normalizeDatabase(); err != nil {
+		return err
+	}
+	if err := m.normalizePorts(); err != nil {
+		return err
+	}
+	if err := m.normalizeServices(); err != nil {
+		return err
+	}
+	if err := m.normalizeAgents(); err != nil {
+		return err
+	}
+	seenWin, err := m.normalizeWindows()
+	if err != nil {
+		return err
+	}
+	return m.Layout.validate(seenWin)
+}
+
+// normalizeCore fills in defaults for and validates the manifest's top-level
+// scalar fields: name, branch template, toolchain mode and terminal.
+func (m *Manifest) normalizeCore() error {
 	if m.Name == "" {
 		m.Name = filepath.Base(m.Root)
 	}
@@ -354,7 +382,11 @@ func (m *Manifest) normalize() error {
 			m.Terminal = "alacritty"
 		}
 	}
+	return nil
+}
 
+// normalizeDatabase fills in defaults for and validates [database].
+func (m *Manifest) normalizeDatabase() error {
 	switch m.Database.Isolation {
 	case "":
 		m.Database.Isolation = DBShared
@@ -366,7 +398,11 @@ func (m *Manifest) normalize() error {
 	if m.Database.Isolation == DBSuffix && m.Database.SuffixEnv == "" {
 		m.Database.SuffixEnv = "DB_SUFFIX"
 	}
+	return nil
+}
 
+// normalizePorts validates [ports].
+func (m *Manifest) normalizePorts() error {
 	for name, base := range m.Ports {
 		if !nameRe.MatchString(name) {
 			return fmt.Errorf("invalid port name %q", name)
@@ -375,7 +411,11 @@ func (m *Manifest) normalize() error {
 			return fmt.Errorf("port %q: base %d out of range", name, base)
 		}
 	}
+	return nil
+}
 
+// normalizeServices fills in defaults for and validates every [[services]].
+func (m *Manifest) normalizeServices() error {
 	seenSvc := map[string]bool{}
 	for i := range m.Services {
 		s := &m.Services[i]
@@ -399,7 +439,11 @@ func (m *Manifest) normalize() error {
 			s.Ready.Status = 200
 		}
 	}
+	return nil
+}
 
+// normalizeAgents fills in defaults for and validates every [[agents]].
+func (m *Manifest) normalizeAgents() error {
 	seenAgent := map[string]bool{}
 	for i := range m.Agents {
 		a := &m.Agents[i]
@@ -423,42 +467,55 @@ func (m *Manifest) normalize() error {
 			a.Dir = "."
 		}
 	}
+	return nil
+}
 
+// normalizeWindows fills in defaults for and validates every [[windows]],
+// returning the set of declared window names for Layout.validate to check
+// [layout]'s references against.
+func (m *Manifest) normalizeWindows() (map[string]bool, error) {
 	seenWin := map[string]bool{}
 	for i := range m.Windows {
 		w := &m.Windows[i]
 		if w.Name == "" {
-			return fmt.Errorf("window #%d: name is required", i+1)
+			return nil, fmt.Errorf("window #%d: name is required", i+1)
 		}
 		if !nameRe.MatchString(w.Name) {
-			return fmt.Errorf("window %q: invalid name", w.Name)
+			return nil, fmt.Errorf("window %q: invalid name", w.Name)
 		}
 		if seenWin[w.Name] {
-			return fmt.Errorf("duplicate window name %q", w.Name)
+			return nil, fmt.Errorf("duplicate window name %q", w.Name)
 		}
 		seenWin[w.Name] = true
-		if w.Run != nil && w.Exec != "" {
-			return fmt.Errorf("window %q: set either run or exec, not both", w.Name)
-		}
-		if w.Run == nil && w.Exec == "" {
-			return fmt.Errorf("window %q: one of run or exec is required", w.Name)
-		}
-		// An exec window must adopt the class canaveral assigns, otherwise there
-		// is no safe way to tell whether it is already open.
-		if w.Exec != "" && !strings.Contains(w.Exec, "{{.Class}}") {
-			return fmt.Errorf("window %q: exec command must pass {{.Class}} to the "+
-				"application (for example --class={{.Class}}) so canaveral can "+
-				"identify the window it created", w.Name)
-		}
-		if w.Run != nil && w.ProfileSource != "" {
-			return fmt.Errorf("window %q: profile_source applies to exec windows only", w.Name)
-		}
-		if w.ProfileSource != "" && len(w.ProfileSeed) == 0 {
-			return fmt.Errorf("window %q: profile_source is set but profile_seed lists nothing to copy", w.Name)
+		if err := w.validate(); err != nil {
+			return nil, err
 		}
 	}
-	if err := m.Layout.validate(seenWin); err != nil {
-		return err
+	return seenWin, nil
+}
+
+// validate checks a single [[windows]] entry's own fields, independent of
+// any other window: exactly one of run/exec, an exec command that adopts
+// canaveral's window class, and profile_source/profile_seed used together.
+func (w Window) validate() error {
+	if w.Run != nil && w.Exec != "" {
+		return fmt.Errorf("window %q: set either run or exec, not both", w.Name)
+	}
+	if w.Run == nil && w.Exec == "" {
+		return fmt.Errorf("window %q: one of run or exec is required", w.Name)
+	}
+	// An exec window must adopt the class canaveral assigns, otherwise there
+	// is no safe way to tell whether it is already open.
+	if w.Exec != "" && !strings.Contains(w.Exec, "{{.Class}}") {
+		return fmt.Errorf("window %q: exec command must pass {{.Class}} to the "+
+			"application (for example --class={{.Class}}) so canaveral can "+
+			"identify the window it created", w.Name)
+	}
+	if w.Run != nil && w.ProfileSource != "" {
+		return fmt.Errorf("window %q: profile_source applies to exec windows only", w.Name)
+	}
+	if w.ProfileSource != "" && len(w.ProfileSeed) == 0 {
+		return fmt.Errorf("window %q: profile_source is set but profile_seed lists nothing to copy", w.Name)
 	}
 	return nil
 }
@@ -482,44 +539,62 @@ func (l Layout) validate(declaredWindows map[string]bool) error {
 		seen[name] = true
 	}
 
-	check := func(label string, fractions map[string]float64, required, enforceSum bool) error {
-		if len(fractions) == 0 {
-			if required {
-				return fmt.Errorf("layout: %s is required when order is set", label)
-			}
-			return nil
-		}
-		sum := 0.0
-		for name, frac := range fractions {
-			if !seen[name] {
-				return fmt.Errorf("layout.%s: %q is not in order", label, name)
-			}
-			if frac <= 0 || frac > 1 {
-				return fmt.Errorf("layout.%s: %q fraction %v must be between 0 and 1", label, name, frac)
-			}
-			sum += frac
-		}
-		if len(fractions) != len(l.Order) {
-			return fmt.Errorf("layout.%s: covers %d window(s), order has %d", label, len(fractions), len(l.Order))
-		}
-		// current is not held to this: it is a live snapshot of whatever the
-		// user actually resized floating windows to, which naturally drifts
-		// from a perfect partition (resizing one column does not proportionally
-		// shrink the others), and rejecting the manifest over that would break
-		// the exact feature this section exists for.
-		if !enforceSum {
-			return nil
-		}
-		const epsilon = 0.01
-		if sum < 1-epsilon || sum > 1+epsilon {
-			return fmt.Errorf("layout.%s: fractions sum to %.3f, want 1.0", label, sum)
-		}
-		return nil
-	}
-	if err := check("default", l.Default, true, true); err != nil {
+	if err := l.validateDefaultFractions(seen); err != nil {
 		return err
 	}
-	return check("current", l.Current, false, false)
+	return l.validateCurrentFractions(seen)
+}
+
+// validateDefaultFractions validates [layout.default]: required when order
+// is set, and must partition the windows exactly (fractions sum to 1).
+func (l Layout) validateDefaultFractions(seen map[string]bool) error {
+	if len(l.Default) == 0 {
+		return fmt.Errorf("layout: default is required when order is set")
+	}
+	sum, err := validateFractions("default", l.Default, seen, len(l.Order))
+	if err != nil {
+		return err
+	}
+	const epsilon = 0.01
+	if sum < 1-epsilon || sum > 1+epsilon {
+		return fmt.Errorf("layout.default: fractions sum to %.3f, want 1.0", sum)
+	}
+	return nil
+}
+
+// validateCurrentFractions validates [layout.current]: optional, and not
+// held to summing to 1 — it is a live snapshot of whatever the user actually
+// resized floating windows to, which naturally drifts from a perfect
+// partition (resizing one column does not proportionally shrink the
+// others), and rejecting the manifest over that would break the exact
+// feature this section exists for.
+func (l Layout) validateCurrentFractions(seen map[string]bool) error {
+	if len(l.Current) == 0 {
+		return nil
+	}
+	_, err := validateFractions("current", l.Current, seen, len(l.Order))
+	return err
+}
+
+// validateFractions checks that every name in fractions is in order, every
+// fraction is between 0 (exclusive) and 1 (inclusive), and fractions covers
+// exactly as many windows as order does. Returns the sum of fractions for
+// callers that also need to enforce it summing to 1.
+func validateFractions(label string, fractions map[string]float64, seen map[string]bool, orderLen int) (float64, error) {
+	sum := 0.0
+	for name, frac := range fractions {
+		if !seen[name] {
+			return 0, fmt.Errorf("layout.%s: %q is not in order", label, name)
+		}
+		if frac <= 0 || frac > 1 {
+			return 0, fmt.Errorf("layout.%s: %q fraction %v must be between 0 and 1", label, name, frac)
+		}
+		sum += frac
+	}
+	if len(fractions) != orderLen {
+		return 0, fmt.Errorf("layout.%s: covers %d window(s), order has %d", label, len(fractions), orderLen)
+	}
+	return sum, nil
 }
 
 // ToolchainMode returns the validated toolchain mode for the manifest.
