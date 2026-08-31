@@ -345,3 +345,84 @@ func TestWorktreePathInFallsBackToStateDir(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestEnsureWSlotsIsStableAcrossProjects(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Deliberately not in alphabetical order: the widget slot must follow
+	// creation, not the name, otherwise adding a feature that sorts early
+	// renumbers everything after it.
+	base := time.Now().Add(-time.Hour)
+	mk := func(project, name string, age time.Duration) {
+		f := newFeature(project, name, 0)
+		f.CreatedAt = base.Add(age)
+		if err := Save(f); err != nil {
+			t.Fatalf("Save %s/%s: %v", project, name, err)
+		}
+	}
+	mk("norules", "zeta", 0)
+	mk("alpha", "yankee", time.Minute)
+
+	got, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "zeta" || got[0].WSlot != 1 || got[1].WSlot != 2 {
+		t.Fatalf("slots not assigned by creation time: %+v", got)
+	}
+
+	// Both projects allocate from one global sequence, unlike Slot.
+	if got[0].Project == got[1].Project {
+		t.Fatal("test setup: expected two projects")
+	}
+
+	// A new feature that sorts first alphabetically must take the next free
+	// number, not slot 1.
+	mk("alpha", "aaa", 2*time.Minute)
+	got, err = EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	for _, f := range got {
+		want := map[string]int{"zeta": 1, "yankee": 2, "aaa": 3}[f.Name]
+		if f.WSlot != want {
+			t.Errorf("%s has slot %d, want %d", f.Name, f.WSlot, want)
+		}
+	}
+
+	// Removing a feature frees its number for the next one, keeping the list
+	// dense enough for a fixed row of widgets.
+	if err := Remove("norules", "zeta"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	mk("norules", "later", 3*time.Minute)
+	got, err = EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	for _, f := range got {
+		want := map[string]int{"yankee": 2, "aaa": 3, "later": 1}[f.Name]
+		if f.WSlot != want {
+			t.Errorf("after reuse %s has slot %d, want %d", f.Name, f.WSlot, want)
+		}
+	}
+}
+
+func TestEnsureWSlotsReassignsDuplicates(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	for _, n := range []string{"one", "two"} {
+		f := newFeature("norules", n, 0)
+		f.WSlot = 1 // hand-edited state, or a bug: both claim slot 1
+		if err := Save(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	if got[0].WSlot == got[1].WSlot {
+		t.Fatalf("duplicate slots survived: %d and %d", got[0].WSlot, got[1].WSlot)
+	}
+}

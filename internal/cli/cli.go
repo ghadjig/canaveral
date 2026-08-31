@@ -13,8 +13,26 @@ import (
 	"time"
 )
 
-// Version is overridden at build time via -ldflags.
-var Version = "dev"
+// Version, Commit and BuildDate are overridden at build time via -ldflags by
+// scripts/build.sh. They exist so an installed binary can say exactly which
+// source it came from, which matters when several worktrees each build one.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
+// versionLine renders the one-line build identity printed by --version.
+func versionLine() string {
+	s := "canaveral " + Version
+	if Commit != "unknown" && !strings.Contains(Version, Commit) {
+		s += " (" + Commit + ")"
+	}
+	if BuildDate != "unknown" {
+		s += " built " + BuildDate
+	}
+	return s
+}
 
 type command struct {
 	name    string
@@ -27,6 +45,7 @@ func commands() []command {
 		{"init", "write a starter canaveral.toml for a project", runInit},
 		{"open", "open a feature explicitly (for names clashing with commands)", runOpen},
 		{"reset", "bring up whatever is missing for a feature", runReset},
+		{"restart", "stop and restart named services of a feature", runRestart},
 		{"ls", "list features", runLs},
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
@@ -35,7 +54,8 @@ func commands() []command {
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
-		{"hyprwatch", "react to Hyprland events instead of polling (waybar refresh)", runHyprwatch},
+		{"hyprwatch", "record layout ratios when you leave a workspace", runHyprwatch},
+		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}
 }
@@ -63,7 +83,7 @@ func Main(ctx context.Context, args []string) int {
 		usage(os.Stdout)
 		return 0
 	case "-v", "--version", "version":
-		fmt.Println("canaveral", Version)
+		fmt.Println(versionLine())
 		return 0
 	}
 

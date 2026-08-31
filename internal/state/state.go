@@ -27,7 +27,14 @@ type Feature struct {
 	Root string `json:"root"`
 	// Slot is the stable index used to derive ports. It is allocated once and
 	// never changes, so a feature keeps the same ports for its whole life.
-	Slot      int            `json:"slot"`
+	Slot int `json:"slot"`
+	// WSlot is the feature's position in the workspace widget, 1-indexed.
+	//
+	// Separate from Slot because that one is per project and drives ports: two
+	// projects both have a slot 0, but the widget shows every project at once
+	// and needs one number per feature. Zero means unassigned; EnsureWSlots
+	// fills those in.
+	WSlot     int            `json:"ws_slot,omitempty"`
 	Branch    string         `json:"branch"`
 	Worktree  string         `json:"worktree"`
 	DBSuffix  string         `json:"db_suffix,omitempty"`
@@ -367,6 +374,55 @@ func AllocateSlot(project, feature string) (int, error) {
 			return slot, nil
 		}
 	}
+}
+
+// EnsureWSlots returns every feature across every project ordered by widget
+// slot, assigning a slot to any feature that lacks one and persisting it.
+//
+// Slots are 1-indexed, global, dense and stable: a feature keeps its number
+// for as long as it exists, so muscle memory for "super+ctrl+2" stays valid
+// while features come and go around it. A removed feature's number is freed
+// for the next one, which keeps the list short enough for a fixed row of
+// widgets. Features are only ever assigned the lowest free number, so the
+// ordering does not depend on the widget being open or the workspace existing.
+//
+// Unassigned features are ordered by creation time before allocating, so a
+// batch migrated together gets numbers in the order they were made rather than
+// in whatever order the filesystem walk returned.
+func EnsureWSlots() ([]*Feature, error) {
+	all, err := LoadAll()
+	if err != nil {
+		return nil, err
+	}
+	used := map[int]bool{}
+	var missing []*Feature
+	for _, f := range all {
+		if f.WSlot > 0 && !used[f.WSlot] {
+			used[f.WSlot] = true
+			continue
+		}
+		// A duplicate is treated as unassigned: two features cannot share a
+		// number, and reallocating the later one is less surprising than
+		// having a widget silently address whichever was loaded first.
+		f.WSlot = 0
+		missing = append(missing, f)
+	}
+	sort.Slice(missing, func(i, j int) bool {
+		return missing[i].CreatedAt.Before(missing[j].CreatedAt)
+	})
+	next := 1
+	for _, f := range missing {
+		for used[next] {
+			next++
+		}
+		f.WSlot = next
+		used[next] = true
+		if err := Save(f); err != nil {
+			return nil, fmt.Errorf("assign widget slot to %s: %w", f.Key(), err)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].WSlot < all[j].WSlot })
+	return all, nil
 }
 
 // Agent looks up an agent record by name.

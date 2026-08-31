@@ -157,7 +157,13 @@ type Feature struct {
 	// Workspace is the Hyprland workspace to switch to, so a widget can
 	// make its rows clickable.
 	Workspace string `json:"workspace,omitempty"`
-	Status    Status `json:"status"`
+	// WSlot is the feature's stable widget slot, 1-indexed and global across
+	// projects. Emitted so a status bar can label and order features by the
+	// same number the jump keybinds use, instead of deriving a position from
+	// whichever workspaces happen to exist right now — which reshuffles as
+	// features come and go.
+	WSlot  int    `json:"ws_slot,omitempty"`
+	Status Status `json:"status"`
 	// Since is when this feature entered its current Status. A consumer is
 	// expected to render the elapsed time itself and tick locally, which is
 	// why snapshots are emitted on change rather than on a timer.
@@ -245,6 +251,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		Key:       f.Key(),
 		Branch:    f.Branch,
 		Workspace: f.HyprWorkspace(),
+		WSlot:     f.WSlot,
 		CreatedAt: f.CreatedAt,
 	}
 

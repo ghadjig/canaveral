@@ -221,6 +221,59 @@ func TestProvisionDirMergePreservesEdits(t *testing.T) {
 	}
 }
 
+func TestMainCheckoutFromLinkedWorktree(t *testing.T) {
+	repo := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(repo, "init", "-q", "-b", "main")
+	run(repo, "config", "user.email", "t@t")
+	run(repo, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(repo, "add", "-A")
+	run(repo, "commit", "-qm", "init")
+
+	// A feature worktree, carrying a provisioned canaveral.toml exactly as
+	// canaveral leaves it. Walking up for that file would stop here and call
+	// the worktree the project; MainCheckout must not.
+	wt := filepath.Join(t.TempDir(), "feat")
+	run(repo, "worktree", "add", "-q", "-b", "feat", wt)
+	if err := os.WriteFile(filepath.Join(wt, "canaveral.toml"), []byte("name='x'"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := MainCheckout(context.Background(), wt)
+	if err != nil {
+		t.Fatalf("MainCheckout: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotResolved != want {
+		t.Errorf("MainCheckout(worktree) = %q, want %q", gotResolved, want)
+	}
+
+	// And it agrees when already in the main checkout.
+	got, err = MainCheckout(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("MainCheckout(repo): %v", err)
+	}
+	if gotResolved, _ := filepath.EvalSymlinks(got); gotResolved != want {
+		t.Errorf("MainCheckout(repo) = %q, want %q", gotResolved, want)
+	}
+}
+
 func TestIsDirtyIgnoresProvisionedPaths(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {

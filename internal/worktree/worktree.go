@@ -201,6 +201,28 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	return currentBranch(ctx, dir)
 }
 
+// MainCheckout returns the repository's primary working tree, given any
+// directory inside it — including a linked worktree.
+//
+// Asking git is the only reliable answer. Locating the project by walking up
+// for canaveral.toml finds the *provisioned copy* when run from inside a
+// feature worktree, which would report the worktree as if it were the project.
+// The common git dir belongs to the main checkout by definition, so its parent
+// is the main checkout no matter where the command was run from.
+func MainCheckout(ctx context.Context, dir string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir,
+		"rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve main checkout of %s: %w", dir, err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return "", fmt.Errorf("resolve main checkout of %s: empty git dir", dir)
+	}
+	// A bare repo has no working tree to return.
+	return filepath.Dir(gitDir), nil
+}
+
 // DefaultBranch guesses a repo's main integration branch: the remote's HEAD
 // if one is configured, falling back to a local "main" or "master".
 func DefaultBranch(ctx context.Context, repo string) (string, error) {

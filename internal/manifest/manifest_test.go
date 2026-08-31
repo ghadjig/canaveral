@@ -118,8 +118,38 @@ func TestFindWalksUp(t *testing.T) {
 }
 
 func TestFindMissing(t *testing.T) {
+	// Cleared explicitly: Find falls back to $CANAVERAL_ROOT, and every
+	// process canaveral spawns has it set. Inheriting it from the environment
+	// made this test fail whenever it was run from inside a feature worktree
+	// — which is how this project is normally developed.
+	t.Setenv("CANAVERAL_ROOT", "")
+
 	if _, err := Find(t.TempDir()); err == nil {
 		t.Fatal("Find succeeded in empty dir, want error")
+	}
+}
+
+func TestFindFallsBackToCanaveralRoot(t *testing.T) {
+	// The fallback is what makes commands work inside a feature worktree,
+	// where the untracked canaveral.toml is absent and the upward walk finds
+	// nothing.
+	root := t.TempDir()
+	write(t, root, "name = \"x\"\n")
+	t.Setenv("CANAVERAL_ROOT", root)
+
+	got, err := Find(t.TempDir())
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if got != root {
+		t.Errorf("Find = %q, want %q", got, root)
+	}
+
+	// A CANAVERAL_ROOT that holds no manifest is not a project, so the error
+	// stands rather than the path being returned on faith.
+	t.Setenv("CANAVERAL_ROOT", t.TempDir())
+	if _, err := Find(t.TempDir()); err == nil {
+		t.Error("Find succeeded with a manifest-less CANAVERAL_ROOT, want error")
 	}
 }
 
