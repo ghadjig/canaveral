@@ -42,6 +42,32 @@ func TestReservedCoversEveryCommand(t *testing.T) {
 	}
 }
 
+func TestVersionLine(t *testing.T) {
+	orig := [3]string{Version, Commit, BuildDate}
+	defer func() { Version, Commit, BuildDate = orig[0], orig[1], orig[2] }()
+
+	cases := []struct {
+		name                      string
+		version, commit, buildate string
+		want                      string
+	}{
+		{"unstamped", "dev", "unknown", "unknown", "canaveral dev"},
+		{"stamped", "v1.2.0", "abc1234", "2026-01-02T03:04:05Z",
+			"canaveral v1.2.0 (abc1234) built 2026-01-02T03:04:05Z"},
+		// git describe already ends in the commit, so don't repeat it.
+		{"describe", "abc1234-dirty", "abc1234", "2026-01-02T03:04:05Z",
+			"canaveral abc1234-dirty built 2026-01-02T03:04:05Z"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			Version, Commit, BuildDate = c.version, c.commit, c.buildate
+			if got := versionLine(); got != c.want {
+				t.Errorf("versionLine() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSortedPortNames(t *testing.T) {
 	got := sortedPortNames(map[string]int{"web": 1, "api": 2, "vite": 3})
 	want := []string{"api", "vite", "web"}

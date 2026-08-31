@@ -13,8 +13,26 @@ import (
 	"time"
 )
 
-// Version is overridden at build time via -ldflags.
-var Version = "dev"
+// Version, Commit and BuildDate are overridden at build time via -ldflags by
+// scripts/build.sh. They exist so an installed binary can say exactly which
+// source it came from, which matters when several worktrees each build one.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
+// versionLine renders the one-line build identity printed by --version.
+func versionLine() string {
+	s := "canaveral " + Version
+	if Commit != "unknown" && !strings.Contains(Version, Commit) {
+		s += " (" + Commit + ")"
+	}
+	if BuildDate != "unknown" {
+		s += " built " + BuildDate
+	}
+	return s
+}
 
 type command struct {
 	name    string
@@ -63,7 +81,7 @@ func Main(ctx context.Context, args []string) int {
 		usage(os.Stdout)
 		return 0
 	case "-v", "--version", "version":
-		fmt.Println("canaveral", Version)
+		fmt.Println(versionLine())
 		return 0
 	}
 

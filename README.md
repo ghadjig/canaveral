@@ -561,6 +561,75 @@ the signal number for something else.
 systemd user manager, git, `opencode`, and Hyprland for the window layer. Without
 Hyprland the window step is skipped with a warning and everything else works.
 
+## Building and installing
+
+```
+scripts/build.sh                  # -> ./bin/canaveral
+scripts/install.sh                # build, stop canaveral units, install to ~/.local/bin
+scripts/install.sh --dry-run      # show what it would do, change nothing
+```
+
+Flags: `--prefix DIR` (or `CANAVERAL_PREFIX`) to install somewhere other than
+`~/.local/bin`, `--keep-features` to leave feature units running, `--no-build`
+to install the existing `./bin/canaveral`, `--dry-run` to rehearse.
+
+### What a reinstall actually does
+
+Replacing the binary is not just a copy, because running units hold the old
+executable open and one unit file hard-codes its path. `install.sh` goes through
+these steps in order:
+
+1. **Preflight.** Requires a Go toolchain, on `PATH` or via `mise`. Missing
+   `git`, `systemctl`, `opencode`, `hyprctl` or `mise` only warn.
+2. **Build** with the version stamped in (see below), and read the new version
+   back out of `./bin/canaveral`.
+3. **Stop every `canaveral-*` systemd user unit** — feature agents, feature
+   services, and `canaveral-hyprwatch.service`. Whether hyprwatch was active is
+   remembered for step 6. With `--keep-features`, only hyprwatch is stopped.
+4. **Except its own unit.** Installing from inside a canaveral agent is normal,
+   and stopping that unit would kill the script mid-copy, so the unit found in
+   `/proc/self/cgroup` is skipped and reported.
+5. **Install atomically**: copy to a temp file in the target directory and
+   `mv` it into place, so nothing ever reads a half-written binary and a
+   still-open old inode cannot cause `ETXTBSY`. Then verify — if the installed
+   binary does not report the version just built, the script fails here, before
+   anything is started again.
+6. **Reinstall `canaveral-hyprwatch.service`** if it was running, by invoking
+   `canaveral hyprwatch --install` from the newly installed binary. This is a
+   reinstall rather than a restart on purpose: the unit's `ExecStart` contains
+   the symlink-resolved absolute path of whichever binary installed it, so a
+   plain `systemctl restart` would keep running the old build.
+
+### Restarting features
+
+Feature agents and services are **not** brought back automatically. They are
+transient units started through `systemd-run`, so once stopped they no longer
+exist for `systemctl start` to act on; only canaveral can recreate them with the
+right worktree, environment and log paths. The script prints how many it stopped
+— restore them per feature with:
+
+```
+canaveral reset <feature>
+```
+
+Use `--keep-features` to skip the teardown entirely. That leaves those agents
+running on the old executable until they are next restarted, which is fine when
+the change only touches CLI behaviour.
+
+### Version stamping
+
+The build stamps the git description, commit and build time into the binary, so
+you can always tell which source an installed executable came from — useful when
+several worktrees can each build one:
+
+```
+$ canaveral --version
+canaveral 8d9fb0e-dirty built 2026-08-31T07:29:42Z
+```
+
+A `-dirty` suffix means it was built from uncommitted changes. Set
+`CANAVERAL_VERSION` to override the derived string for a release build.
+
 ## Testing
 
 ```
