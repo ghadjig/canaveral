@@ -14,7 +14,9 @@ func TestNameIsDeterministicAndSafe(t *testing.T) {
 		t.Errorf("Name = %q", got)
 	}
 	// Unit names must be stable across calls so status/down can find them.
-	if Name("demo", "svc", "web") != Name("demo", "svc", "web") {
+	a := Name("demo", "svc", "web")
+	b := Name("demo", "svc", "web")
+	if a != b {
 		t.Error("Name is not deterministic")
 	}
 }

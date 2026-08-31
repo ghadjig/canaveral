@@ -10,38 +10,6 @@ import (
 	"time"
 )
 
-// startFakeSocket spins up a fake Hyprland event socket and returns its path.
-// Every connection accepted is fed the given lines, then closed.
-func startFakeSocket(t *testing.T, lines []string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".socket2.sock")
-
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { l.Close() })
-
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				for _, line := range lines {
-					if _, err := conn.Write([]byte(line + "\n")); err != nil {
-						return
-					}
-				}
-			}()
-		}
-	}()
-	return path
-}
-
 // withFakeInstance points HYPRLAND_INSTANCE_SIGNATURE / XDG_RUNTIME_DIR at a
 // directory containing a fake socket, mirroring Hyprland's real layout of
 // $XDG_RUNTIME_DIR/hypr/$SIG/.socket2.sock.

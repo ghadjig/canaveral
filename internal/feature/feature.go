@@ -1391,7 +1391,6 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 			if self != nil {
 				r.OK("closing this window")
 				_ = hypr.Close(ctx, self.Address)
-				closed++
 			}
 		}
 		// Windows the user opened here themselves are not canaveral's to
