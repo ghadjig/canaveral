@@ -14,7 +14,17 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- `merge` no longer refuses with "is on ... with uncommitted changes" naming the
+  feature's own worktree. A feature's recorded project root was refreshed from
+  wherever `canaveral.toml` was found, so any command run inside a worktree —
+  where the manifest is provisioned — overwrote it with the worktree path. Merge
+  then inspected the feature's own branch instead of the project's, and counted
+  the provisioned manifest as uncommitted work. The main checkout is now
+  resolved from git's common dir, which is correct regardless of the working
+  directory, and `merge` resolves it directly rather than trusting the stored
+  path, so features recorded before this fix heal without a `reset`.
 
 ## v0.1.0 — 2026-08-31
 

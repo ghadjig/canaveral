@@ -55,9 +55,18 @@ func runMerge(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Resolve the main checkout from the worktree rather than trusting the
+	// stored root: features recorded before that path was derived from git
+	// have the worktree itself saved there, which would send every command
+	// below at the feature's own branch instead of the project's.
+	root, err := worktree.MainCheckout(ctx, f.Worktree)
+	if err != nil {
+		return err
+	}
+
 	target := *into
 	if target == "" {
-		if target, err = worktree.DefaultBranch(ctx, f.Root); err != nil {
+		if target, err = worktree.DefaultBranch(ctx, root); err != nil {
 			return err
 		}
 	}
@@ -80,26 +89,26 @@ func runMerge(ctx context.Context, args []string) error {
 	}
 	r.OK("rebased")
 
-	cur, err := worktree.CurrentBranch(ctx, f.Root)
+	cur, err := worktree.CurrentBranch(ctx, root)
 	if err != nil {
 		return err
 	}
 	if cur != target {
-		rootDirty, err := worktree.IsDirty(ctx, f.Root, nil)
+		rootDirty, err := worktree.IsDirty(ctx, root, nil)
 		if err != nil {
 			return err
 		}
 		if rootDirty {
 			return fmt.Errorf("%s is on %q with uncommitted changes; switch to %q manually and re-run",
-				homeTilde(f.Root), cur, target)
+				homeTilde(root), cur, target)
 		}
-		if err := worktree.Checkout(ctx, f.Root, target); err != nil {
+		if err := worktree.Checkout(ctx, root, target); err != nil {
 			return err
 		}
 	}
 
 	r.Step("merging %s into %s", color(cBold, f.Branch), target)
-	if err := worktree.MergeBranch(ctx, f.Root, f.Branch, *ffOnly); err != nil {
+	if err := worktree.MergeBranch(ctx, root, f.Branch, *ffOnly); err != nil {
 		return err
 	}
 	r.OK("merged")

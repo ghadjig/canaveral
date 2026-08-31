@@ -171,13 +171,27 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	return res, nil
 }
 
+// projectRoot resolves the project's main checkout.
+//
+// m.Root is wherever canaveral.toml was found by walking up from the cwd, so a
+// command run inside a feature worktree finds the *provisioned* manifest and
+// reports the worktree as the project. Storing that would make merge try to
+// check the feature's own branch out over itself, so ask git for the real main
+// checkout instead and only fall back to m.Root when git cannot say.
+func projectRoot(ctx context.Context, m *manifest.Manifest) string {
+	if root, err := worktree.MainCheckout(ctx, m.Root); err == nil {
+		return root
+	}
+	return m.Root
+}
+
 // ensureRecord loads the feature or allocates a new slot, branch and ports.
 func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*state.Feature, bool, error) {
 	if f, err := state.Load(m.Name, name); err == nil {
 		// Ports follow the manifest so newly declared services get one, but the
 		// slot never moves.
 		f.Ports = portsFor(m, f.Slot)
-		f.Root = m.Root
+		f.Root = projectRoot(ctx, m)
 		return f, false, nil
 	}
 
@@ -198,7 +212,7 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 	f := &state.Feature{
 		Project:   m.Name,
 		Name:      name,
-		Root:      m.Root,
+		Root:      projectRoot(ctx, m),
 		Slot:      slot,
 		Worktree:  wt,
 		Ports:     portsFor(m, slot),
