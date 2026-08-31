@@ -47,7 +47,7 @@ $ canaveral new small-fixes
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
-| `canaveral path <feature>` | Print a feature's worktree path |
+| `canaveral path [feature]` | Print a feature's worktree path; with no name, the one you are in |
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
@@ -305,9 +305,24 @@ Worktree paths are long, so two commands exist to avoid typing them:
 
 ```bash
 cd "$(canaveral path small-fixes)"
+cd "$(canaveral path)"                       # the feature you're already in
 canaveral exec small-fixes -- git rebase main
 canaveral exec small-fixes -- bin/rails test
 ```
+
+`canaveral path` with no feature answers "where am I", using three signals in
+order: the working directory sitting inside a worktree, then
+`$CANAVERAL_FEATURE` (canaveral exports it into every process it starts, so a
+terminal it opened still knows which feature it belongs to after you have cd'd
+away), then the focused Hyprland workspace (which catches a terminal you opened
+yourself on a feature's workspace, inheriting neither). It needs no project in
+scope — the workspace name carries the project and the registry turns that into
+a checkout — so it works from anywhere.
+
+That last signal is used only by `path`. `merge` and `restart` stop at the first
+two: a workspace is a property of the window, not the shell, and windows get
+dragged between workspaces. Pointing `cd` at the wrong directory is a keystroke
+to undo; merging the wrong feature is not.
 
 `exec` runs in the worktree with the same toolchain and environment the
 feature's own services get, and exits with the command's own status, so it

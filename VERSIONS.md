@@ -44,6 +44,33 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   `canaveral complete`. The README documented a `_cv_complete` that never
   existed anywhere in the repo.
 
+- `canaveral path` with no feature prints the worktree of whichever feature you
+  are in, so bare `cv` lands in the feature's own worktree instead of the
+  project's main checkout. Three signals in order: the working directory inside
+  a worktree, `$CANAVERAL_FEATURE` (so a terminal canaveral opened still knows
+  its feature after you cd away), then the focused Hyprland workspace (so a
+  terminal you opened yourself on a feature's workspace resolves too). It needs
+  no project in scope — the workspace name carries the project and the registry
+  turns that into a checkout.
+
+### Changed
+
+- `merge`, `restart` and (since v0.3.0 gave it the same default) `rm` now also
+  accept `$CANAVERAL_FEATURE` when working out which feature you mean, not just
+  the working directory, so they work from a canaveral-opened terminal that has
+  been cd'd elsewhere. For `rm` that is a wider default than v0.3.0 shipped:
+  bare `canaveral rm` from such a terminal now resolves rather than refusing.
+  The shell genuinely belongs to that feature, and v0.3.0's unmerged-branch
+  guard already refuses to tear down unlanded work — but it is a destructive
+  command reaching further than before, and worth knowing. They deliberately do
+  *not* consult the focused Hyprland workspace the way `path` does: a workspace
+  belongs to the window rather than the shell, and windows get dragged between
+  workspaces. A misdirected `cd` is one keystroke to undo; a misdirected merge
+  is not.
+
+- The `cv` helper in the README is rewritten around the above, and now falls
+  back to the project root only when you are not in a feature at all.
+
 ## v0.3.0 — 2026-08-31
 
 ### Changed
