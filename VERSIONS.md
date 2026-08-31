@@ -14,7 +14,25 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Added
+
+- `precheck`, a manifest command run on **every** open, before any service
+  starts, aborting the open with its output when it fails. The existing
+  `worktree.setup` and `database.setup` run once, when the worktree is created,
+  which is right for provisioning a worktree and wrong for everything that has
+  to be true each time a feature comes up: a database server that is running,
+  migrations that match the branch. Those stop being true while nobody is
+  looking, and without somewhere to assert them the first sign of trouble is a
+  readiness probe timing out minutes later, blaming the probe. Bounded by
+  `precheck_timeout`, five minutes by default.
+
 ### Changed
+
+- `canaveral new` now completes every namespace the project has ever had, not
+  just those with a feature currently open. A namespace's shared skill and
+  recorded sessions outlive the features that wrote them, so a namespace whose
+  last feature was torn down used to vanish from the launcher and the shell
+  while still holding everything the next feature under it would inherit.
 
 - Starting a service now says it is waiting for the readiness probe, and for
   how long. `ready.timeout` is routinely a minute or two for anything as slow
@@ -28,11 +46,9 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   as `Get "http://localhost:3000/up": context deadline exceeded`, describing
   the prober rather than the problem.
 
-- `canaveral new` now completes every namespace the project has ever had, not
-  just those with a feature currently open. A namespace's shared skill and
-  recorded sessions outlive the features that wrote them, so a namespace whose
-  last feature was torn down used to vanish from the launcher and the shell
-  while still holding everything the next feature under it would inherit.
+- A failing `database.setup` now names itself, instead of reporting as
+  `worktree setup failed`. Both hooks shared a runner that knew only the one
+  name.
 
 ### Fixed
 

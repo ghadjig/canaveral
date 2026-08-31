@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderBranch(t *testing.T) {
@@ -159,6 +160,56 @@ func TestProvisionRejectsEscapingPath(t *testing.T) {
 	p := Provision{Link: []string{"../outside"}}
 	if err := p.Apply(context.Background(), src, dst, func(string, ...any) {}); err == nil {
 		t.Fatal("Apply with escaping path succeeded, want error")
+	}
+}
+
+func TestRunHookRunsInDirWithEnv(t *testing.T) {
+	dir := t.TempDir()
+	err := RunHook(context.Background(), "precheck", dir,
+		`test "$PWD" = "$WANT_DIR" || { echo "pwd=$PWD"; exit 1; }`,
+		map[string]string{"WANT_DIR": dir}, time.Minute)
+	if err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+}
+
+func TestRunHookNamesTheHookAndReportsOutput(t *testing.T) {
+	err := RunHook(context.Background(), "precheck", t.TempDir(),
+		"echo boom-marker >&2; exit 3", nil, time.Minute)
+	if err == nil {
+		t.Fatal("RunHook succeeded, want error")
+	}
+	// The label matters: three different hooks share this runner, and an
+	// error that does not say which one leaves the reader guessing.
+	if !strings.Contains(err.Error(), "precheck") {
+		t.Errorf("error does not name the hook: %v", err)
+	}
+	if !strings.Contains(err.Error(), "boom-marker") {
+		t.Errorf("error missing command output: %v", err)
+	}
+}
+
+func TestRunHookTimeoutSaysSoRatherThanSignalKilled(t *testing.T) {
+	err := RunHook(context.Background(), "precheck", t.TempDir(),
+		"sleep 30", nil, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("RunHook succeeded, want timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %v, want it to report a timeout", err)
+	}
+}
+
+// A cancelled parent must not be misreported as the hook running out of time.
+func TestRunHookCancelledParentIsNotATimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := RunHook(ctx, "precheck", t.TempDir(), "sleep 30", nil, time.Minute)
+	if err == nil {
+		t.Fatal("RunHook succeeded, want error")
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("cancelled parent reported as a timeout: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,16 +45,34 @@ func (p Provision) Apply(ctx context.Context, src, dst string, log func(string, 
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
+	log("running worktree setup: %s", p.Setup)
+	return RunHook(ctx, "worktree setup", dst, p.Setup, p.Env, timeout)
+}
+
+// RunHook executes a project-defined shell command in dir, with env layered
+// over the caller's own, and reports the tail of its output when it fails.
+//
+// Every manifest hook goes through here — worktree setup, database setup,
+// precheck — so they cannot drift apart on which shell runs them, whether the
+// timeout is enforced, or how much of a failure the user gets to see. what
+// names the hook in the error, since "setup failed" on its own leaves the
+// reader guessing which of three it was.
+func RunHook(ctx context.Context, what, dir, command string, env map[string]string, timeout time.Duration) error {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	log("running worktree setup: %s", p.Setup)
-	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", p.Setup)
-	cmd.Dir = dst
-	cmd.Env = append(os.Environ(), envSlice(p.Env)...)
+	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), envSlice(env)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("worktree setup failed in %s: %w\n%s", dst, err, indent(string(out), 15))
+		// A killed command's own error is "signal: killed", which describes
+		// the executioner rather than the crime. Say it ran out of time.
+		if ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s timed out after %s in %s\n%s",
+				what, timeout, dir, indent(string(out), 15))
+		}
+		return fmt.Errorf("%s failed in %s: %w\n%s", what, dir, err, indent(string(out), 15))
 	}
 	return nil
 }
