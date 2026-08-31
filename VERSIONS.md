@@ -14,6 +14,10 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.1.2 — 2026-08-31
+
 ### Added
 
 - `canaveral restart [feature] <service>...` stops and restarts named services,
