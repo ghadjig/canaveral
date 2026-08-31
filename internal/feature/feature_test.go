@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
@@ -264,6 +265,95 @@ func TestSplitRatioChainSingleWindow(t *testing.T) {
 func TestSplitRatioChainEmptyOrder(t *testing.T) {
 	if got := splitRatioChain(nil, nil); got != nil {
 		t.Errorf("got = %v, want nil", got)
+	}
+}
+
+func TestIsLayoutFreshFalseWhenLayoutDisabled(t *testing.T) {
+	m := &manifest.Manifest{}
+	f := &state.Feature{Project: "p", Name: "f"}
+	if isLayoutFresh(m, f, nil) {
+		t.Error("a manifest with no [layout] must never be considered fresh")
+	}
+}
+
+func TestIsLayoutFreshTrueWhenNothingIsOpenYet(t *testing.T) {
+	m := &manifest.Manifest{}
+	m.Layout.Order = []string{"chrome", "terminal"}
+	f := &state.Feature{Project: "p", Name: "f"}
+	if !isLayoutFresh(m, f, map[string]hypr.Client{}) {
+		t.Error("layout should be fresh when none of its windows are open")
+	}
+}
+
+func TestIsLayoutFreshFalseWhenOneWindowAlreadyOpen(t *testing.T) {
+	m := &manifest.Manifest{}
+	m.Layout.Order = []string{"chrome", "terminal"}
+	f := &state.Feature{Project: "p", Name: "f"}
+	open := map[string]hypr.Client{
+		hypr.Class("p", "f", "chrome"): {},
+	}
+	if isLayoutFresh(m, f, open) {
+		t.Error("a partially-open layout must not be treated as fresh")
+	}
+}
+
+func TestBuildWindowSpecForAnAlreadyOpenWindow(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := &manifest.Manifest{Root: "/p"}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
+	class := hypr.Class("p", "f", "chrome")
+	open := map[string]hypr.Client{class: {}}
+
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, open, quietReporter{})
+	if err != nil {
+		t.Fatalf("buildWindowSpec: %v", err)
+	}
+	if pending != nil {
+		t.Error("an already-open window must not produce a pending spawn")
+	}
+	if rec.Name != "chrome" || rec.Class != class || rec.Dir != f.Worktree {
+		t.Errorf("rec = %+v", rec)
+	}
+}
+
+func TestBuildWindowSpecForAMissingWindow(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := &manifest.Manifest{Root: "/p", Terminal: "alacritty"}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
+
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, map[string]hypr.Client{}, quietReporter{})
+	if err != nil {
+		t.Fatalf("buildWindowSpec: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("a window that is not open must produce a pending spawn")
+	}
+	class := hypr.Class("p", "f", "chrome")
+	if pending.spec.Class != class || pending.spec.Cmd != "chromium --class="+class {
+		t.Errorf("spec = %+v", pending.spec)
+	}
+	if pending.spec.IsTerminal {
+		t.Error("an exec window must not be wrapped in a terminal")
+	}
+	if rec.Class != class {
+		t.Errorf("rec.Class = %q, want %q", rec.Class, class)
+	}
+}
+
+func TestBuildWindowSpecUsesADeclaredSubdir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := &manifest.Manifest{Root: "/p"}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	w := manifest.Window{Name: "api", Exec: "app --class={{.Class}}", Dir: "api"}
+
+	rec, _, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, map[string]hypr.Client{}, quietReporter{})
+	if err != nil {
+		t.Fatalf("buildWindowSpec: %v", err)
+	}
+	if rec.Dir != filepath.Join(f.Worktree, "api") {
+		t.Errorf("rec.Dir = %q, want %q", rec.Dir, filepath.Join(f.Worktree, "api"))
 	}
 }
 

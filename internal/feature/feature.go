@@ -826,24 +826,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	}
 	open := hypr.ByClass(clients)
 	base := baseEnvFor(m, f, tc)
-
-	// The split-ratio chain that gives [layout] its exact column widths only
-	// makes sense when every one of its windows is being created together:
-	// each ratio is relative to whichever windows are still undivided at
-	// that point in the chain, so inserting just one window into an already-
-	// tiled arrangement cannot reliably reproduce it. When some (but not
-	// all) layout windows already exist — a `reset` after closing just one
-	// of them, say — the missing one is still spawned, just via dwindle's
-	// ordinary placement instead of a re-derived chain.
-	layoutFresh := m.Layout.Enabled()
-	if layoutFresh {
-		for _, name := range m.Layout.Order {
-			if _, alive := open[hypr.Class(f.Project, f.Name, name)]; alive {
-				layoutFresh = false
-				break
-			}
-		}
-	}
+	layoutFresh := isLayoutFresh(m, f, open)
 
 	var records []state.Window
 	pendingByName := map[string]pendingSpawn{}
@@ -854,65 +837,113 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		// layout and free paths), and seeding a browser profile here is the
 		// slow part regardless.
 		prog.start("window " + w.Name)
-
-		class := hypr.Class(f.Project, f.Name, w.Name)
-
-		profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
+		rec, pending, err := buildWindowSpec(ctx, m, f, w, vars, base, open, r)
 		if err != nil {
 			return err
 		}
-		wv := vars
-		wv.Class, wv.Profile = class, profile
-
-		cmd, err := tmpl.Render("window."+w.Name, w.Command(), wv)
-		if err != nil {
-			return err
+		records = append(records, rec)
+		if pending != nil {
+			pendingByName[w.Name] = *pending
 		}
-		dir := f.Worktree
-		if w.Dir != "" {
-			dir = serviceDir(f, m, w.Dir)
-		}
-		records = append(records, state.Window{
-			Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
-		})
-
-		// Detection is purely by the class canaveral assigns. Matching anything
-		// looser risks adopting one of the user's own windows.
-		if _, alive := open[class]; alive {
-			// Already up: still a step, and still done. Skipping the counter
-			// here would stall the bar short of its total on every `reset`.
-			prog.done()
-			continue
-		}
-
-		if w.ProfileSource != "" {
-			src, err := expandHome(w.ProfileSource)
-			if err != nil {
-				return fmt.Errorf("window %q: profile_source: %w", w.Name, err)
-			}
-			seed := worktree.Provision{Copy: w.ProfileSeed}
-			if err := seed.Apply(ctx, src, profile, r.Info); err != nil {
-				return fmt.Errorf("window %q: seeding profile: %w", w.Name, err)
-			}
-		}
-
-		spec := hypr.SpawnSpec{
-			Class:      class,
-			Title:      f.Name + " · " + w.Name,
-			Workspace:  f.HyprWorkspace(),
-			Dir:        dir,
-			IsTerminal: w.IsTerminal(),
-			Terminal:   m.Terminal,
-			Cmd:        cmd,
-			Hold:       w.Hold,
-			Env:        manifest.MergeEnv(base, m.Env),
-		}
-		pendingByName[w.Name] = pendingSpawn{name: w.Name, spec: spec}
 		prog.done()
 	}
 
-	// Windows not managed by [layout] spawn exactly as before: independently,
-	// in manifest order, no chaining.
+	spawnFreeWindows(ctx, m, pendingByName, res, r)
+
+	if m.Layout.Enabled() {
+		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, layoutFresh, res, r, originalWS); err != nil {
+			return fmt.Errorf("layout: %w", err)
+		}
+	}
+
+	f.Windows = records
+	return nil
+}
+
+// isLayoutFresh reports whether every window in [layout] is missing from
+// the currently open windows.
+//
+// The split-ratio chain that gives [layout] its exact column widths only
+// makes sense when every one of its windows is being created together:
+// each ratio is relative to whichever windows are still undivided at that
+// point in the chain, so inserting just one window into an already-tiled
+// arrangement cannot reliably reproduce it. When some (but not all) layout
+// windows already exist — a `reset` after closing just one of them, say —
+// the missing one is still spawned, just via dwindle's ordinary placement
+// instead of a re-derived chain.
+func isLayoutFresh(m *manifest.Manifest, f *state.Feature, open map[string]hypr.Client) bool {
+	if !m.Layout.Enabled() {
+		return false
+	}
+	for _, name := range m.Layout.Order {
+		if _, alive := open[hypr.Class(f.Project, f.Name, name)]; alive {
+			return false
+		}
+	}
+	return true
+}
+
+// buildWindowSpec resolves a single declared window's spawn spec (rendering
+// its command template, seeding a browser profile if configured) and the
+// state record to persist for it. pending is nil when the window is already
+// open — detection is purely by the class canaveral assigns; matching
+// anything looser risks adopting one of the user's own windows.
+func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
+	vars tmpl.Vars, base map[string]string, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
+
+	class := hypr.Class(f.Project, f.Name, w.Name)
+
+	profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
+	if err != nil {
+		return state.Window{}, nil, err
+	}
+	wv := vars
+	wv.Class, wv.Profile = class, profile
+
+	cmd, err := tmpl.Render("window."+w.Name, w.Command(), wv)
+	if err != nil {
+		return state.Window{}, nil, err
+	}
+	dir := f.Worktree
+	if w.Dir != "" {
+		dir = serviceDir(f, m, w.Dir)
+	}
+	rec := state.Window{
+		Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
+	}
+
+	if _, alive := open[class]; alive {
+		return rec, nil, nil
+	}
+
+	if w.ProfileSource != "" {
+		src, err := expandHome(w.ProfileSource)
+		if err != nil {
+			return rec, nil, fmt.Errorf("window %q: profile_source: %w", w.Name, err)
+		}
+		seed := worktree.Provision{Copy: w.ProfileSeed}
+		if err := seed.Apply(ctx, src, profile, r.Info); err != nil {
+			return rec, nil, fmt.Errorf("window %q: seeding profile: %w", w.Name, err)
+		}
+	}
+
+	spec := hypr.SpawnSpec{
+		Class:      class,
+		Title:      f.Name + " · " + w.Name,
+		Workspace:  f.HyprWorkspace(),
+		Dir:        dir,
+		IsTerminal: w.IsTerminal(),
+		Terminal:   m.Terminal,
+		Cmd:        cmd,
+		Hold:       w.Hold,
+		Env:        manifest.MergeEnv(base, m.Env),
+	}
+	return rec, &pendingSpawn{name: w.Name, spec: spec}, nil
+}
+
+// spawnFreeWindows spawns every pending window not managed by [layout]
+// exactly as before: independently, in manifest order, no chaining.
+func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName map[string]pendingSpawn, res *Result, r Reporter) {
 	inOrder := map[string]bool{}
 	for _, name := range m.Layout.Order {
 		inOrder[name] = true
@@ -929,15 +960,6 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		r.OK("window %s", w.Name)
 		res.SpawnedWindow = append(res.SpawnedWindow, w.Name)
 	}
-
-	if m.Layout.Enabled() {
-		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, layoutFresh, res, r, originalWS); err != nil {
-			return fmt.Errorf("layout: %w", err)
-		}
-	}
-
-	f.Windows = records
-	return nil
 }
 
 // reconcileLayoutWindows spawns [layout]'s windows.
@@ -986,32 +1008,43 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 	defer restore()
 
 	if !layoutFresh {
-		for _, name := range missing {
-			p := pending[name]
-			if err := hypr.Spawn(ctx, p.spec); err != nil {
-				r.Warn("window %s: %v", name, err)
-				continue
-			}
-			r.OK("window %s", name)
-			res.SpawnedWindow = append(res.SpawnedWindow, name)
-		}
+		spawnMissingIndependently(ctx, missing, pending, res, r)
 		return nil
 	}
+
+	return spawnLayoutChain(ctx, m, hyprWorkspace, pending, res, r)
+}
+
+// spawnMissingIndependently spawns each still-missing layout window on its
+// own, without the preselect chaining that builds an exact-ratio layout —
+// used when the layout is not "fresh" (see reconcileLayoutWindows' doc for
+// why a partial chain cannot be reliably re-derived).
+func spawnMissingIndependently(ctx context.Context, missing []string, pending map[string]pendingSpawn, res *Result, r Reporter) {
+	for _, name := range missing {
+		p := pending[name]
+		if err := hypr.Spawn(ctx, p.spec); err != nil {
+			r.Warn("window %s: %v", name, err)
+			continue
+		}
+		r.OK("window %s", name)
+		res.SpawnedWindow = append(res.SpawnedWindow, name)
+	}
+}
+
+// spawnLayoutChain builds [layout] from scratch: every window in Order is
+// spawned in sequence, each preselected to open beside the previous one so
+// the result is a single left-to-right dwindle split, then the exact
+// ratios from splitRatioChain are applied.
+func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
+	pending map[string]pendingSpawn, res *Result, r Reporter) error {
 
 	ratios := splitRatioChain(m.Layout.Order, m.Layout.Fractions())
 	addresses := make(map[string]string, len(m.Layout.Order))
 	for i, name := range m.Layout.Order {
 		p := pending[name]
 		if i > 0 {
-			prevAddr := addresses[m.Layout.Order[i-1]]
-			if prevAddr == "" {
-				return fmt.Errorf("could not locate %q to chain %q after it", m.Layout.Order[i-1], name)
-			}
-			if err := hypr.FocusWindow(ctx, prevAddr); err != nil {
-				return fmt.Errorf("focus %q: %w", m.Layout.Order[i-1], err)
-			}
-			if err := hypr.Preselect(ctx, "r"); err != nil {
-				return fmt.Errorf("preselect after %q: %w", m.Layout.Order[i-1], err)
+			if err := chainAfter(ctx, addresses[m.Layout.Order[i-1]], m.Layout.Order[i-1], name); err != nil {
+				return err
 			}
 		}
 		if err := hypr.Spawn(ctx, p.spec); err != nil {
@@ -1034,11 +1067,7 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 			// monitor the user is not actively looking at, leaving whichever
 			// one they are using completely undisturbed for the entire
 			// operation — not just restored afterwards.
-			if sec, ok, err := hypr.SecondaryMonitor(ctx); err == nil && ok {
-				if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
-					r.Warn("could not build on a secondary monitor: %v", err)
-				}
-			}
+			relocateToSecondaryMonitor(ctx, hyprWorkspace, r)
 		}
 
 		// Applied here, immediately, rather than in a second pass over all
@@ -1054,6 +1083,39 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 		}
 	}
 	return nil
+}
+
+// chainAfter focuses the previously-spawned window and preselects the
+// direction the next spawn should open in, continuing the dwindle chain.
+// Hyprland's preselect dispatcher operates on whichever window is currently
+// focused, which is why this must run immediately before each spawn rather
+// than once up front.
+func chainAfter(ctx context.Context, prevAddr, prevName, nextName string) error {
+	if prevAddr == "" {
+		return fmt.Errorf("could not locate %q to chain %q after it", prevName, nextName)
+	}
+	if err := hypr.FocusWindow(ctx, prevAddr); err != nil {
+		return fmt.Errorf("focus %q: %w", prevName, err)
+	}
+	if err := hypr.Preselect(ctx, "r"); err != nil {
+		return fmt.Errorf("preselect after %q: %w", prevName, err)
+	}
+	return nil
+}
+
+// relocateToSecondaryMonitor moves the just-created workspace onto any
+// monitor other than the one the user is currently focused on, confirmed
+// empirically to neither change what is shown on their monitor nor steal
+// their keyboard focus — it only affects what the *other* monitor displays.
+// A no-op when there is no secondary monitor to use.
+func relocateToSecondaryMonitor(ctx context.Context, hyprWorkspace string, r Reporter) {
+	sec, ok, err := hypr.SecondaryMonitor(ctx)
+	if err != nil || !ok {
+		return
+	}
+	if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
+		r.Warn("could not build on a secondary monitor: %v", err)
+	}
 }
 
 // waitForClass polls for a window of the given class to appear, returning
