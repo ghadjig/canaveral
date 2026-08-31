@@ -45,6 +45,7 @@ func commands() []command {
 		{"init", "write a starter canaveral.toml for a project", runInit},
 		{"open", "open a feature explicitly (for names clashing with commands)", runOpen},
 		{"reset", "bring up whatever is missing for a feature", runReset},
+		{"restart", "stop and restart named services of a feature", runRestart},
 		{"ls", "list features", runLs},
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
@@ -53,7 +54,7 @@ func commands() []command {
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
-		{"hyprwatch", "react to Hyprland events instead of polling (waybar refresh)", runHyprwatch},
+		{"hyprwatch", "record layout ratios when you leave a workspace", runHyprwatch},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}
