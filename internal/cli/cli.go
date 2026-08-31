@@ -60,6 +60,7 @@ func commands() []command {
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
 		{"projects", "list the projects canaveral knows about, and where they live", runProjects},
+		{"complete", "list completion candidates for a partial command line", runComplete},
 		{"hyprwatch", "record layout ratios when you leave a workspace", runHyprwatch},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},

@@ -30,6 +30,20 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   from anywhere. Registry names are resolved before paths, since the flag exists
   to be used from directories whose contents you know nothing about.
 
+- `canaveral complete -- <words>` lists completion candidates for a partial
+  command line, as JSON or as bare values with `--format=lines`. It completes
+  commands, features, service and agent names, flags, project names after `-C`,
+  and namespaces one path segment at a time — a project with several namespaces
+  is unreadable long before it is unusable if the whole name is offered at once.
+  It mirrors v0.2.0's creation rules exactly: a bare first word offers only
+  commands and features that already exist, and the "create this feature"
+  candidate appears solely after `new`, where it offers namespaces but never an
+  existing name that `new` would refuse.
+
+- A bash completion script at `share/completions/canaveral.bash`, built on
+  `canaveral complete`. The README documented a `_cv_complete` that never
+  existed anywhere in the repo.
+
 ## v0.3.0 — 2026-08-31
 
 ### Changed

@@ -52,6 +52,7 @@ $ canaveral new small-fixes
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral projects` | List the projects canaveral knows about, and where they live |
+| `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
 | `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -339,6 +340,18 @@ cv() {
     cd "$d"
 }
 ```
+
+Tab-completion for `canaveral` itself (and for `cv`, if it is defined) comes
+from `share/completions/canaveral.bash`:
+
+```bash
+source /path/to/canaveral/share/completions/canaveral.bash
+```
+
+It completes commands, features, namespaces one segment at a time, service and
+agent names, flags, and project names after `-C`. All of it comes from
+`canaveral complete`, which the launcher popup calls too, so the shell and the
+popup can never disagree about what a half-typed line means.
 
 ## The project registry
 
