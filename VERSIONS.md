@@ -44,6 +44,18 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   `canaveral complete`. The README documented a `_cv_complete` that never
   existed anywhere in the repo.
 
+- A launcher popup, `share/quickshell/LauncherWindow.qml`, for starting anything
+  from anywhere: type a project, then a command or a name for a new feature.
+  Installed into an existing quickshell config by `scripts/install-launcher.sh`
+  and bound to `SUPER+CTRL+N` — a window in the resident bar rather than a shell
+  of its own, so it opens instantly and inherits the same theme. It carries no
+  knowledge of the grammar; it renders what `canaveral complete --launcher`
+  returns. `rm` and `merge` need a second Enter to confirm, because a mistyped
+  teardown costs far more from a global hotkey than from a shell. The runner
+  also blanks `$CANAVERAL_PROJECT`/`$CANAVERAL_FEATURE`, so a bar that happens
+  to have been started from inside a feature's terminal cannot let a bare `rm`
+  typed in the popup resolve to a feature nobody named.
+
 - `canaveral path` with no feature prints the worktree of whichever feature you
   are in, so bare `cv` lands in the feature's own worktree instead of the
   project's main checkout. Three signals in order: the working directory inside

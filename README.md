@@ -397,6 +397,87 @@ calling themselves the same thing already share each other's features. The
 registry refuses to record the second and says so rather than quietly
 repointing.
 
+## The launcher
+
+`share/quickshell/LauncherWindow.qml` is a popup for starting anything from
+anywhere: type a project, then a command.
+
+```
+no              ->  norules
+<Tab>           ->  attach  complete  exec  init  logs  ls  merge  new  …
+rm              ->  workflows/
+<Tab>           ->  workflows/insurance-application-for-dependants
+```
+
+Creating goes through the same `new` keyword the CLI requires, and the popup
+completes namespaces for it while refusing to offer names that already exist:
+
+```
+norules new work        ->  workflows/
+<Tab> shiny-thing       ->  shiny-thing   (create this feature)
+```
+
+The line is `<project> <argv>`, and `<argv>` is an ordinary canaveral command
+line — the whole thing maps onto `canaveral -C <project> <argv>`, which is shown
+in the popup's footer before you run it. Tab completes, Enter runs (completing
+first if the highlighted candidate merely extends what you typed, so Enter can
+never fire a half-typed name), Esc closes. `rm` and `merge` ask for a second
+Enter.
+
+It installs into an existing quickshell config as one more window, rather than
+being a shell of its own — the bar is resident anyway, so the popup opens
+instantly and inherits the same `Theme.qml`:
+
+```bash
+scripts/install-launcher.sh          # -> ~/.config/quickshell/canaveral/
+```
+
+Add one instance to that config's `shell.qml` — one, not one per screen; it
+moves itself to the focused monitor and takes an exclusive keyboard grab:
+
+```qml
+LauncherWindow {}
+```
+
+And bind it in `hyprland.conf`:
+
+```
+bind = SUPER CTRL, N, exec, qs -c canaveral ipc call launcher toggle
+```
+
+The letter N because `SUPER+CTRL+1..9` are already the `canaveral-goto` jump
+binds. The keybind talks to the running bar over IPC and starts nothing, so the
+popup is instant.
+
+The QML holds no knowledge of the grammar: it draws a text box, shells out to
+`canaveral complete --launcher`, and renders the JSON. If a completion is wrong,
+the bug is in Go, where there is a test for it.
+
+Words are passed after `--`, the one being completed last — with a trailing
+empty word when the line ends in a space, exactly as bash's `COMP_WORDS` does:
+
+```jsonc
+$ canaveral complete --launcher -- norules rm ''
+{
+  "prefix": "",
+  "common": "workflows/",             // what Tab should insert
+  "candidates": [
+    { "value": "workflows/",          // project|command|feature|namespace|
+      "kind": "namespace",            //   service|agent|flag|new
+      "desc": "1 feature",
+      "continues": true }             // a prefix, not an answer: do not end the word
+  ],
+  "project": "norules",
+  "command": "rm",                    // "open" when a bare feature name is dispatching
+  "destructive": true,                // confirm before running this
+  "fuzzy": false,                     // nothing matched the prefix; these are substring guesses
+  "error": ""                         // reported in-band: a completer must not exit non-zero
+}
+```
+
+`--format=lines` prints bare values instead, for shells that filter and render
+their own.
+
 ## Ports and databases
 
 Ports are derived from a stable per-feature slot, so `small-fixes` keeps `:3000`
