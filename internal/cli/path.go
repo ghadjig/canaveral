@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
+	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 )
@@ -28,44 +29,141 @@ func resolveFeature(name string) (*state.Feature, error) {
 	return f, nil
 }
 
-// currentFeature finds the feature whose worktree contains the working
-// directory, for commands willing to default to "whichever feature you're
-// currently in" when no name is given (e.g. `canaveral merge` run from
-// inside a feature's own worktree).
+// currentFeature finds the feature the shell belongs to, for commands willing
+// to default to "whichever feature you're currently in" when no name is given
+// (e.g. `canaveral merge` run from inside a feature's own worktree).
+//
+// Two signals, and deliberately only two. The working directory sitting inside
+// a worktree is the obvious one. $CANAVERAL_FEATURE is the other: canaveral
+// exports it into every process it starts, so a terminal it opened on a
+// feature's workspace still knows which feature it belongs to after you have
+// cd'd somewhere else entirely.
+//
+// The focused Hyprland workspace is a third signal, and it is not used here —
+// see focusedFeature for why not.
 func currentFeature(m *manifest.Manifest) (*state.Feature, error) {
+	if f := featureFromDir(m.Name); f != nil {
+		return f, nil
+	}
+	if f := featureFromEnv(); f != nil && f.Project == m.Name {
+		return f, nil
+	}
+	return nil, fmt.Errorf("not inside a feature worktree; specify a feature name")
+}
+
+// focusedFeature answers "which feature am I looking at" for commands that only
+// navigate, adding the focused Hyprland workspace to currentFeature's signals.
+//
+// That third signal is what makes a terminal you opened yourself — with a
+// keybind, on a feature's workspace, inheriting neither canaveral's environment
+// nor its working directory — still resolve to that feature.
+//
+// It is used only by `path`, never by `merge` or `restart`. A workspace is a
+// property of the window, not of the shell: windows get dragged between
+// workspaces, and a shell that has been carried somewhere else should not
+// silently change which branch a merge lands on. Pointing `cd` at the wrong
+// directory is a keystroke to undo; merging the wrong feature is not.
+//
+// No manifest is needed, and that is the point: this has to work from a
+// directory belonging to no project at all. The workspace name carries the
+// project, and the registry turns that into a checkout.
+func focusedFeature(ctx context.Context) (*state.Feature, error) {
+	if f := featureFromDir(""); f != nil {
+		return f, nil
+	}
+	if f := featureFromEnv(); f != nil {
+		return f, nil
+	}
+	if f := featureFromWorkspace(ctx); f != nil {
+		return f, nil
+	}
+	return nil, fmt.Errorf("not in a feature (no worktree in the working directory, no $CANAVERAL_FEATURE, no feature workspace focused)")
+}
+
+// featureFromDir finds the feature whose worktree contains the working
+// directory. An empty project searches every project.
+func featureFromDir(project string) *state.Feature {
 	wd, err := os.Getwd()
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	if resolved, err := filepath.EvalSymlinks(wd); err == nil {
 		wd = resolved
 	}
 
-	names, err := state.List(m.Name)
-	if err != nil {
-		return nil, err
+	var all []*state.Feature
+	if project == "" {
+		all, err = state.LoadAll()
+	} else {
+		all, err = state.LoadProject(project)
 	}
-	for _, name := range names {
-		f, err := state.Load(m.Name, name)
-		if err != nil {
+	if err != nil {
+		return nil
+	}
+
+	// Longest match wins. Worktrees do not normally nest, but a [worktree] root
+	// pointed at a parent of another one would make two features match, and the
+	// deeper one is the answer either way.
+	var best *state.Feature
+	for _, f := range all {
+		wt := f.Worktree
+		if wt == "" {
 			continue
 		}
-		wt := f.Worktree
 		if resolved, err := filepath.EvalSymlinks(wt); err == nil {
 			wt = resolved
 		}
-		if wd == wt || strings.HasPrefix(wd, wt+string(filepath.Separator)) {
-			return f, nil
+		if wd != wt && !strings.HasPrefix(wd, wt+string(filepath.Separator)) {
+			continue
+		}
+		if best == nil || len(wt) > len(best.Worktree) {
+			best = f
 		}
 	}
-	return nil, fmt.Errorf("not inside a feature worktree; specify a feature name")
+	return best
+}
+
+// featureFromEnv reads the feature canaveral started this process for.
+func featureFromEnv() *state.Feature {
+	project, name := os.Getenv("CANAVERAL_PROJECT"), os.Getenv("CANAVERAL_FEATURE")
+	if project == "" || name == "" {
+		return nil
+	}
+	f, err := state.Load(project, name)
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
+// featureFromWorkspace reads the feature whose Hyprland workspace is focused.
+func featureFromWorkspace(ctx context.Context) *state.Feature {
+	if hypr.Available(ctx) != nil {
+		return nil
+	}
+	ws, err := hypr.ActiveWorkspaceName(ctx)
+	if err != nil {
+		return nil
+	}
+	project, name, ok := splitWorkspaceName(ws)
+	if !ok {
+		return nil
+	}
+	f, err := state.Load(project, name)
+	if err != nil {
+		return nil
+	}
+	return f
 }
 
 func runPath(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("path", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral path <feature>\n\n"+
-			"Print a feature's worktree path, so it can be used from a shell:\n\n"+
+		fmt.Fprintln(os.Stderr, "Usage: canaveral path [feature]\n\n"+
+			"Print a feature's worktree path, so it can be used from a shell.\n"+
+			"With no feature, print the worktree of whichever feature you are in —\n"+
+			"by working directory, by $CANAVERAL_FEATURE, or by focused workspace.\n\n"+
+			"  cd \"$(canaveral path)\"\n"+
 			"  cd \"$(canaveral path small-fixes)\"\n"+
 			"  vim \"$(canaveral path small-fixes)/app/models/user.rb\"")
 	}
@@ -73,9 +171,21 @@ func runPath(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 {
-		return fmt.Errorf("specify one feature, e.g. `canaveral path small-fixes`")
+	if len(pos) > 1 {
+		return fmt.Errorf("expected at most one feature, got %d: %s", len(pos), strings.Join(pos, " "))
 	}
+
+	// No name means "where am I", which must not need a project in scope: the
+	// whole point is answering it from a directory that belongs to none.
+	if len(pos) == 0 {
+		f, err := focusedFeature(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Println(f.Worktree)
+		return nil
+	}
+
 	f, err := resolveFeature(pos[0])
 	if err != nil {
 		return err

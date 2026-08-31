@@ -12,6 +12,77 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.4.0 — 2026-08-31
+
+### Added
+
+- A global project registry at `~/.local/state/canaveral/projects.json`, so
+  canaveral can find a project without standing in it. Projects register
+  themselves the first time any command resolves their manifest, and ones that
+  predate the registry are recovered from their features' own state records, so
+  there is nothing to maintain. `canaveral projects` lists them with
+  `--add`, `--scan`, `--prune` and `--forget` for repairs. `--scan` stops at the
+  first `canaveral.toml` down any path and skips linked git worktrees, since
+  canaveral copies the manifest into every worktree it provisions and a naive
+  walk would find one "project" per feature, all claiming the same name.
+
+- `canaveral -C <project|path> <command>` runs any command against a project
+  from anywhere. Registry names are resolved before paths, since the flag exists
+  to be used from directories whose contents you know nothing about.
+
+- `canaveral complete -- <words>` lists completion candidates for a partial
+  command line, as JSON or as bare values with `--format=lines`. It completes
+  commands, features, service and agent names, flags, project names after `-C`,
+  and namespaces one path segment at a time — a project with several namespaces
+  is unreadable long before it is unusable if the whole name is offered at once.
+  It mirrors v0.2.0's creation rules exactly: a bare first word offers only
+  commands and features that already exist, and the "create this feature"
+  candidate appears solely after `new`, where it offers namespaces but never an
+  existing name that `new` would refuse.
+
+- A bash completion script at `share/completions/canaveral.bash`, built on
+  `canaveral complete`. The README documented a `_cv_complete` that never
+  existed anywhere in the repo.
+
+- A launcher popup, `share/quickshell/LauncherWindow.qml`, for starting anything
+  from anywhere: type a project, then a command or a name for a new feature.
+  Installed into an existing quickshell config by `scripts/install-launcher.sh`
+  and bound to `SUPER+CTRL+N` — a window in the resident bar rather than a shell
+  of its own, so it opens instantly and inherits the same theme. It carries no
+  knowledge of the grammar; it renders what `canaveral complete --launcher`
+  returns. `rm` and `merge` need a second Enter to confirm, because a mistyped
+  teardown costs far more from a global hotkey than from a shell. The runner
+  also blanks `$CANAVERAL_PROJECT`/`$CANAVERAL_FEATURE`, so a bar that happens
+  to have been started from inside a feature's terminal cannot let a bare `rm`
+  typed in the popup resolve to a feature nobody named.
+
+- `canaveral path` with no feature prints the worktree of whichever feature you
+  are in, so bare `cv` lands in the feature's own worktree instead of the
+  project's main checkout. Three signals in order: the working directory inside
+  a worktree, `$CANAVERAL_FEATURE` (so a terminal canaveral opened still knows
+  its feature after you cd away), then the focused Hyprland workspace (so a
+  terminal you opened yourself on a feature's workspace resolves too). It needs
+  no project in scope — the workspace name carries the project and the registry
+  turns that into a checkout.
+
+### Changed
+
+- `merge`, `restart` and (since v0.3.0 gave it the same default) `rm` now also
+  accept `$CANAVERAL_FEATURE` when working out which feature you mean, not just
+  the working directory, so they work from a canaveral-opened terminal that has
+  been cd'd elsewhere. For `rm` that is a wider default than v0.3.0 shipped:
+  bare `canaveral rm` from such a terminal now resolves rather than refusing.
+  The shell genuinely belongs to that feature, and v0.3.0's unmerged-branch
+  guard already refuses to tear down unlanded work — but it is a destructive
+  command reaching further than before, and worth knowing. They deliberately do
+  *not* consult the focused Hyprland workspace the way `path` does: a workspace
+  belongs to the window rather than the shell, and windows get dragged between
+  workspaces. A misdirected `cd` is one keystroke to undo; a misdirected merge
+  is not.
+
+- The `cv` helper in the README is rewritten around the above, and now falls
+  back to the project root only when you are not in a feature at all.
+
 ## v0.3.0 — 2026-08-31
 
 ### Changed

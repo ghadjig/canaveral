@@ -47,10 +47,12 @@ $ canaveral new small-fixes
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
-| `canaveral path <feature>` | Print a feature's worktree path |
+| `canaveral path [feature]` | Print a feature's worktree path; with no name, the one you are in |
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
+| `canaveral projects` | List the projects canaveral knows about, and where they live |
+| `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
 | `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -68,6 +70,18 @@ canaveral: no feature "stratus" in norules
   did you mean `canaveral status`?
   create it with `canaveral new stratus`
 ```
+
+Every command works on the project you are standing in. `-C` puts you in one
+without moving:
+
+```bash
+canaveral -C norules ls
+canaveral -C norules new small-fixes --focus
+```
+
+The name comes from the project registry (see below); a path works too. The
+registry is checked first, so `-C norules` means the registered project even if
+a directory called `norules` happens to sit in the one you are in.
 
 `canaveral new`, `canaveral <feature>` and `canaveral reset` run the same
 reconcile pass, so all three are idempotent: run them any number of times and only the missing pieces start.
@@ -291,9 +305,24 @@ Worktree paths are long, so two commands exist to avoid typing them:
 
 ```bash
 cd "$(canaveral path small-fixes)"
+cd "$(canaveral path)"                       # the feature you're already in
 canaveral exec small-fixes -- git rebase main
 canaveral exec small-fixes -- bin/rails test
 ```
+
+`canaveral path` with no feature answers "where am I", using three signals in
+order: the working directory sitting inside a worktree, then
+`$CANAVERAL_FEATURE` (canaveral exports it into every process it starts, so a
+terminal it opened still knows which feature it belongs to after you have cd'd
+away), then the focused Hyprland workspace (which catches a terminal you opened
+yourself on a feature's workspace, inheriting neither). It needs no project in
+scope — the workspace name carries the project and the registry turns that into
+a checkout — so it works from anywhere.
+
+That last signal is used only by `path`. `merge` and `restart` stop at the first
+two: a workspace is a property of the window, not the shell, and windows get
+dragged between workspaces. Pointing `cd` at the wrong directory is a keystroke
+to undo; merging the wrong feature is not.
 
 `exec` runs in the worktree with the same toolchain and environment the
 feature's own services get, and exits with the command's own status, so it
@@ -311,11 +340,143 @@ For a shell shortcut with tab-completion, in `~/.bash_aliases`:
 
 ```bash
 cv() {
-    [ -z "$1" ] && { cd "$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")"; return; }
-    cd "$(canaveral path "$1")" || return
+    local d
+    if [ -n "$1" ]; then
+        d=$(canaveral path "$1") || return
+    else
+        # Bare `cv` goes to the root of wherever you are: the worktree of the
+        # feature you're in, or the project's main checkout if you're not in
+        # one. Both are "up and out of here", which is the only thing anyone
+        # means by it.
+        d=$(canaveral path 2>/dev/null) ||
+            d=$(dirname "$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)") ||
+            return
+    fi
+    cd "$d"
 }
-complete -F _cv_complete cv   # completes from `canaveral ls --names`
 ```
+
+Tab-completion for `canaveral` itself (and for `cv`, if it is defined) comes
+from `share/completions/canaveral.bash`:
+
+```bash
+source /path/to/canaveral/share/completions/canaveral.bash
+```
+
+It completes commands, features, namespaces one segment at a time, service and
+agent names, flags, and project names after `-C`. All of it comes from
+`canaveral complete`, which the launcher popup calls too, so the shell and the
+popup can never disagree about what a half-typed line means.
+
+## The project registry
+
+canaveral needs to find a project without being inside it — for `-C`, and for
+the launcher, which has no meaningful working directory at all. It keeps an
+index at `~/.local/state/canaveral/projects.json`.
+
+Nothing has to be maintained: a project registers itself the first time any
+command resolves its manifest, and projects that predate the registry are
+recovered from their features' own state records. Use one and it is addressable
+by name forever after.
+
+```bash
+canaveral projects                    # name, root, when it was last used
+canaveral projects --scan ~/code      # register everything under a directory
+canaveral projects --add ~/work/thing # register one checkout
+canaveral projects --prune            # drop entries whose checkout is gone
+canaveral projects --forget norules   # drop one, leaving the checkout alone
+```
+
+`--scan` stops at the first `canaveral.toml` it finds down any path and skips
+linked git worktrees, so it will not register a project once per feature —
+canaveral copies the manifest into every worktree it provisions, and a naive
+walk would find one "project" per worktree, all claiming the same name.
+
+A name is also the project's key in the state directory, so two checkouts
+calling themselves the same thing already share each other's features. The
+registry refuses to record the second and says so rather than quietly
+repointing.
+
+## The launcher
+
+`share/quickshell/LauncherWindow.qml` is a popup for starting anything from
+anywhere: type a project, then a command.
+
+```
+no              ->  norules
+<Tab>           ->  attach  complete  exec  init  logs  ls  merge  new  …
+rm              ->  workflows/
+<Tab>           ->  workflows/insurance-application-for-dependants
+```
+
+Creating goes through the same `new` keyword the CLI requires, and the popup
+completes namespaces for it while refusing to offer names that already exist:
+
+```
+norules new work        ->  workflows/
+<Tab> shiny-thing       ->  shiny-thing   (create this feature)
+```
+
+The line is `<project> <argv>`, and `<argv>` is an ordinary canaveral command
+line — the whole thing maps onto `canaveral -C <project> <argv>`, which is shown
+in the popup's footer before you run it. Tab completes, Enter runs (completing
+first if the highlighted candidate merely extends what you typed, so Enter can
+never fire a half-typed name), Esc closes. `rm` and `merge` ask for a second
+Enter.
+
+It installs into an existing quickshell config as one more window, rather than
+being a shell of its own — the bar is resident anyway, so the popup opens
+instantly and inherits the same `Theme.qml`:
+
+```bash
+scripts/install-launcher.sh          # -> ~/.config/quickshell/canaveral/
+```
+
+Add one instance to that config's `shell.qml` — one, not one per screen; it
+moves itself to the focused monitor and takes an exclusive keyboard grab:
+
+```qml
+LauncherWindow {}
+```
+
+And bind it in `hyprland.conf`:
+
+```
+bind = SUPER CTRL, N, exec, qs -c canaveral ipc call launcher toggle
+```
+
+The letter N because `SUPER+CTRL+1..9` are already the `canaveral-goto` jump
+binds. The keybind talks to the running bar over IPC and starts nothing, so the
+popup is instant.
+
+The QML holds no knowledge of the grammar: it draws a text box, shells out to
+`canaveral complete --launcher`, and renders the JSON. If a completion is wrong,
+the bug is in Go, where there is a test for it.
+
+Words are passed after `--`, the one being completed last — with a trailing
+empty word when the line ends in a space, exactly as bash's `COMP_WORDS` does:
+
+```jsonc
+$ canaveral complete --launcher -- norules rm ''
+{
+  "prefix": "",
+  "common": "workflows/",             // what Tab should insert
+  "candidates": [
+    { "value": "workflows/",          // project|command|feature|namespace|
+      "kind": "namespace",            //   service|agent|flag|new
+      "desc": "1 feature",
+      "continues": true }             // a prefix, not an answer: do not end the word
+  ],
+  "project": "norules",
+  "command": "rm",                    // "open" when a bare feature name is dispatching
+  "destructive": true,                // confirm before running this
+  "fuzzy": false,                     // nothing matched the prefix; these are substring guesses
+  "error": ""                         // reported in-band: a completer must not exit non-zero
+}
+```
+
+`--format=lines` prints bare values instead, for shells that filter and render
+their own.
 
 ## Ports and databases
 
@@ -512,6 +673,7 @@ permanently wrong.
 
 ```
 ~/.local/state/canaveral/
+  projects.json                       the project registry: name -> checkout, last used
   features/<project>/<feature>.json   slot, branch, ports, units, windows
   logs/<project>/<feature>/*.log      service and agent logs
   worktrees/<project>/<feature>/      the feature checkout, only with [worktree] root = "state"
