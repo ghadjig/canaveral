@@ -38,7 +38,27 @@ const (
 	StatusIdle Status = "idle"
 	// StatusOffline means the feature has no reachable agent.
 	StatusOffline Status = "offline"
+	// StatusBooting means the feature is being brought up right now: its
+	// worktree, services, agents and windows are still arriving. It outranks
+	// the agent-derived statuses because a feature mid-creation has no
+	// reachable agent yet and would otherwise report itself offline.
+	StatusBooting Status = "booting"
+	// StatusRemoving means the feature is being torn down.
+	StatusRemoving Status = "removing"
 )
+
+// Progress is a feature's position through a lifecycle phase, present only
+// while one is running.
+//
+// Steps are wildly unequal — a readiness probe can take two minutes where a
+// window spawn takes milliseconds — so Step/Total measures work remaining and
+// never time remaining. A consumer should render it as such.
+type Progress struct {
+	Label string    `json:"label,omitempty"`
+	Step  int       `json:"step"`
+	Total int       `json:"total"`
+	Since time.Time `json:"since"`
+}
 
 // rank orders statuses by urgency for sorting and for picking the single
 // status that represents a whole feature (or the whole snapshot).
@@ -52,10 +72,14 @@ func rank(s Status) int {
 		return 2
 	case StatusWorking:
 		return 3
-	case StatusIdle:
+	case StatusBooting:
 		return 4
+	case StatusRemoving:
+		return 5
+	case StatusIdle:
+		return 6
 	}
-	return 5
+	return 7
 }
 
 // NeedsAttention reports whether a status is one a person should act on.
@@ -172,6 +196,8 @@ type Feature struct {
 	CreatedAt time.Time `json:"created_at"`
 	Agents    []Agent   `json:"agents,omitempty"`
 	Git       *Git      `json:"git,omitempty"`
+	// Progress is set only while the feature is booting or being removed.
+	Progress *Progress `json:"progress,omitempty"`
 }
 
 // NeedsAttention reports whether this feature wants a person.
@@ -298,6 +324,29 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 	sort.Slice(out.Agents, func(i, j int) bool { return out.Agents[i].Name < out.Agents[j].Name })
 
 	out.Status = worst(statuses)
+
+	// A lifecycle phase overrides whatever the agents say. During creation
+	// there is usually no agent to ask yet, so the honest reading of the
+	// probes — offline — is exactly the wrong thing to show someone who just
+	// asked for this feature and is watching it appear.
+	//
+	// InPhase disbelieves a phase older than its staleness bound: nothing
+	// updates a state file on behalf of a process that was killed outright,
+	// and a progress bar frozen forever is worse than none.
+	if f.InPhase() {
+		switch f.Phase {
+		case state.PhaseBooting:
+			out.Status = StatusBooting
+		case state.PhaseRemoving:
+			out.Status = StatusRemoving
+		}
+		out.Progress = &Progress{
+			Label: f.PhaseLabel,
+			Step:  f.PhaseStep,
+			Total: f.PhaseTotal,
+			Since: f.PhaseSince,
+		}
+	}
 	switch {
 	case prev == nil, prev.Status != out.Status:
 		out.Since = now

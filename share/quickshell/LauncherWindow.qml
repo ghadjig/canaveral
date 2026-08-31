@@ -37,9 +37,6 @@ PanelWindow {
 
     property var result: null
     property int selected: 0
-    property var outputLines: []
-    property bool runningCmd: false
-    property int exitCode: -1
 
     // Resolved once rather than assumed: Hyprland keybinds inherit the
     // session's PATH, which does not always include ~/.local/bin, and this
@@ -89,9 +86,6 @@ PanelWindow {
         result = null;
         selected = 0;
         confirming = false;
-        outputLines = [];
-        exitCode = -1;
-        runningCmd = false;
         open = true;
         input.forceActiveFocus();
         refresh();
@@ -164,6 +158,28 @@ PanelWindow {
     // Empty until there is something to run: a project on its own is not a
     // command, and `canaveral -C norules` with nothing after it would exit 0
     // having printed usage to a terminal nobody is looking at.
+    // The command actually executed, which is argv() behind an `env -u` that
+    // strips canaveral's own feature variables.
+    //
+    // A popup has no "current feature", but canaveral does: since v0.3.0 `rm`
+    // with no name falls back to whichever feature the shell belongs to, read
+    // from those variables. Quickshell inherits its environment from whatever
+    // launched it, so a bar restarted from inside a feature's terminal would
+    // carry them, and a bare `rm` typed here would tear down a feature nobody
+    // named.
+    //
+    // Done with `env` rather than Process.environment because assigning a JS
+    // object to that property silently fails on quickshell 0.3.0 — it logs
+    // "Unable to assign QJSValue to QVariantHash" and leaves the environment
+    // untouched, which is exactly the failure mode a safety guard must not
+    // have. `env` is a real binary with well-defined behaviour.
+    function execArgv() {
+        const a = argv();
+        if (a.length === 0)
+            return [];
+        return ["env", "-u", "CANAVERAL_PROJECT", "-u", "CANAVERAL_FEATURE", "-u", "CANAVERAL_WORKTREE"].concat(a);
+    }
+
     function argv() {
         const w = words().filter(x => x !== "");
         if (w.length < 2)
@@ -264,66 +280,63 @@ PanelWindow {
         run();
     }
 
+    // Submit and get out of the way.
+    //
+    // Bringing a feature up takes as long as its slowest readiness probe, and
+    // sitting on a focused, still-typeable popup for that is the wrong place to
+    // wait: the bar already has a row for the feature, and canaveral now
+    // publishes its progress there. So the window closes at once and the work
+    // is watched where everything else about that feature is watched.
+    //
+    // The process stays a child of this shell rather than being detached,
+    // purely so its exit status is still knowable. Anything that fails before
+    // the feature record exists — an unknown project, a name that is already
+    // taken — has no row to fail on, and would otherwise vanish silently. Those
+    // become a desktop notification instead.
     function run() {
-        const cmd = argv();
+        const cmd = execArgv();
         if (cmd.length === 0)
             return;
         confirming = false;
-        outputLines = [];
-        exitCode = -1;
-        runningCmd = true;
+        lastCmd = argv().slice(1).join(" ");
+        errorLines = [];
         runner.command = cmd;
         runner.running = true;
+        hide();
+    }
+
+    // The last command's stderr, kept only until it is reported.
+    property var errorLines: []
+    property string lastCmd: ""
+
+    function notifyFailure(code) {
+        const detail = errorLines.length ? errorLines.join("\n") : ("exited " + code);
+        Quickshell.execDetached(["notify-send", "--app-name=canaveral", "--urgency=critical", "canaveral " + lastCmd, detail]);
     }
 
     Process {
         id: runner
         running: false
-        // A popup has no "current feature", but canaveral does: since v0.3.0
-        // `rm` with no name falls back to whichever feature the shell belongs
-        // to, read from these. Quickshell inherits its environment from
-        // whatever launched it, so a bar restarted from inside a feature's
-        // terminal would carry them — and a bare `rm` typed here would silently
-        // tear down a feature nobody named. Emptying them is well-defined
-        // (canaveral treats an empty value as unset) and turns that into the
-        // error it should be.
-        environment: ({
-                "CANAVERAL_PROJECT": "",
-                "CANAVERAL_FEATURE": "",
-                "CANAVERAL_WORKTREE": ""
-            })
-        stdout: SplitParser {
-            splitMarker: "\n"
-            onRead: line => root.append(line)
-        }
+        // Survives the popup closing: quickshell is resident, so this keeps
+        // running after hide(). If the bar itself is killed mid-flight the
+        // reconcile dies with it, which is survivable by design — the feature
+        // engine is idempotent and `canaveral reset` repairs a partial run.
+
+        // stdout is the reporter's step-by-step prose, which the bar's own
+        // progress row now says better and in the right place. Only stderr is
+        // kept, and only to explain a failure.
         stderr: SplitParser {
             splitMarker: "\n"
-            onRead: line => root.append(line)
+            onRead: line => {
+                if (line.trim())
+                    root.errorLines = root.errorLines.concat([line]).slice(-6);
+            }
         }
         onExited: code => {
-            root.runningCmd = false;
-            root.exitCode = code;
-            if (code === 0)
-                closeAfterSuccess.start();
+            if (code !== 0)
+                root.notifyFailure(code);
+            root.errorLines = [];
         }
-    }
-
-    function append(line) {
-        if (!line.trim())
-            return;
-        const next = outputLines.slice();
-        next.push(line);
-        // Only the tail is ever readable in a popup this size, and a feature
-        // creation emits far more than fits.
-        outputLines = next.slice(-12);
-    }
-
-    Timer {
-        id: closeAfterSuccess
-        // Long enough to read the last "ok" line, short enough not to be in the
-        // way. A failure never auto-closes: the output is the whole point.
-        interval: 900
-        onTriggered: root.hide()
     }
 
     // ---- the surface ----
@@ -454,7 +467,7 @@ PanelWindow {
             // ---- error from the completer ----
             Text {
                 width: parent.width
-                visible: !!(root.result && root.result.error) && !root.runningCmd && root.outputLines.length === 0
+                visible: !!(root.result && root.result.error)
                 text: root.result && root.result.error ? root.result.error : ""
                 wrapMode: Text.WordWrap
                 font.family: Theme.font.family
@@ -467,7 +480,6 @@ PanelWindow {
                 id: list
                 width: parent.width
                 spacing: 1
-                visible: root.outputLines.length === 0 && !root.runningCmd
 
                 Repeater {
                     model: root.candidates.slice(0, root.maxRows)
@@ -540,26 +552,6 @@ PanelWindow {
                 }
             }
 
-            // ---- command output ----
-            Column {
-                width: parent.width
-                spacing: 2
-                visible: root.outputLines.length > 0 || root.runningCmd
-
-                Repeater {
-                    model: root.outputLines
-
-                    Text {
-                        required property var modelData
-                        width: parent.width
-                        text: modelData
-                        font.family: Theme.font.family
-                        font.pixelSize: Theme.font.detail
-                        color: Theme.dim
-                        elide: Text.ElideRight
-                    }
-                }
-            }
 
             // ---- footer ----
             Text {
@@ -567,24 +559,10 @@ PanelWindow {
                 font.family: Theme.font.family
                 font.pixelSize: Theme.font.label
                 elide: Text.ElideRight
-                color: {
-                    if (root.confirming)
-                        return Theme.status.failed;
-                    if (root.exitCode > 0)
-                        return Theme.status.failed;
-                    if (root.exitCode === 0)
-                        return Theme.status.idle;
-                    return Theme.faint;
-                }
+                color: root.confirming ? Theme.status.failed : Theme.faint
                 text: {
                     if (root.confirming)
                         return "this removes work — Enter to confirm, Esc to cancel";
-                    if (root.runningCmd)
-                        return "running…";
-                    if (root.exitCode > 0)
-                        return "exited " + root.exitCode + " — Esc to dismiss";
-                    if (root.exitCode === 0)
-                        return "done";
                     const a = root.argv();
                     if (a.length === 0)
                         return "Tab completes · Enter runs · Esc closes";

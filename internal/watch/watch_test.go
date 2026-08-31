@@ -274,3 +274,58 @@ func TestBuildSurfacesBothTimers(t *testing.T) {
 		t.Errorf("SincePrompt = %v, want 793 seconds", got.Agents[0].SincePrompt)
 	}
 }
+
+func TestBuildBootingOverridesAnOfflineAgent(t *testing.T) {
+	// A feature being created has no reachable agent yet, so the honest
+	// reading of the probes is "offline" — which is exactly the wrong thing to
+	// show someone who just asked for it and is watching it appear.
+	f := &state.Feature{
+		Project: "norules", Name: "small-fixes",
+		Agents:     []state.Agent{{Name: "main", URL: "http://127.0.0.1:1"}},
+		Phase:      state.PhaseBooting,
+		PhaseLabel: "service web",
+		PhaseStep:  3, PhaseTotal: 10,
+		PhaseSince: time.Now(),
+	}
+	got := Build(f, map[string]agent.Health{"main": {Reachable: false}}, nil, time.Now())
+
+	if got.Status != StatusBooting {
+		t.Errorf("status = %q, want %q", got.Status, StatusBooting)
+	}
+	if got.Progress == nil {
+		t.Fatal("no progress emitted while booting")
+	}
+	if got.Progress.Step != 3 || got.Progress.Total != 10 || got.Progress.Label != "service web" {
+		t.Errorf("progress = %+v, want 3/10 service web", got.Progress)
+	}
+}
+
+func TestBuildDisbelievesAStalePhase(t *testing.T) {
+	// Nothing updates a state file for a process that was killed outright, so
+	// an interrupted run leaves its phase set for good. A progress bar frozen
+	// forever is worse than none.
+	f := &state.Feature{
+		Project: "norules", Name: "small-fixes",
+		Agents:    []state.Agent{{Name: "main", URL: "http://127.0.0.1:1"}},
+		Phase:     state.PhaseBooting,
+		PhaseStep: 3, PhaseTotal: 10,
+		PhaseSince: time.Now().Add(-2 * state.StalePhaseAfter),
+	}
+	got := Build(f, map[string]agent.Health{"main": {Reachable: false}}, nil, time.Now())
+
+	if got.Status != StatusOffline {
+		t.Errorf("status = %q, want the agents' own %q once the phase is stale", got.Status, StatusOffline)
+	}
+	if got.Progress != nil {
+		t.Errorf("progress = %+v, want none for a stale phase", got.Progress)
+	}
+}
+
+func TestBootingAndRemovingDoNotDemandAttention(t *testing.T) {
+	// Something you asked for, arriving, is not something to be told about.
+	for _, s := range []Status{StatusBooting, StatusRemoving} {
+		if s.NeedsAttention() {
+			t.Errorf("%q needs attention, want not", s)
+		}
+	}
+}

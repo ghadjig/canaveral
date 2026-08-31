@@ -12,6 +12,51 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- Features publish lifecycle progress while they are being created or torn
+  down. `canaveral watch` gains two statuses, `booting` and `removing`, and a
+  `progress` object carrying a step count and the name of the step in flight,
+  so a status bar can show what is happening instead of a row that simply
+  appears when it is over.
+
+  The two processes involved share no channel — the one doing the work and the
+  one watching it are different, and canaveral has no daemon — so progress is
+  written into the feature's own state record, which they already share.
+
+  A phase is disbelieved once it is older than ten minutes. Nothing updates a
+  state file on behalf of a process that was killed outright, and a progress bar
+  frozen forever is worse than none.
+
+### Changed
+
+- The launcher popup closes the moment you submit, instead of holding focus
+  while a feature comes up. Bringing one up takes as long as its slowest
+  readiness probe, and a still-typeable window is the wrong place to wait now
+  that the bar's own row reports the same work. Failures that happen before the
+  feature record exists — an unknown project, a name already taken — have no row
+  to appear on, and become a desktop notification instead.
+
+- The launcher runs commands behind `env -u CANAVERAL_PROJECT -u
+  CANAVERAL_FEATURE -u CANAVERAL_WORKTREE` rather than setting
+  `Process.environment`. Assigning a JS object to that property silently fails
+  on quickshell 0.3.0 — it logs "Unable to assign QJSValue to QVariantHash" and
+  leaves the environment untouched, which is the one failure mode a guard
+  against a stray `rm` must not have.
+
+- `canaveral watch` re-reads feature state every 200ms, separately from its
+  existing rescan, reusing the previous refresh's agent probes rather than
+  issuing new ones. Progress comes from state and owes nothing to the agent API,
+  and skipping the HTTP is what makes the fast poll affordable; snapshots are
+  still emitted only on change, so a settled world stays silent.
+
+  The first attempt tightened the existing rescan only while a phase was
+  running, which live testing showed could not work: at a three-second baseline
+  the whole of a short creation passes between two ticks, so the phase was over
+  before anything noticed it had begun.
+
 ## v0.4.2 — 2026-08-31
 
 ### Added
