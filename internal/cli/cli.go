@@ -54,6 +54,7 @@ func commands() []command {
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
 		{"prune", "stop leftover units whose feature no longer exists", runPrune},
+		{"rebase", "fetch, then rebase the current (or named) feature onto the default branch", runRebase},
 		{"merge", "rebase and merge the current (or named) feature, then tear it down", runMerge},
 		{"attach", "attach a terminal to a feature's agent", runAttach},
 		{"logs", "print or follow a service or agent log", runLogs},

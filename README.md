@@ -44,6 +44,7 @@ $ canaveral new small-fixes
 | `canaveral status [feature...]` | Per-item state, idle/worked time, CPU, memory, tokens, cost, branch status |
 | `canaveral rm [feature]` | Stop everything and drop the worktree; defaults to the feature you're in |
 | `canaveral prune` | Stop leftover units whose feature no longer exists; `--dry-run` to look first |
+| `canaveral rebase [feature]` | Fetch, then rebase onto the default branch; leaves conflicts in place to resolve (defaults to the one you're in) |
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |

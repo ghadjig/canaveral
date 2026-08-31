@@ -240,6 +240,52 @@ func DefaultBranch(ctx context.Context, repo string) (string, error) {
 	return "", errors.New("could not determine the default branch; pass --into explicitly")
 }
 
+// HasRemote reports whether the repository has a remote of the given name.
+func HasRemote(ctx context.Context, dir, remote string) bool {
+	return exec.CommandContext(ctx, "git", "-C", dir,
+		"config", "--get", "remote."+remote+".url").Run() == nil
+}
+
+// Fetch updates the remote-tracking refs for remote.
+func Fetch(ctx context.Context, dir, remote string) error {
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", remote)
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git fetch %s: %w: %s", remote, err, strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
+// RemoteDefaultBranch returns the remote-tracking ref for the remote's default
+// branch, like "origin/main" — the right thing to rebase onto, since it is
+// what the remote actually holds rather than whatever a stale local branch of
+// the same name happens to point at.
+func RemoteDefaultBranch(ctx context.Context, dir, remote string) (string, error) {
+	if out, err := exec.CommandContext(ctx, "git", "-C", dir,
+		"symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD").Output(); err == nil {
+		if name := strings.TrimSpace(string(out)); name != "" {
+			return name, nil
+		}
+	}
+	// origin/HEAD is only written at clone time, and never for a remote added
+	// afterwards, so falling back to the conventional names is the common path
+	// rather than the exception.
+	for _, name := range []string{"main", "master"} {
+		ref := remote + "/" + name
+		if revExists(ctx, dir, "refs/remotes/"+ref) {
+			return ref, nil
+		}
+	}
+	return "", fmt.Errorf("could not determine %s's default branch (tried %s/HEAD, %s/main, %s/master); pass --onto explicitly",
+		remote, remote, remote, remote)
+}
+
+func revExists(ctx context.Context, dir, rev string) bool {
+	return exec.CommandContext(ctx, "git", "-C", dir,
+		"rev-parse", "--verify", "--quiet", rev).Run() == nil
+}
+
 // Checkout switches repo's working tree to branch.
 func Checkout(ctx context.Context, repo, branch string) error {
 	var stderr bytes.Buffer
@@ -251,17 +297,65 @@ func Checkout(ctx context.Context, repo, branch string) error {
 	return nil
 }
 
+// ErrRebaseConflict reports a rebase that stopped on a conflict and was left
+// in progress for the user to finish or abort by hand.
+var ErrRebaseConflict = errors.New("rebase stopped on a conflict")
+
 // Rebase replays dir's checked-out branch on top of onto, aborting cleanly
 // (rather than leaving a half-finished rebase behind) if it conflicts.
 func Rebase(ctx context.Context, dir, onto string) error {
+	return rebase(ctx, dir, onto, true)
+}
+
+// RebaseKeepingConflicts is Rebase, but leaves a conflicted rebase in progress
+// so it can be resolved with `git rebase --continue`, returning an error
+// wrapping ErrRebaseConflict. Aborting is right when the rebase is one step of
+// a larger operation that must not half-finish; it is wrong when the rebase is
+// the whole point of the command, since throwing the work away is exactly what
+// the user does not want in the case they most needed the command for.
+func RebaseKeepingConflicts(ctx context.Context, dir, onto string) error {
+	return rebase(ctx, dir, onto, false)
+}
+
+func rebase(ctx context.Context, dir, onto string, abortOnConflict bool) error {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rebase", onto)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
-		_ = exec.CommandContext(ctx, "git", "-C", dir, "rebase", "--abort").Run()
+		if abortOnConflict {
+			_ = exec.CommandContext(ctx, "git", "-C", dir, "rebase", "--abort").Run()
+			return fmt.Errorf("rebase onto %s: %w: %s", onto, err, strings.TrimSpace(out.String()))
+		}
+		if RebaseInProgress(ctx, dir) {
+			return fmt.Errorf("rebase onto %s: %w: %s", onto, ErrRebaseConflict, strings.TrimSpace(out.String()))
+		}
+		// Failed before touching anything — a bad ref, say. Nothing is in
+		// progress, so there is nothing to resolve or abort.
 		return fmt.Errorf("rebase onto %s: %w: %s", onto, err, strings.TrimSpace(out.String()))
 	}
 	return nil
+}
+
+// RebaseInProgress reports whether dir has a rebase stopped part-way through.
+func RebaseInProgress(ctx context.Context, dir string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		out, err := exec.CommandContext(ctx, "git", "-C", dir,
+			"rev-parse", "--git-path", name).Output()
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(out))
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // MergeBranch merges branch into repo's currently checked-out branch, aborting
