@@ -84,10 +84,23 @@ func NewRunner(opt Options) *Runner {
 }
 
 func loadFeatures(project string) ([]*state.Feature, error) {
-	if project == "" {
-		return state.LoadAll()
+	// Widget slots are global, so allocate across every project even when
+	// only one is being watched: the number a bar renders has to match the
+	// one the jump keybinds resolve, and those do not know about projects.
+	all, err := state.EnsureWSlots()
+	if err != nil {
+		return nil, err
 	}
-	return state.LoadProject(project)
+	if project == "" {
+		return all, nil
+	}
+	var out []*state.Feature
+	for _, f := range all {
+		if f.Project == project {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // Run streams a JSON snapshot per line to w until ctx is cancelled.

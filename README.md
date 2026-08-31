@@ -370,6 +370,7 @@ canaveral watch --all    # every project
   "features": [{
     "project": "norules", "name": "small-fixes", "key": "norules/small-fixes",
     "branch": "small-fixes", "workspace": "norules:small-fixes",
+    "ws_slot": 1,                     // stable widget slot, matches `canaveral ws-slot`
     "status": "waiting",              // waiting|error|retrying|working|idle|offline
     "since": "2026-08-28T12:39:06+03:00",
     "created_at": "2026-08-28T11:02:11+03:00",

@@ -19,6 +19,9 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 - `canaveral ws-slot [n]` maps a stable, 1-indexed slot number to a feature's
   workspace, with `--json` for waybar custom modules. Bare, it prints the whole
   mapping.
+- `canaveral watch` emits `ws_slot` per feature, so a status bar can label and
+  order features by the same number the jump keybinds use instead of deriving a
+  position from the workspaces that happen to exist.
 
 ### Changed
 
@@ -32,7 +35,8 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
   The waybar and keybind scripts should become thin wrappers around
   `canaveral ws-slot`, which also removes the sort logic that was duplicated
-  between them.
+  between them — and, for a quickshell bar, a third copy reading `ws_slot`
+  off the watch stream.
 
 ### Fixed
 
