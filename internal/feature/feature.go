@@ -169,9 +169,17 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	vars := varsFor(ctx, m, f, created)
 	tcMode := m.ToolchainMode()
 
+	// Progress is published from here on. The record already exists, so a
+	// watcher has a row to put it on; everything below this point is slow
+	// enough to be worth reporting.
+	prog := newProgress(f, state.PhaseBooting, reconcileSteps(m, opt))
+	defer prog.finish()
+
+	prog.start("worktree")
 	if err := ensureWorktree(ctx, m, f, vars, opt, created, r); err != nil {
 		return nil, err
 	}
+	prog.done()
 	// The worktree may have just been created, so re-resolve the toolchain there.
 	baseEnv, err := toolchain.Env(ctx, tcMode, f.Worktree)
 	if err != nil {
@@ -184,18 +192,24 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 
 	// Before services, so a precondition failure costs seconds and names
 	// itself rather than surfacing as a readiness probe timing out.
+	if m.Precheck != "" {
+		prog.start("precheck")
+	}
 	if err := runPrecheck(ctx, m, f, vars, baseEnv, r); err != nil {
 		return nil, err
 	}
+	if m.Precheck != "" {
+		prog.done()
+	}
 
 	if !opt.NoServices {
-		if err := reconcileServices(ctx, m, f, vars, baseEnv, res, r); err != nil {
+		if err := reconcileServices(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
 		}
 	}
 	if !opt.NoAgents {
-		if err := reconcileAgents(ctx, m, f, vars, baseEnv, res, r); err != nil {
+		if err := reconcileAgents(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
 		}
@@ -207,7 +221,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	if !opt.NoWindows {
 		// Agent URLs are only known after agents start, so windows render last.
 		vars = varsFor(ctx, m, f, res.Created)
-		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, originalWS); err != nil {
+		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, originalWS, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
 		}
@@ -520,7 +534,7 @@ func runPrecheck(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 }
 
 func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Feature,
-	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter) error {
+	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, prog *progress) error {
 
 	base := baseEnvFor(m, f, tc)
 	var records []state.Service
@@ -531,6 +545,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 	}
 
 	for _, s := range m.Services {
+		prog.start("service " + s.Name)
 		rec := serviceRecord(m, f, s, logDir, vars)
 		cmd, err := tmpl.Render("service."+s.Name+".cmd", s.Cmd, vars)
 		if err != nil {
@@ -540,6 +555,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 
 		if st, err := unit.Query(ctx, rec.Unit); err == nil && st.Running() {
 			records = append(records, rec)
+			prog.done()
 			continue
 		}
 
@@ -554,6 +570,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		}
 		if !started {
 			// Optional service that failed; not recorded as running.
+			prog.done()
 			continue
 		}
 		res.StartedSvc = append(res.StartedSvc, s.Name)
@@ -566,6 +583,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		if err := state.Save(f); err != nil {
 			return fmt.Errorf("save state: %w", err)
 		}
+		prog.done()
 	}
 	f.Services = records
 	return nil
@@ -677,7 +695,7 @@ func renderReady(name string, ready manifest.Ready, vars tmpl.Vars) (manifest.Re
 }
 
 func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature,
-	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter) error {
+	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, prog *progress) error {
 
 	if len(m.Agents) == 0 {
 		return nil
@@ -694,6 +712,7 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 
 	var records []state.Agent
 	for _, a := range m.Agents {
+		prog.start("agent " + a.Name)
 		unitName := unit.Name(f.Project+"-"+f.Name, "agent", a.Name)
 		logPath := filepath.Join(logDir, "agent-"+a.Name+".log")
 		dir := serviceDir(f, m, a.Dir)
@@ -712,6 +731,7 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 				}
 			}
 			records = append(records, rec)
+			prog.done()
 			continue
 		}
 
@@ -759,13 +779,14 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		if err := state.Save(f); err != nil {
 			return fmt.Errorf("save state: %w", err)
 		}
+		prog.done()
 	}
 	f.Agents = records
 	return nil
 }
 
 func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Feature,
-	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, originalWS string) error {
+	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, originalWS string, prog *progress) error {
 
 	if len(m.Windows) == 0 {
 		return nil
@@ -807,6 +828,12 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	pendingByName := map[string]pendingSpawn{}
 
 	for _, w := range m.Windows {
+		// Counted here rather than at spawn: this is the only loop that visits
+		// every declared window exactly once (spawning is split between the
+		// layout and free paths), and seeding a browser profile here is the
+		// slow part regardless.
+		prog.start("window " + w.Name)
+
 		class := hypr.Class(f.Project, f.Name, w.Name)
 
 		profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
@@ -831,6 +858,9 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		// Detection is purely by the class canaveral assigns. Matching anything
 		// looser risks adopting one of the user's own windows.
 		if _, alive := open[class]; alive {
+			// Already up: still a step, and still done. Skipping the counter
+			// here would stall the bar short of its total on every `reset`.
+			prog.done()
 			continue
 		}
 
@@ -857,6 +887,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 			Env:        manifest.MergeEnv(base, m.Env),
 		}
 		pendingByName[w.Name] = pendingSpawn{name: w.Name, spec: spec}
+		prog.done()
 	}
 
 	// Windows not managed by [layout] spawn exactly as before: independently,
@@ -1250,6 +1281,17 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		}
 	}
 
+	// Teardown publishes progress the same way creation does, and for the same
+	// reason: stopping units and removing a worktree takes long enough that a
+	// status bar should say so. Four steps — sessions, units, worktree, state —
+	// counted rather than named individually, since unlike creation the work is
+	// fixed and does not vary with the manifest.
+	prog := newProgress(f, state.PhaseRemoving, 4)
+	// No deferred finish: the state file is deleted below, so there is nothing
+	// left to clear on the way out. A failure before that point does leave the
+	// phase set, which the staleness bound in state.InPhase covers.
+	prog.start("saving session")
+
 	// Best-effort: if this feature is namespaced, remember its newest
 	// opencode session before tearing down its agent, so a later sibling
 	// under the same namespace can still fork from it even though this
@@ -1271,6 +1313,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		}
 	}
 
+	prog.done()
+	prog.start("stopping services")
 	if failed := stopFeatureUnits(ctx, f, r); len(failed) > 0 {
 		// Deliberately not fatal: refusing to remove a feature because one
 		// unit is wedged would strand the worktree and branch too. Say so
@@ -1289,6 +1333,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// state record with no windows left to manage it, and the terminal that
 	// invoked the command is left stuck talking to a dead shell.
 
+	prog.done()
+	prog.start("removing worktree")
 	if !keepWorktree && f.Worktree != "" {
 		if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
 			return err
@@ -1312,6 +1358,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		}
 	}
 
+	prog.done()
+	prog.start("closing windows")
 	if err := state.Remove(f.Project, f.Name); err != nil {
 		return err
 	}

@@ -59,6 +59,14 @@ type Runner struct {
 	prev map[string]Feature // feature key -> last built view
 	subs map[string]context.CancelFunc
 
+	// health caches the last full refresh's probe results, keyed by feature and
+	// then agent name, so the fast lifecycle poll can rebuild a snapshot
+	// without issuing HTTP of its own.
+	health map[string]map[string]agent.Health
+	// inPhase is the set of feature keys that were mid-lifecycle at the last
+	// poll, so leaving a phase can be noticed and acted on.
+	inPhase map[string]bool
+
 	trigger chan struct{}
 	// git is measured out of band; see gitCache.
 	git *gitCache
@@ -141,6 +149,22 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 	safety := time.NewTicker(r.opt.Safety)
 	defer safety.Stop()
 
+	// A feature being created or torn down publishes its progress into its own
+	// state file, and nothing pushes an event when it does: the process doing
+	// the work is a different one, with no channel back here. Seeing it move
+	// means looking, and looking on the ordinary rescan is far too slow — at a
+	// three-second interval the whole of a short creation can pass between two
+	// ticks, which is exactly what happened the first time this was tested.
+	//
+	// So state is re-read on its own fast ticker, reusing the agent health probes
+	// from the last full refresh rather than issuing new ones. That is what
+	// makes 200ms affordable: the expensive half of a refresh is the HTTP, and
+	// progress does not come from HTTP. Reading a handful of small JSON files
+	// five times a second costs nothing, and snapshots are still emitted only
+	// on change, so a settled world stays silent.
+	phase := time.NewTicker(phaseRescan)
+	defer phase.Stop()
+
 	var debounce <-chan time.Time
 	for {
 		select {
@@ -152,6 +176,10 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 		case <-debounce:
 			debounce = nil
 			emit()
+		case <-phase.C:
+			if s, changed := r.refreshCached(); changed {
+				write(s)
+			}
 		case <-rescan.C:
 			r.resubscribe(ctx)
 			emit()
@@ -160,6 +188,11 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 		}
 	}
 }
+
+// phaseRescan is how often state is re-read for lifecycle progress. Fast
+// enough that a progress bar moves rather than jumps, cheap enough to leave
+// running always because it issues no network calls of its own.
+const phaseRescan = 200 * time.Millisecond
 
 // resubscribe starts an SSE watcher for every agent that does not have one
 // and stops watchers for agents that have gone away.
@@ -250,7 +283,6 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 	}
 
 	now := r.now()
-	built := make([]Feature, 0, len(features))
 
 	// Probe agents concurrently: serial HTTP with timeouts would make the
 	// refresh latency scale with the number of features.
@@ -279,6 +311,59 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 		}
 	}
 	wg.Wait()
+
+	r.mu.Lock()
+	r.health = results
+	r.mu.Unlock()
+
+	return r.rebuild(features, results, now)
+}
+
+// refreshCached rebuilds from state alone, reusing the probe results of the
+// last full refresh.
+//
+// This is the lifecycle-progress path. Progress is written to state by another
+// process entirely and owes nothing to the agent API, so re-reading a few small
+// JSON files answers it completely — and skipping the HTTP is what makes it
+// cheap enough to run five times a second, forever.
+func (r *Runner) refreshCached() (Snapshot, bool) {
+	features, err := r.load(r.opt.Project)
+	if err != nil {
+		return Snapshot{Time: r.now()}, false
+	}
+	r.mu.Lock()
+	health := r.health
+	was := r.inPhase
+	now := map[string]bool{}
+	for _, f := range features {
+		if f.InPhase() {
+			now[f.Key()] = true
+		}
+	}
+	r.inPhase = now
+	r.mu.Unlock()
+
+	// The instant a feature stops booting is the instant the cached probes
+	// become wrong about it: they were taken while its agent did not exist yet,
+	// so reusing them would report a freshly created feature as offline. Ask
+	// for a real refresh and publish nothing in the meantime — emitting the
+	// stale reading first would flash "offline" between "booting" and "idle",
+	// which is precisely the moment someone is watching the row.
+	for k := range was {
+		if !now[k] {
+			r.wake()
+			snap, _ := r.rebuild(features, health, r.now())
+			return snap, false
+		}
+	}
+	return r.rebuild(features, health, r.now())
+}
+
+// rebuild assembles the snapshot and reports whether it differs from the last.
+func (r *Runner) rebuild(features []*state.Feature,
+	results map[string]map[string]agent.Health, now time.Time) (Snapshot, bool) {
+
+	built := make([]Feature, 0, len(features))
 
 	r.mu.Lock()
 	next := make(map[string]Feature, len(features))
@@ -329,6 +414,18 @@ func sameActivity(a, b *agent.Activity) bool {
 	return a.Tool == b.Tool && a.Title == b.Title && a.Since.Equal(b.Since)
 }
 
+// sameProgress compares lifecycle progress, so a step advancing within an
+// unchanged phase still produces a snapshot.
+func sameProgress(a, b *Progress) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return a.Step == b.Step && a.Total == b.Total && a.Label == b.Label
+}
+
 // sameTodos compares task lists, so progress within an unchanged status
 // (still "working", but now 6 of 9 rather than 5) still produces a snapshot.
 func sameTodos(a, b *Todos) bool {
@@ -350,6 +447,12 @@ func sameFeature(a, b Feature) bool {
 	// Without this a commit would never reach the consumer: the git refresh
 	// wakes the runner, but the rebuild would compare equal and be dropped.
 	if !sameGit(a.Git, b.Git) {
+		return false
+	}
+	// Progress moves while the status stays "booting", and it is the entire
+	// point of that status: without this a progress bar would jump straight
+	// from empty to gone.
+	if !sameProgress(a.Progress, b.Progress) {
 		return false
 	}
 	for i := range a.Agents {

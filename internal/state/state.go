@@ -40,6 +40,26 @@ type Feature struct {
 	DBSuffix  string         `json:"db_suffix,omitempty"`
 	Ports     map[string]int `json:"ports,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+	// Phase is a transient lifecycle phase — PhaseBooting while a feature is
+	// being brought up, PhaseRemoving while it is torn down — and empty once
+	// it has settled.
+	//
+	// It exists because the process doing the work and the process watching it
+	// are different ones, and canaveral has no daemon and no IPC between them.
+	// The state file is the only medium they already share, so progress is
+	// written here and read back by `canaveral watch`.
+	Phase string `json:"phase,omitempty"`
+	// PhaseStep and PhaseTotal count completed steps out of the total known
+	// when the phase began. The steps are wildly unequal — a readiness probe
+	// can take two minutes where a window spawn takes milliseconds — so this
+	// says how much is left to do, never how long it will take.
+	PhaseStep  int    `json:"phase_step,omitempty"`
+	PhaseTotal int    `json:"phase_total,omitempty"`
+	PhaseLabel string `json:"phase_label,omitempty"`
+	// PhaseSince dates the phase so a reader can disbelieve it. A hard kill
+	// leaves the phase set with nobody advancing it, and a progress bar frozen
+	// forever is worse than none.
+	PhaseSince time.Time `json:"phase_since,omitempty"`
 	// Provisioned lists paths canaveral copied in; they are not user work and
 	// must not make the worktree look dirty at teardown.
 	Provisioned []string  `json:"provisioned,omitempty"`
@@ -433,4 +453,49 @@ func (f *Feature) Agent(name string) (*Agent, bool) {
 		}
 	}
 	return nil, false
+}
+
+// Lifecycle phases. A feature carries one only while something is actively
+// working on it.
+const (
+	PhaseBooting  = "booting"
+	PhaseRemoving = "removing"
+)
+
+// StalePhaseAfter bounds how long a phase is believed.
+//
+// Nothing updates a state file on behalf of a process that has been killed
+// outright, so an interrupted run leaves its phase set for good. Readers treat
+// anything older than this as settled: a feature that has genuinely been
+// booting for ten minutes has failed in some way this record cannot describe,
+// and a progress bar frozen forever is worse than no progress bar.
+const StalePhaseAfter = 10 * time.Minute
+
+// InPhase reports whether the feature is in a live, believable phase.
+func (f *Feature) InPhase() bool {
+	if f.Phase == "" {
+		return false
+	}
+	return time.Since(f.PhaseSince) < StalePhaseAfter
+}
+
+// SetPhase records progress and persists it.
+//
+// Errors are returned but callers are expected to treat them as advisory:
+// failing a feature's creation because its progress could not be written would
+// trade a cosmetic problem for a real one.
+func (f *Feature) SetPhase(phase, label string, step, total int) error {
+	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = phase, label, step, total
+	f.PhaseSince = time.Now()
+	return Save(f)
+}
+
+// ClearPhase marks the feature settled and persists it.
+func (f *Feature) ClearPhase() error {
+	if f.Phase == "" {
+		return nil
+	}
+	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
+	f.PhaseSince = time.Time{}
+	return Save(f)
 }
