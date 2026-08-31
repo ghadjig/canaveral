@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/bandito/canaveral/internal/launcherhistory"
+	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
 )
@@ -304,6 +306,53 @@ func TestCompleteReportsAnUnknownProjectInBand(t *testing.T) {
 	}
 	if c.Candidates == nil {
 		t.Error("candidates is nil, not an empty list; the JSON would decode as null")
+	}
+}
+
+func TestCompleteOffersHistoryAfterProjectsAtTheFirstWord(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+	if _, err := registry.Add(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := launcherhistory.Record("norules rm my-feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	c := complete([]string{""}, true)
+	v := values(c)
+	if len(v) != 2 || v[0] != "norules" || v[1] != "norules rm my-feature" {
+		t.Fatalf("candidates = %v, want the project first and the history line after it", v)
+	}
+	if kinds(c)["norules rm my-feature"] != candHistory {
+		t.Errorf("history line has kind %q, want %q", kinds(c)["norules rm my-feature"], candHistory)
+	}
+}
+
+func TestCompleteHistoryVanishesOnceNothingMatchesWhatWasTyped(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+	if _, err := registry.Add(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := launcherhistory.Record("norules rm my-feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Still typing the project name: the history line matches the same
+	// prefix and stays.
+	c := complete([]string{"nor"}, true)
+	if kinds(c)["norules rm my-feature"] != candHistory {
+		t.Errorf("history line dropped too early: %v", values(c))
+	}
+
+	// Nothing on offer starts with this, so it should not linger just because
+	// it was there a keystroke ago.
+	c = complete([]string{"zzz"}, true)
+	if len(c.Candidates) != 0 {
+		t.Errorf("candidates = %v, want none once nothing matches", values(c))
 	}
 }
 
