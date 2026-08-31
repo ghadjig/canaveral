@@ -575,9 +575,21 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	}
 
 	if k := ready.Kind(); k != "" {
+		// Say so before blocking. ready.timeout is routinely a minute or two
+		// for anything as slow to boot as a Rails server, and a terminal that
+		// goes silent for that long is indistinguishable from a hang.
+		r.Info("waiting for %s readiness probe, up to %s", k, ready.Timeout.Or(probe.DefaultTimeout))
 		if err := probe.Wait(ctx, ready, rec.Dir, rec.LogPath, aliveCheck(ctx, rec.Unit, rec.LogPath)); err != nil {
 			_ = unit.Stop(ctx, rec.Unit)
 			unit.Reset(ctx, rec.Unit)
+			// A dead process already reports its log through aliveCheck. A
+			// timeout is the other case: still running, still not ready, and
+			// its own output is then the only thing that says why — a Rails
+			// server answering 500 because the database is down looks
+			// identical from outside to one that is merely slow.
+			if errors.Is(err, probe.ErrTimeout) {
+				err = fmt.Errorf("%w\n%s", err, tailIndent(rec.LogPath, 15))
+			}
 			if s.Optional {
 				r.Warn("optional service %s: %v", s.Name, err)
 				return false, nil

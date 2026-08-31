@@ -92,7 +92,14 @@ func Start(ctx context.Context, s Spec) error {
 	// overwrites the PATH we inject and hides version-manager toolchains.
 	args = append(args, "--", "/bin/sh", "-c", s.Cmd)
 
-	cmd := exec.CommandContext(ctx, "systemd-run", args...)
+	// systemd-run blocks until the start job completes and has no timeout of
+	// its own, so a wedged user manager or session bus hangs the caller
+	// forever — and --quiet means it does so without printing a thing. Bound
+	// it, so the worst case is an error the user can act on.
+	runCtx, cancel := context.WithTimeout(ctx, startTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, "systemd-run", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -101,14 +108,23 @@ func Start(ctx context.Context, s Spec) error {
 		// the unit and happily goes on doing so — so an interrupted launch
 		// leaves a live process behind that no caller ever learns about.
 		// Undo it here, where the unit name is still known.
-		if ctx.Err() != nil {
+		if runCtx.Err() != nil {
 			_ = Stop(ctx, s.Name)
 			Reset(ctx, s.Name)
+		}
+		if ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("systemd-run %s: no answer from the systemd user manager after %s "+
+				"(try `systemctl --user is-system-running`)", s.Name, startTimeout)
 		}
 		return fmt.Errorf("systemd-run %s: %w: %s", s.Name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
+
+// startTimeout bounds a launch. Starting is not slow — with Type=exec the job
+// completes as soon as the child has exec'd — so a wait this long already
+// means systemd is not answering rather than that the service is warming up.
+const startTimeout = 30 * time.Second
 
 // stopTimeout bounds a teardown command. It has to clear the units' own
 // TimeoutStopSec=15 with room to spare, or a service that ignores SIGTERM
@@ -191,8 +207,17 @@ var showProps = []string{
 	"ControlGroup", "MemoryCurrent", "CPUUsageNSec", "ActiveEnterTimestampMonotonic",
 }
 
+// queryTimeout bounds a status read. `systemctl --user show` is another D-Bus
+// round trip, and the readiness wait calls it between probe attempts on the
+// caller's context — so an unbounded one there outlives the probe's own
+// timeout and the whole start turns into a silent hang.
+const queryTimeout = 10 * time.Second
+
 // Query fetches the current status of a unit.
 func Query(ctx context.Context, name string) (Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
 	st := Status{Name: name}
 	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show",
 		name+".service", "--property="+strings.Join(showProps, ",")).Output()
@@ -378,6 +403,11 @@ func Available(ctx context.Context) error {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return errors.New("systemd-run not found in PATH")
 	}
+	// Bounded, because this is the check that exists to catch an unreachable
+	// manager: hanging on it would be the exact failure it screens for.
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
 	if err := exec.CommandContext(ctx, "systemctl", "--user", "is-system-running").Run(); err != nil {
 		// is-system-running exits non-zero for "degraded", which is still usable.
 		out, _ := exec.CommandContext(ctx, "systemctl", "--user", "show", "-p", "Version").Output()

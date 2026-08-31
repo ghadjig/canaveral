@@ -16,6 +16,18 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Changed
 
+- Starting a service now says it is waiting for the readiness probe, and for
+  how long. `ready.timeout` is routinely a minute or two for anything as slow
+  to boot as a Rails server, and a terminal that printed the service command
+  and then went silent for that long was indistinguishable from a hang.
+
+- A readiness probe that times out now reports the last failure that meant
+  something and prints the tail of the service's log. It used to report the
+  attempt the deadline cut short, which is never the interesting one: a Rails
+  server answering 500 for two minutes because its database was down came out
+  as `Get "http://localhost:3000/up": context deadline exceeded`, describing
+  the prober rather than the problem.
+
 - `canaveral new` now completes every namespace the project has ever had, not
   just those with a feature currently open. A namespace's shared skill and
   recorded sessions outlive the features that wrote them, so a namespace whose
@@ -23,6 +35,14 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   while still holding everything the next feature under it would inherit.
 
 ### Fixed
+
+- Every call to systemd is now bounded. `systemd-run` waits for the start job
+  over D-Bus and `systemctl --user show` for the status read, neither has a
+  timeout of its own, and both were given a context that only cancelled on
+  Ctrl-C — so an unresponsive user manager left `canaveral new` hanging after
+  `:: service <name>` with no error, ever. They now fail with a message naming
+  systemd instead. The status read mattered twice over: the readiness wait
+  calls it between attempts, where blocking outlived the probe's own timeout.
 
 - `canaveral new <namespace>/` no longer offers to create a feature named after
   the namespace itself. Slugging drops empty segments, so a trailing separator
