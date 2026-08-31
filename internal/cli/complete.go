@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
+	"github.com/bandito/canaveral/internal/launcherhistory"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/skills"
@@ -32,6 +33,11 @@ const (
 	// typo, and seeing "create X" before pressing Enter is the only warning
 	// anyone gets.
 	candNew = "new"
+	// candHistory is a whole line typed before, offered so the second time
+	// costs a few keystrokes instead of all of them. It only ever appears
+	// alongside the project list, at the very start of the line — see
+	// historyCandidates.
+	candHistory = "history"
 )
 
 // candidate is one completion suggestion.
@@ -148,7 +154,7 @@ var commandFlags = map[string]map[string]string{
 	"attach":   {"--continue": "resume the last session", "--url": "print the agent URL instead"},
 	"logs":     {"-f": "follow", "-n": "number of lines"},
 	"projects": {"--add": "register a checkout", "--forget": "drop an entry", "--scan": "walk a directory for checkouts", "--prune": "drop dead entries", "--json": "print as JSON", "--names": "print only names"},
-	"complete": {"--launcher": "first word is a project name", "--format": "json or lines"},
+	"complete": {"--launcher": "first word is a project name", "--record": "remember the line as launcher history", "--format": "json or lines"},
 	"watch":    {"--all": "every project", "--debounce": "coalescing window", "--rescan": "rescan interval", "--safety": "safety-net interval", "--git": "git refresh interval"},
 	"ws-slot":  {"--json": "print as JSON"},
 
@@ -160,6 +166,7 @@ var commandFlags = map[string]map[string]string{
 
 func runComplete(ctx context.Context, args []string) error {
 	launcher := false
+	record := false
 	format := "json"
 	var words []string
 
@@ -174,6 +181,8 @@ func runComplete(ctx context.Context, args []string) error {
 			i = len(args)
 		case a == "--launcher" || a == "-launcher":
 			launcher = true
+		case a == "--record" || a == "-record":
+			record = true
 		case strings.HasPrefix(a, "--format="):
 			format = strings.TrimPrefix(a, "--format=")
 		case a == "--format" || a == "-format":
@@ -187,6 +196,15 @@ func runComplete(ctx context.Context, args []string) error {
 		default:
 			return fmt.Errorf("unknown argument %q (pass the line to complete after --)", a)
 		}
+	}
+
+	// A separate mode rather than a candidate query: the launcher calls this
+	// once per keystroke and once more when a line actually runs, and those
+	// are different events. Recording candidate lookups would remember every
+	// half-typed line ever seen; recording only lets the launcher say "this
+	// one ran".
+	if record {
+		return launcherhistory.Record(strings.Join(words, " "))
 	}
 
 	c := complete(words, launcher)
@@ -217,11 +235,14 @@ space, pass an extra empty word, exactly as bash's COMP_WORDS does.
 
 Flags:
   --launcher     treat the first word as a project name (for the popup launcher)
+  --record       remember the line after -- as launcher history, instead of
+                 completing it
   --format json  json (default) or lines
 
 Examples:
   canaveral complete -- rm ''
-  canaveral complete --launcher -- norules r`)
+  canaveral complete --launcher -- norules r
+  canaveral complete --record -- norules rm my-feature`)
 }
 
 // complete resolves a partial command line to its candidates.
@@ -316,7 +337,34 @@ func completeProjects(prefix string) completion {
 		}
 		all = append(all, candidate{Value: p.Name, Kind: candProject, Desc: homeTilde(p.Root)})
 	}
+	// History lines come last, and are filtered exactly like everything else
+	// in finish: a line only survives once the user has typed something it
+	// does not start with, which is what makes it "pop up immediately, then
+	// vanish" rather than clutter the list forever. They only make sense here,
+	// at the very first word, because a history line is a whole command —
+	// project, command and arguments together — and replacing "the last word"
+	// with one when there is only one word so far replaces the entire input,
+	// exactly as if it had been retyped.
+	all = append(all, historyCandidates(prefix)...)
 	return finish(prefix, all, completion{Prefix: prefix})
+}
+
+// historyCandidates offers previously typed launcher lines, most recent first.
+//
+// Capped well below what Recent could return: this is a shortcut for the
+// handful of things typed recently, not a second history browser competing
+// with the project list for space in an 8-row popup.
+func historyCandidates(prefix string) []candidate {
+	const shown = 5
+	entries, err := launcherhistory.Recent(shown)
+	if err != nil {
+		return nil
+	}
+	var out []candidate
+	for _, e := range entries {
+		out = append(out, candidate{Value: e.Line, Kind: candHistory, Desc: humanAgo(e.LastUsed)})
+	}
+	return out
 }
 
 // completeArgs completes a canaveral argv, with the project already resolved.

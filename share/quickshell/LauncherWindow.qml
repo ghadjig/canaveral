@@ -300,6 +300,11 @@ PanelWindow {
         confirming = false;
         lastCmd = argv().slice(1).join(" ");
         errorLines = [];
+        // Fire-and-forget: the line is worth remembering even if the command
+        // itself goes on to fail, since retyping it to try again is exactly
+        // what history is for. Detached rather than tracked, because losing
+        // this one entry to a race with the popup closing costs nothing.
+        Quickshell.execDetached([root.bin, "complete", "--record", "--"].concat(words()));
         runner.command = cmd;
         runner.running = true;
         hide();

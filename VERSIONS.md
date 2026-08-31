@@ -16,6 +16,13 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Added
 
+- The launcher popup remembers the last few lines you've run and offers them
+  as completions, after the project list, the moment you start typing.
+  Recorded via `canaveral complete --record` and stored in
+  `launcher-history.json` alongside the rest of canaveral's state. Selecting
+  one fills in the whole line — project, command and arguments — since it's
+  only ever offered while the first word is still open.
+
 - Features publish lifecycle progress while they are being created or torn
   down. `canaveral watch` gains two statuses, `booting` and `removing`, and a
   `progress` object carrying a step count and the name of the step in flight,
