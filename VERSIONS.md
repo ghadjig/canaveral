@@ -16,12 +16,14 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Added
 
-- `canaveral restart <feature> <service>...` stops and restarts named services,
+- `canaveral restart [feature] <service>...` stops and restarts named services,
   truncating the log and waiting on each one's `ready` probe. `reset` skips
   anything already running, so there was no way to pick up a code change short
   of finding the unit name and using `systemctl` — which reuses the old log and
   returns before the service is actually up. Services must be named; there is
-  no "restart everything".
+  no "restart everything". The feature defaults to the worktree you are in, so
+  `canaveral restart web jobs` works from inside one; a leading argument that is
+  not a declared service is read as the feature instead.
 
 ### Fixed
 

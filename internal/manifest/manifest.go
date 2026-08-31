@@ -282,6 +282,15 @@ func Find(start string) (string, error) {
 	return "", fmt.Errorf("no %s found in %s or any parent directory", FileName, from)
 }
 
+// ServiceNames lists the declared services in manifest order.
+func (m *Manifest) ServiceNames() []string {
+	out := make([]string, 0, len(m.Services))
+	for _, s := range m.Services {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
 // Load reads and validates the manifest in the given project root directory.
 func Load(root string) (*Manifest, error) {
 	abs, err := filepath.Abs(root)

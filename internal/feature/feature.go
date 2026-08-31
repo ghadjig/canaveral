@@ -1276,16 +1276,13 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	return state.Save(f)
 }
 
-// serviceNames lists the manifest's services, for an error message.
+// serviceNames lists the manifest's services for an error message, saying so
+// explicitly when there are none rather than trailing off after a colon.
 func serviceNames(m *manifest.Manifest) []string {
-	out := make([]string, 0, len(m.Services))
-	for _, s := range m.Services {
-		out = append(out, s.Name)
+	if out := m.ServiceNames(); len(out) > 0 {
+		return out
 	}
-	if len(out) == 0 {
-		return []string{"(none declared)"}
-	}
-	return out
+	return []string{"(none declared)"}
 }
 
 // upsertService replaces a service's record, or drops it when an optional

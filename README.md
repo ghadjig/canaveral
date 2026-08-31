@@ -48,7 +48,7 @@ $ canaveral small-fixes
 | `canaveral path <feature>` | Print a feature's worktree path |
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
-| `canaveral restart <feature> <service>...` | Stop and restart named services, waiting on their `ready` probes |
+| `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -56,9 +56,12 @@ $ canaveral small-fixes
 `canaveral <feature>` and `canaveral reset` run the same reconcile pass, so both
 are idempotent: run them any number of times and only the missing pieces start.
 A service that is already up is left alone, so `reset` will not pick up a code
-change — `canaveral restart <feature> web` is what bounces one. It truncates the
-log and waits on the manifest's `ready`, neither of which `systemctl restart`
-does. Services must be named; there is no "restart everything".
+change — `canaveral restart web` is what bounces one. It truncates the log and
+waits on the manifest's `ready`, neither of which `systemctl restart` does.
+Services must be named; there is no "restart everything". The feature defaults
+to the worktree you are in, so name it only to reach a different one
+(`canaveral restart small-fixes web`); a leading argument that is not one of the
+manifest's services is read as the feature.
 
 Command names are reserved and cannot be used as feature names. Use
 `canaveral open <name>` if you need a feature whose name clashes.
