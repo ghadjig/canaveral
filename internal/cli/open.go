@@ -68,15 +68,6 @@ func runOpen(ctx context.Context, args []string) error {
 	}
 	f := res.Feature
 
-	// hyprwatch refreshes waybar on Hyprland workspace events, but Reconcile
-	// can leave the *global* active-workspace concept changed (e.g. the
-	// save/restore-focus dance around building layout windows) without any
-	// monitor's displayed workspace actually changing — Hyprland does not
-	// emit a `workspace` event in that case (confirmed empirically), so
-	// hyprwatch would never see it. Nudge waybar directly as a backstop;
-	// it's a no-op if waybar isn't running.
-	signalWaybar(false)
-
 	if len(res.StartedSvc)+len(res.StartedAgent)+len(res.SpawnedWindow) == 0 && !res.Created {
 		r.OK("%s already up to date", f.Key())
 	} else {
@@ -177,7 +168,6 @@ func runReset(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		signalWaybar(false)
 		n := len(res.StartedSvc) + len(res.StartedAgent) + len(res.SpawnedWindow)
 		if n == 0 {
 			r.OK("nothing missing")

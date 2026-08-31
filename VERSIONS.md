@@ -38,6 +38,17 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   between them — and, for a quickshell bar, a third copy reading `ws_slot`
   off the watch stream.
 
+### Removed
+
+- `hyprwatch` no longer signals waybar. It subscribed to Hyprland's event
+  socket for two unrelated reasons; the waybar half (`SIGRTMIN+8` to every
+  waybar process, a 120ms debounce, the `relevantEvents` filter and the
+  install-time signal-collision check) is gone, along with the backstop signal
+  `open` and `reset` sent directly. What remains is the half that earns its
+  keep: recording a feature's column ratios into `[layout.current]` the moment
+  you leave its workspace. A push-based bar reading `canaveral watch` never
+  needed the signal.
+
 ### Fixed
 
 - `merge` no longer refuses with "is on ... with uncommitted changes" naming the

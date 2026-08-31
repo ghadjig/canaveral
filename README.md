@@ -48,7 +48,7 @@ $ canaveral small-fixes
 | `canaveral path <feature>` | Print a feature's worktree path |
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
-| `canaveral hyprwatch [--install]` | Event-driven waybar refresh (see below) instead of polling |
+| `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
@@ -514,64 +514,59 @@ column, which would otherwise flash across whatever workspace you're currently
 looking at. If you have a second monitor, canaveral moves the new workspace
 there the moment the first window exists, so all of that shuffling happens
 somewhere you're not looking — your actual screen doesn't change at all during
-creation. `--focus` (and `canaveral-goto` / clicking a waybar slot) explicitly
+creation. `--focus` (and `canaveral-goto` / clicking a bar's slot) explicitly
 pulls the workspace back onto whichever monitor you're currently on before
 switching to it. On a single-monitor machine there's nowhere to hide the work,
 so it briefly flashes your current workspace and restores it afterwards
 instead.
 
-## Waybar integration
+## Status bar integration
 
-`canaveral hyprwatch` subscribes to Hyprland's event socket and signals waybar
-the instant a feature workspace is created, removed, or the active workspace
-changes — no polling. It sits idle at 0% CPU between events (`hyprctl`'s
-`createworkspace`/`destroyworkspace`/`workspace` events only), and a 120ms
-debounce collapses bursts (tearing down a feature closes several windows at
-once) into a single refresh.
-
-```
-canaveral hyprwatch --install   # writes and enables a systemd --user unit
-```
-
-Pair it with waybar modules that have no `interval` and instead listen on the
-matching signal. Pango markup can't round corners or pad a single text blob, so
-give each feature slot its own real module (six shown; adjust to taste) instead
-of one module rendering a list:
-
-```jsonc
-"custom/canaveral-1": {
-  "exec": "~/.config/waybar/scripts/canaveral-ws-slot.sh 1",
-  "on-click": "~/.config/hypr/bin/canaveral-goto 1",
-  "signal": 8,
-  "return-type": "json"
-}
-// ...canaveral-2 through canaveral-6, same shape, slot number changed
-```
-
-`canaveral-ws-slot.sh N` is a thin wrapper around `canaveral ws-slot N --json`,
-which prints slot N's feature workspace as compact JSON (`{"text": "...",
-"class": "active|inactive|hidden"}`); style `.active`, `.inactive` and `.hidden`
-in your waybar CSS for real padding, rounded corners and colour. `canaveral-goto
-N` asks the same command for the workspace name and jumps to it, pulling it onto
-your current monitor first if canaveral built it elsewhere.
+A bar reads `canaveral watch` (see above) for feature state, and `canaveral
+ws-slot` for the number each feature answers to.
 
 Slot numbers are stable. A feature is assigned the lowest free number when it is
 created and keeps it until it is removed, so `super+ctrl+2` means the same
 workspace tomorrow; removing a feature frees its number for the next one, which
 keeps the list dense enough for a fixed row of widgets. The numbering is global
-across projects, unlike the per-project slot that derives ports, since the bar
-shows every project at once. Inspect the whole mapping with:
+across projects, unlike the per-project slot that derives ports, since a bar
+shows every project at once. `watch` emits it as `ws_slot` per feature, so a bar
+can label and order cards by the same number the jump keybinds use.
 
 ```
 $ canaveral ws-slot
 SLOT  WORKSPACE                 FEATURE
 1     norules:small-fixes       norules/small-fixes
 2     canaveral:install-script  canaveral/install-script
+
+$ canaveral ws-slot 2
+canaveral:install-script
 ```
 
-`hyprwatch` sends `SIGRTMIN+8`; `"signal": 8` in the waybar config is what maps
-that back to "re-run these modules now." Change both together if you repurpose
-the signal number for something else.
+Bind those numbers to jumps, so slot N is one keystroke away:
+
+```
+bind = $mainMod CTRL, 1, exec, ~/.config/hypr/bin/canaveral-goto 1
+# ...through 9
+```
+
+where `canaveral-goto N` resolves `canaveral ws-slot N` and dispatches to that
+workspace, pulling it onto your current monitor first if canaveral built it
+elsewhere. `canaveral ws-slot N --json` prints `{"text": "...", "class":
+"active|inactive|hidden"}` for bars that want one widget per slot and style it
+by class.
+
+## Remembering a layout you dragged
+
+```
+canaveral hyprwatch --install   # writes and enables a systemd --user unit
+```
+
+`canaveral hyprwatch` subscribes to Hyprland's event socket and, the moment you
+leave a feature's workspace, records the current column ratios into
+`[layout.current]` (see "Windows" above). It sits idle at 0% CPU between events.
+Without it, a `reset` restores the manifest's `[layout.default]` rather than the
+widths you last dragged.
 
 ## Requirements
 
