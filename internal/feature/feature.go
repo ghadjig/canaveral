@@ -717,62 +717,17 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		logPath := filepath.Join(logDir, "agent-"+a.Name+".log")
 		dir := serviceDir(f, m, a.Dir)
 
-		rec := state.Agent{
-			Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath,
-		}
 		if st, err := unit.Query(ctx, unitName); err == nil && st.Running() {
-			if prev, ok := f.Agent(a.Name); ok {
-				rec.URL, rec.Port = prev.URL, prev.Port
-			}
-			if rec.URL == "" {
-				// The unit is alive but we lost its URL; recover it from the log.
-				if u, err := agent.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
-					rec.URL, rec.Port = u, portOf(u)
-				}
-			}
+			rec := adoptRunningAgent(ctx, f, a, unitName, dir, logPath)
 			records = append(records, rec)
 			prog.done()
 			continue
 		}
 
-		agentEnv, err := tmpl.RenderMap("agent."+a.Name+".env", a.Env, vars)
+		rec, err := startAgent(ctx, m, f, a, bin, base, vars, unitName, dir, logPath, res, r)
 		if err != nil {
 			return err
 		}
-		env := manifest.MergeEnv(base, m.Env, agentEnv)
-		if a.Model != "" {
-			env["OPENCODE_MODEL"] = a.Model
-		}
-		if a.Agent != "" {
-			env["OPENCODE_AGENT"] = a.Agent
-		}
-
-		unit.Reset(ctx, unitName)
-		r.Step("agent %s", a.Name)
-		res.launched = append(res.launched, unitName)
-		if err := unit.Start(ctx, unit.Spec{
-			Name:        unitName,
-			Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
-			Dir:         dir,
-			Cmd:         agent.ServeCmd(bin),
-			Env:         env,
-			LogPath:     logPath,
-		}); err != nil {
-			return err
-		}
-		url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
-		if err != nil {
-			// An agent that never announced a URL is unusable and, unlike a
-			// service, nothing can adopt it later — the URL is only ever
-			// printed once, at startup. Leaving it running would strand an
-			// opencode server that no window can attach to.
-			_ = unit.Stop(ctx, unitName)
-			unit.Reset(ctx, unitName)
-			return fmt.Errorf("agent %q: %w", a.Name, err)
-		}
-		rec.URL, rec.Port = url, portOf(url)
-		r.OK("agent %s listening on %s", a.Name, url)
-		res.StartedAgent = append(res.StartedAgent, a.Name)
 		records = append(records, rec)
 
 		f.Agents = records
@@ -783,6 +738,72 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	}
 	f.Agents = records
 	return nil
+}
+
+// adoptRunningAgent recovers connection info for an agent whose unit is
+// already running: from the feature's previous state if we already knew it,
+// otherwise from its log (the unit is alive but the URL was lost, e.g.
+// after canaveral itself restarted).
+func adoptRunningAgent(ctx context.Context, f *state.Feature, a manifest.Agent, unitName, dir, logPath string) state.Agent {
+	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
+	if prev, ok := f.Agent(a.Name); ok {
+		rec.URL, rec.Port = prev.URL, prev.Port
+	}
+	if rec.URL == "" {
+		// The unit is alive but we lost its URL; recover it from the log.
+		if u, err := agent.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
+			rec.URL, rec.Port = u, portOf(u)
+		}
+	}
+	return rec
+}
+
+// startAgent renders a's environment, starts its unit, and waits for it to
+// announce its listen URL, tearing the unit back down if it never does. An
+// agent that never announces a URL is unusable and, unlike a service,
+// nothing can adopt it later — the URL is only ever printed once, at
+// startup — so leaving it running would strand an opencode server that no
+// window can attach to.
+func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a manifest.Agent,
+	bin string, base map[string]string, vars tmpl.Vars, unitName, dir, logPath string,
+	res *Result, r Reporter) (state.Agent, error) {
+	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
+
+	agentEnv, err := tmpl.RenderMap("agent."+a.Name+".env", a.Env, vars)
+	if err != nil {
+		return rec, err
+	}
+	env := manifest.MergeEnv(base, m.Env, agentEnv)
+	if a.Model != "" {
+		env["OPENCODE_MODEL"] = a.Model
+	}
+	if a.Agent != "" {
+		env["OPENCODE_AGENT"] = a.Agent
+	}
+
+	unit.Reset(ctx, unitName)
+	r.Step("agent %s", a.Name)
+	res.launched = append(res.launched, unitName)
+	if err := unit.Start(ctx, unit.Spec{
+		Name:        unitName,
+		Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
+		Dir:         dir,
+		Cmd:         agent.ServeCmd(bin),
+		Env:         env,
+		LogPath:     logPath,
+	}); err != nil {
+		return rec, err
+	}
+	url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
+	if err != nil {
+		_ = unit.Stop(ctx, unitName)
+		unit.Reset(ctx, unitName)
+		return rec, fmt.Errorf("agent %q: %w", a.Name, err)
+	}
+	rec.URL, rec.Port = url, portOf(url)
+	r.OK("agent %s listening on %s", a.Name, url)
+	res.StartedAgent = append(res.StartedAgent, a.Name)
+	return rec, nil
 }
 
 func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Feature,
@@ -1291,27 +1312,7 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// left to clear on the way out. A failure before that point does leave the
 	// phase set, which the staleness bound in state.InPhase covers.
 	prog.start("saving session")
-
-	// Best-effort: if this feature is namespaced, remember its newest
-	// opencode session before tearing down its agent, so a later sibling
-	// under the same namespace can still fork from it even though this
-	// feature's own state (and therefore any record of it) is about to be
-	// deleted. Recorded here rather than continuously because this is the
-	// last point at which the agent is guaranteed to still be reachable.
-	if ns := Namespace(f.Name); ns != "" {
-		for _, a := range f.Agents {
-			if a.Tool != "opencode" || a.URL == "" {
-				continue
-			}
-			h := agent.Probe(ctx, a.URL, f.Worktree)
-			if h.Reachable && h.SessionID != "" {
-				_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
-					Feature: f.Name, SessionID: h.SessionID,
-					Worktree: f.Worktree, UpdatedAt: h.Updated,
-				})
-			}
-		}
-	}
+	recordNamespaceSession(ctx, f)
 
 	prog.done()
 	prog.start("stopping services")
@@ -1335,27 +1336,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 
 	prog.done()
 	prog.start("removing worktree")
-	if !keepWorktree && f.Worktree != "" {
-		if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
-			return err
-		}
-		_ = worktree.Prune(ctx, f.Root)
-		r.OK("removed worktree")
-
-		deleted := false
-		if !keepBranch {
-			if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
-				if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
-					if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
-						deleted = true
-						r.OK("deleted merged branch %s", f.Branch)
-					}
-				}
-			}
-		}
-		if !deleted {
-			r.OK("kept branch %s", f.Branch)
-		}
+	if err := removeWorktreeAndBranch(ctx, f, keepWorktree, force, keepBranch, r); err != nil {
+		return err
 	}
 
 	prog.done()
@@ -1363,54 +1345,120 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	if err := state.Remove(f.Project, f.Name); err != nil {
 		return err
 	}
-
-	if err := hypr.Available(ctx); err == nil && len(f.Windows) > 0 {
-		if clients, err := hypr.Clients(ctx); err == nil {
-			open := hypr.ByClass(clients)
-			closed := 0
-			var self *hypr.Client
-			for _, w := range f.Windows {
-				if c, ok := open[w.Class]; ok {
-					if hypr.IsSelf(c) {
-						// Close our own window last of all, and after
-						// everything above has already returned
-						// successfully, so the report below reaches the
-						// user before their terminal potentially dies.
-						cc := c
-						self = &cc
-						continue
-					}
-					if err := hypr.Close(ctx, c.Address); err == nil {
-						closed++
-					}
-				}
-			}
-			if closed > 0 {
-				r.OK("closed %d window(s)", closed)
-			}
-			if self != nil {
-				r.OK("closing this window")
-				_ = hypr.Close(ctx, self.Address)
-			}
-		}
-		// Windows the user opened here themselves are not canaveral's to
-		// close — they may hold real work — but leaving them behind
-		// strands them on a workspace named for a feature that no longer
-		// exists, and keeps that workspace alive. Move them somewhere
-		// ordinary on the same monitor instead.
-		rehomeStrays(ctx, f, r)
-
-		// Hyprland won't destroy a workspace while it's a monitor's active
-		// one, even with zero windows left (confirmed empirically) — so
-		// closing the last window above can leave the feature's workspace
-		// dangling forever on whatever monitor last displayed it, as a
-		// phantom entry in the waybar pill list. Release it explicitly.
-		if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
-			r.Warn("%v", err)
-		}
-	}
+	closeFeatureWindows(ctx, f, r)
 
 	return nil
+}
+
+// recordNamespaceSession is a best-effort step: if this feature is
+// namespaced, remember its newest opencode session before tearing down its
+// agent, so a later sibling under the same namespace can still fork from it
+// even though this feature's own state (and therefore any record of it) is
+// about to be deleted. Called here rather than continuously because this is
+// the last point at which the agent is guaranteed to still be reachable.
+func recordNamespaceSession(ctx context.Context, f *state.Feature) {
+	ns := Namespace(f.Name)
+	if ns == "" {
+		return
+	}
+	for _, a := range f.Agents {
+		if a.Tool != "opencode" || a.URL == "" {
+			continue
+		}
+		h := agent.Probe(ctx, a.URL, f.Worktree)
+		if h.Reachable && h.SessionID != "" {
+			_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
+				Feature: f.Name, SessionID: h.SessionID,
+				Worktree: f.Worktree, UpdatedAt: h.Updated,
+			})
+		}
+	}
+}
+
+// removeWorktreeAndBranch removes f's worktree (unless keepWorktree) and,
+// once the worktree is gone, deletes the branch too if (and only if) it has
+// been fully merged into the repo's default branch — merge history is what
+// makes it safe, not the caller's say-so, so unmerged work is always kept
+// regardless of keepBranch. keepBranch exists purely to opt out of deletion
+// even when merged, e.g. to keep it around for a while longer.
+func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
+	if keepWorktree || f.Worktree == "" {
+		return nil
+	}
+	if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
+		return err
+	}
+	_ = worktree.Prune(ctx, f.Root)
+	r.OK("removed worktree")
+
+	deleted := false
+	if !keepBranch {
+		if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
+			if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
+				if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
+					deleted = true
+					r.OK("deleted merged branch %s", f.Branch)
+				}
+			}
+		}
+	}
+	if !deleted {
+		r.OK("kept branch %s", f.Branch)
+	}
+	return nil
+}
+
+// closeFeatureWindows closes every window canaveral opened for f, rehomes
+// any stray windows the user opened themselves, and releases the feature's
+// workspace. A no-op when Hyprland is not available or the feature has no
+// windows.
+func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
+	if err := hypr.Available(ctx); err != nil || len(f.Windows) == 0 {
+		return
+	}
+	if clients, err := hypr.Clients(ctx); err == nil {
+		open := hypr.ByClass(clients)
+		closed := 0
+		var self *hypr.Client
+		for _, w := range f.Windows {
+			if c, ok := open[w.Class]; ok {
+				if hypr.IsSelf(c) {
+					// Close our own window last of all, and after
+					// everything above has already returned
+					// successfully, so the report below reaches the
+					// user before their terminal potentially dies.
+					cc := c
+					self = &cc
+					continue
+				}
+				if err := hypr.Close(ctx, c.Address); err == nil {
+					closed++
+				}
+			}
+		}
+		if closed > 0 {
+			r.OK("closed %d window(s)", closed)
+		}
+		if self != nil {
+			r.OK("closing this window")
+			_ = hypr.Close(ctx, self.Address)
+		}
+	}
+	// Windows the user opened here themselves are not canaveral's to
+	// close — they may hold real work — but leaving them behind
+	// strands them on a workspace named for a feature that no longer
+	// exists, and keeps that workspace alive. Move them somewhere
+	// ordinary on the same monitor instead.
+	rehomeStrays(ctx, f, r)
+
+	// Hyprland won't destroy a workspace while it's a monitor's active
+	// one, even with zero windows left (confirmed empirically) — so
+	// closing the last window above can leave the feature's workspace
+	// dangling forever on whatever monitor last displayed it, as a
+	// phantom entry in the waybar pill list. Release it explicitly.
+	if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
+		r.Warn("%v", err)
+	}
 }
 
 // EnvFor returns the environment a command run inside a feature's worktree

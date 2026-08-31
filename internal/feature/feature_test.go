@@ -17,6 +17,8 @@ import (
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/tmpl"
+	"github.com/bandito/canaveral/internal/unit"
 )
 
 func TestSlug(t *testing.T) {
@@ -661,5 +663,163 @@ func TestRemoveSkipsTheGuardWhenKeepingTheWorktree(t *testing.T) {
 	err := Remove(context.Background(), f, true, false, false, quietReporter{})
 	if errors.Is(err, ErrUnmerged) {
 		t.Error("--keep-worktree leaves the checkout and branch intact; nothing to guard")
+	}
+}
+
+// gitBranchExists reports whether branch still exists in repo.
+func gitBranchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repo, "branch", "--list", branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+func TestRemoveDeletesMergedBranchAfterTeardown(t *testing.T) {
+	f := gitFeature(t, true)
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if gitBranchExists(t, f.Root, f.Branch) {
+		t.Error("merged branch should have been deleted")
+	}
+}
+
+func TestRemoveKeepsBranchWhenRequested(t *testing.T) {
+	f := gitFeature(t, true)
+	if err := Remove(context.Background(), f, false, false, true, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if !gitBranchExists(t, f.Root, f.Branch) {
+		t.Error("--keep-branch must keep a merged branch around")
+	}
+}
+
+func TestRemoveKeepsUnmergedBranchRegardlessOfKeepBranch(t *testing.T) {
+	// keepBranch only ever opts *out* of deletion; it must never be read as
+	// permission to delete an unmerged branch when it is false.
+	f := gitFeature(t, false)
+	if err := Remove(context.Background(), f, false, true, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if !gitBranchExists(t, f.Root, f.Branch) {
+		t.Error("unmerged branch must survive Remove even with keepBranch=false")
+	}
+}
+
+func TestRemoveRecordsNamespaceSessionBeforeTeardown(t *testing.T) {
+	f := gitFeature(t, true)
+	f.Project = "norules"
+	f.Name = "onboarding/step1"
+
+	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + f.Worktree + `"},"time":{"updated":` +
+		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
+	srv := agentFakeServer(t, sessions, `[]`)
+	f.Agents = []state.Agent{{Name: "main", Tool: "opencode", URL: srv.URL}}
+
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	rec, ok, err := skills.LatestSession(f.Project, "onboarding", "main")
+	if err != nil {
+		t.Fatalf("LatestSession: %v", err)
+	}
+	if !ok {
+		t.Fatal("Remove did not record the namespace session before tearing down")
+	}
+	if rec.SessionID != "ses_live" {
+		t.Errorf("recorded session = %q, want ses_live", rec.SessionID)
+	}
+	if rec.Feature != f.Name {
+		t.Errorf("recorded feature = %q, want %q", rec.Feature, f.Name)
+	}
+}
+
+func TestRemoveDoesNotRecordSessionForUnnamespacedFeature(t *testing.T) {
+	f := gitFeature(t, true)
+	f.Project = "norules"
+	// f.Name is "feat", not namespaced.
+
+	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + f.Worktree + `"},"time":{"updated":` +
+		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
+	srv := agentFakeServer(t, sessions, `[]`)
+	f.Agents = []state.Agent{{Name: "main", Tool: "opencode", URL: srv.URL}}
+
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, ok, err := skills.LatestSession(f.Project, "", "main"); err == nil && ok {
+		t.Error("Remove recorded a session for a feature with no namespace")
+	}
+}
+
+func TestReconcileAgentsNoopWithoutDeclaredAgents(t *testing.T) {
+	f := &state.Feature{Project: "p", Name: "reconcile-agents-noop"}
+	prog := newProgress(f, state.PhaseBooting, 0)
+	res := &Result{}
+	err := reconcileAgents(context.Background(), &manifest.Manifest{}, f, tmpl.Vars{}, nil, res, quietReporter{}, prog)
+	if err != nil {
+		t.Fatalf("reconcileAgents: %v", err)
+	}
+	if len(f.Agents) != 0 {
+		t.Errorf("f.Agents = %v, want none", f.Agents)
+	}
+}
+
+func TestReconcileAgentsAdoptsAnAlreadyRunningUnit(t *testing.T) {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		t.Skip("no systemctl")
+	}
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("no opencode binary")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ctx := context.Background()
+
+	f := &state.Feature{Project: "reconcile-agents-test", Name: "adopt", Worktree: t.TempDir()}
+	logDir, err := state.LogDir(f.Project, f.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(logDir, "agent-main.log")
+	unitName := unit.Name(f.Project+"-"+f.Name, "agent", "main")
+
+	// Start a real, long-running unit under the exact name reconcileAgents
+	// will look up, so unit.Query reports it Running and reconcileAgents
+	// takes the adopt path rather than starting a new one.
+	if err := unit.Start(ctx, unit.Spec{
+		Name: unitName, Cmd: "sleep 60", Dir: f.Worktree, LogPath: logPath,
+	}); err != nil {
+		t.Fatalf("unit.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = unit.Stop(context.Background(), unitName)
+		unit.Reset(context.Background(), unitName)
+	})
+
+	// unit.Start truncates LogPath; write the line DiscoverURL looks for
+	// only now, simulating an agent that already announced its address in
+	// a previous reconcile.
+	if err := os.WriteFile(logPath, []byte("listening on http://127.0.0.1:9999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &manifest.Manifest{Agents: []manifest.Agent{{Name: "main", Tool: "opencode", Dir: "."}}}
+	prog := newProgress(f, state.PhaseBooting, 1)
+	res := &Result{}
+	if err := reconcileAgents(ctx, m, f, tmpl.Vars{}, nil, res, quietReporter{}, prog); err != nil {
+		t.Fatalf("reconcileAgents: %v", err)
+	}
+	if len(f.Agents) != 1 {
+		t.Fatalf("f.Agents = %v, want exactly one", f.Agents)
+	}
+	if f.Agents[0].URL != "http://127.0.0.1:9999" {
+		t.Errorf("adopted URL = %q, want recovered from the log", f.Agents[0].URL)
+	}
+	if len(res.StartedAgent) != 0 {
+		t.Errorf("StartedAgent = %v, adopting a running unit must not report a fresh start", res.StartedAgent)
 	}
 }
