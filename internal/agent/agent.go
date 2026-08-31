@@ -376,14 +376,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 	h := Health{Reachable: true}
 
-	want := filepath.Clean(dir)
-	mine := make([]sessionInfo, 0, len(list.Data))
-	for _, s := range list.Data {
-		if want == "" || filepath.Clean(s.Location.Directory) == want {
-			mine = append(mine, s)
-		}
-	}
-	sort.Slice(mine, func(i, j int) bool { return mine[i].Time.Updated > mine[j].Time.Updated })
+	mine := sessionsInDir(list.Data, dir)
 
 	// Subagent sessions (the Task tool spawns one per subagent) live in the
 	// same directory as the conversation that created them, so a single
@@ -392,12 +385,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// the same instant as its parent, so picking the newest of everything
 	// would flip between them and make the reported model, state and
 	// numbers jump around at random.
-	roots := make([]sessionInfo, 0, len(mine))
-	for _, x := range mine {
-		if x.ParentID == "" {
-			roots = append(roots, x)
-		}
-	}
+	roots := topLevelSessions(mine)
 	h.Sessions = len(roots)
 	if len(roots) == 0 {
 		h.State = StateIdle
@@ -415,26 +403,8 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	//
 	// The session list already carries per-session totals, so this needs no
 	// extra requests.
-	byParent := map[string][]sessionInfo{}
-	for _, x := range mine {
-		if x.ParentID != "" {
-			byParent[x.ParentID] = append(byParent[x.ParentID], x)
-		}
-	}
-	family := []sessionInfo{newest}
-	for queue := []string{newest.ID}; len(queue) > 0; {
-		id := queue[0]
-		queue = queue[1:]
-		for _, child := range byParent[id] {
-			family = append(family, child)
-			queue = append(queue, child.ID)
-		}
-	}
+	family, familyIDs := sessionFamily(mine, newest)
 	h.SubSessions = len(family) - 1
-	familyIDs := make(map[string]bool, len(family))
-	for _, x := range family {
-		familyIDs[x.ID] = true
-	}
 	for _, x := range family {
 		h.Tokens.Input += x.Tokens.Input
 		h.Tokens.Output += x.Tokens.Output
@@ -453,95 +423,25 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// Messages drive only the current turn and elapsed work; totals come
 	// from the session list above.
 	//
-	// Messages arrive oldest-first, so the *last* assistant message is the
-	// current turn — taking the first would report the state of whatever
-	// happened at the very start of the session forever.
-	//
 	// Worked counts this conversation's turns only. A parent's turn stays
 	// open while a subagent runs, so its duration already covers that work;
 	// adding the subagents' own turns would double-count it.
 	now := time.Now()
-	var cur *messageInfo
-	// completedByID records whether each of this session's own messages has
-	// finished, keyed by message ID. classify uses it to tell a genuinely
-	// open question or permission request from one whose turn has already
-	// ended — see classify's comment for why /question and /permission
-	// cannot always be trusted alone.
-	completedByID := make(map[string]bool, len(msgs))
-	for i := range msgs {
-		m := &msgs[i].Info
-		completedByID[m.ID] = m.Time.Completed != nil
-		if m.Role != "assistant" {
-			continue
-		}
-		if m.Time.Completed != nil {
-			h.Worked += time.UnixMilli(*m.Time.Completed).Sub(time.UnixMilli(m.Time.Created))
-		}
-		cur = m
-	}
-	// The newest text on each side of the conversation. Messages arrive
-	// oldest-first and a message can hold several text parts, so simply
-	// keeping the last non-empty one seen lands on the most recent.
-	lastUserIdx, lastAssistantIdx, lastTodoWriteIdx := -1, -1, -1
-	assistantText := ""
-	for i := range msgs {
-		role := msgs[i].Info.Role
-		if role != "user" && role != "assistant" {
-			continue
-		}
-		for _, part := range msgs[i].Parts {
-			if role == "assistant" && part.Type == "tool" && strings.EqualFold(part.Tool, "todowrite") {
-				lastTodoWriteIdx = i
-			}
-			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
-				continue
-			}
-			if role == "user" {
-				h.LastUser = previewText(part.Text)
-				lastUserIdx = i
-			} else {
-				assistantText = previewText(part.Text)
-				lastAssistantIdx = i
-			}
-		}
-	}
-	if lastUserIdx >= 0 {
-		if c := msgs[lastUserIdx].Info.Time.Created; c > 0 {
-			h.SincePrompt = now.Sub(time.UnixMilli(c))
-		}
-	}
-
+	turns := scanTurns(msgs, now)
+	h.Worked = turns.worked
+	h.LastUser = turns.lastUser
+	h.SincePrompt = turns.sincePrompt
 	// Only report what the agent said if it said it *after* the latest
 	// prompt. Once a new prompt arrives, the previous turn's closing
 	// remarks describe finished work, and showing them next to a
 	// now-unrelated task reads as if they were the current state.
-	if lastAssistantIdx > lastUserIdx {
-		h.LastAssistant = assistantText
+	if turns.lastAssistantIdx > turns.lastUserIdx {
+		h.LastAssistant = turns.lastAssistant
 	}
 
-	// A tool that is pending or running is the agent's current activity.
-	// Only the newest turn is inspected: earlier turns' calls have all
-	// finished by definition.
-	if len(msgs) > 0 {
-		for _, part := range msgs[len(msgs)-1].Parts {
-			if part.Type != "tool" {
-				continue
-			}
-			if st := part.State.Status; st == "running" || st == "pending" {
-				title := part.State.Title
-				if title == "" {
-					title = describeInput(part.State.Input)
-				}
-				h.Activity = &Activity{
-					Tool:  part.Tool,
-					Title: firstLine(title),
-					Since: time.UnixMilli(part.State.Time.Start),
-				}
-			}
-		}
-	}
+	h.Activity = currentActivity(msgs)
 
-	if cur != nil {
+	if cur := turns.cur; cur != nil {
 		h.Model = cur.ModelID
 		h.Variant = cur.Variant
 		h.Provider = cur.ProviderID
@@ -563,11 +463,173 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// arrived since the list was last touched, treat it the same way as a
 	// stale LastAssistant above and drop it, rather than showing finished
 	// work next to whatever the agent is doing now.
-	if h.Todos.Total > 0 && h.Todos.InProgress == 0 && h.Todos.Pending == 0 && lastUserIdx > lastTodoWriteIdx {
+	if h.Todos.Total > 0 && h.Todos.InProgress == 0 && h.Todos.Pending == 0 && turns.lastUserIdx > turns.lastTodoWriteIdx {
 		h.Todos = Todos{}
 	}
-	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, completedByID)
+	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, turns.completedByID)
 	return h
+}
+
+// sessionsInDir filters a server's full session list down to the ones
+// rooted at dir, sorted newest-updated-first.
+func sessionsInDir(all []sessionInfo, dir string) []sessionInfo {
+	want := filepath.Clean(dir)
+	mine := make([]sessionInfo, 0, len(all))
+	for _, s := range all {
+		if want == "" || filepath.Clean(s.Location.Directory) == want {
+			mine = append(mine, s)
+		}
+	}
+	sort.Slice(mine, func(i, j int) bool { return mine[i].Time.Updated > mine[j].Time.Updated })
+	return mine
+}
+
+// topLevelSessions returns the sessions in mine that are not subagent
+// sessions (see the ParentID field doc).
+func topLevelSessions(mine []sessionInfo) []sessionInfo {
+	roots := make([]sessionInfo, 0, len(mine))
+	for _, x := range mine {
+		if x.ParentID == "" {
+			roots = append(roots, x)
+		}
+	}
+	return roots
+}
+
+// sessionFamily returns root plus every subagent session transitively
+// spawned from it, and the set of their IDs.
+func sessionFamily(mine []sessionInfo, root sessionInfo) (family []sessionInfo, familyIDs map[string]bool) {
+	byParent := map[string][]sessionInfo{}
+	for _, x := range mine {
+		if x.ParentID != "" {
+			byParent[x.ParentID] = append(byParent[x.ParentID], x)
+		}
+	}
+	family = []sessionInfo{root}
+	for queue := []string{root.ID}; len(queue) > 0; {
+		id := queue[0]
+		queue = queue[1:]
+		for _, child := range byParent[id] {
+			family = append(family, child)
+			queue = append(queue, child.ID)
+		}
+	}
+	familyIDs = make(map[string]bool, len(family))
+	for _, x := range family {
+		familyIDs[x.ID] = true
+	}
+	return family, familyIDs
+}
+
+// turnScan is the result of scanning a session's messages (oldest first)
+// for turn timing and the newest text on each side of the conversation.
+type turnScan struct {
+	// worked is the sum of (completed − created) across every assistant
+	// turn that has finished — actual generation time, not wall-clock span.
+	worked time.Duration
+	// completedByID records whether each message has finished, keyed by
+	// message ID. classify uses it to tell a genuinely open question or
+	// permission request from one whose turn has already ended — see
+	// classify's comment for why /question and /permission cannot always
+	// be trusted alone.
+	completedByID map[string]bool
+	// cur is the last assistant message seen — the current turn, since
+	// messages arrive oldest-first.
+	cur                           *messageInfo
+	lastUser, lastAssistant       string
+	lastUserIdx, lastAssistantIdx int
+	lastTodoWriteIdx              int
+	sincePrompt                   time.Duration
+}
+
+// scanTurns walks a session's messages for the data Probe needs from the
+// current turn: how long assistant turns have taken so far, the current
+// (last) assistant message, the newest user/assistant text, and when the
+// todo list was last touched. now anchors SincePrompt.
+func scanTurns(msgs []sessionMessage, now time.Time) turnScan {
+	t := scanCompletedTurns(msgs)
+	scanConversationText(msgs, &t)
+	if t.lastUserIdx >= 0 {
+		if c := msgs[t.lastUserIdx].Info.Time.Created; c > 0 {
+			t.sincePrompt = now.Sub(time.UnixMilli(c))
+		}
+	}
+	return t
+}
+
+// scanCompletedTurns computes worked and completedByID, and finds the
+// current (last) assistant message. Messages arrive oldest-first, so the
+// last one seen with role "assistant" is the current turn.
+func scanCompletedTurns(msgs []sessionMessage) turnScan {
+	t := turnScan{lastUserIdx: -1, lastAssistantIdx: -1, lastTodoWriteIdx: -1}
+	t.completedByID = make(map[string]bool, len(msgs))
+	for i := range msgs {
+		m := &msgs[i].Info
+		t.completedByID[m.ID] = m.Time.Completed != nil
+		if m.Role != "assistant" {
+			continue
+		}
+		if m.Time.Completed != nil {
+			t.worked += time.UnixMilli(*m.Time.Completed).Sub(time.UnixMilli(m.Time.Created))
+		}
+		t.cur = m
+	}
+	return t
+}
+
+// scanConversationText fills in the newest text on each side of the
+// conversation, and when the todo list was last touched. A message can hold
+// several text parts, so simply keeping the last non-empty one seen lands
+// on the most recent.
+func scanConversationText(msgs []sessionMessage, t *turnScan) {
+	for i := range msgs {
+		role := msgs[i].Info.Role
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		for _, part := range msgs[i].Parts {
+			if role == "assistant" && part.Type == "tool" && strings.EqualFold(part.Tool, "todowrite") {
+				t.lastTodoWriteIdx = i
+			}
+			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
+				continue
+			}
+			if role == "user" {
+				t.lastUser = previewText(part.Text)
+				t.lastUserIdx = i
+			} else {
+				t.lastAssistant = previewText(part.Text)
+				t.lastAssistantIdx = i
+			}
+		}
+	}
+}
+
+// currentActivity reports the tool call in flight in the newest turn, nil
+// if nothing is running or pending. Only the newest turn is inspected:
+// earlier turns' calls have all finished by definition.
+func currentActivity(msgs []sessionMessage) *Activity {
+	if len(msgs) == 0 {
+		return nil
+	}
+	var act *Activity
+	for _, part := range msgs[len(msgs)-1].Parts {
+		if part.Type != "tool" {
+			continue
+		}
+		if st := part.State.Status; st == "running" || st == "pending" {
+			title := part.State.Title
+			if title == "" {
+				title = describeInput(part.State.Input)
+			}
+			act = &Activity{
+				Tool:  part.Tool,
+				Title: firstLine(title),
+				Since: time.UnixMilli(part.State.Time.Start),
+			}
+		}
+	}
+	return act
 }
 
 // classify determines the fuller State beyond the plain busy/idle that
@@ -672,57 +734,89 @@ func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {
 // missed, aborted, or superseded by a restart) and the request is stale,
 // no matter what /question or /permission still say.
 func classify(ctx context.Context, baseURL, sessionID string, family map[string]bool, busy bool, completedByID map[string]bool) (State, *Pending) {
-	// The server-wide lists are used rather than the per-session ones: they
-	// are a single request no matter how many sessions exist, and they live
-	// on the same API surface as /session/{id}/message, which is the one
-	// verified to actually return data.
-	var qs []questionRequest
-	if err := getJSON(ctx, baseURL+"/question", &qs); err == nil {
-		for _, req := range qs {
-			if !family[req.SessionID] {
-				continue
-			}
-			if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
-				continue
-			}
-			for _, q := range req.Questions {
-				p := &Pending{Kind: BlockQuestion, Header: q.Header, Detail: q.Question}
-				for _, o := range q.Options {
-					p.Options = append(p.Options, o.Label)
-				}
-				return StateWaiting, p
-			}
-		}
+	if p := pendingQuestion(ctx, baseURL, sessionID, family, completedByID); p != nil {
+		return StateWaiting, p
 	}
-
-	var perms []permissionRequest
-	if err := getJSON(ctx, baseURL+"/permission", &perms); err == nil {
-		for _, req := range perms {
-			if !family[req.SessionID] {
-				continue
-			}
-			if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
-				continue
-			}
-			return StateWaiting, &Pending{
-				Kind:      BlockPermission,
-				Header:    req.Permission,
-				Detail:    req.Permission,
-				Resources: req.Patterns,
-			}
-		}
+	if p := pendingPermission(ctx, baseURL, sessionID, family, completedByID); p != nil {
+		return StateWaiting, p
 	}
-
-	var statuses map[string]sessionStatusInfo
-	if err := getJSON(ctx, baseURL+"/session/status", &statuses); err == nil {
-		if st, ok := statuses[sessionID]; ok && st.Type == "retry" {
-			return StateRetrying, nil
-		}
+	if isRetrying(ctx, baseURL, sessionID) {
+		return StateRetrying, nil
 	}
 	if busy {
 		return StateBusy, nil
 	}
 	return StateIdle, nil
+}
+
+// pendingQuestion reports the first genuinely open question raised against
+// a session in family, nil if there is none.
+//
+// The server-wide list is used rather than a per-session one: it is a
+// single request no matter how many sessions exist, and it lives on the
+// same API surface as /session/{id}/message, which is the one verified to
+// actually return data.
+func pendingQuestion(ctx context.Context, baseURL, sessionID string, family map[string]bool, completedByID map[string]bool) *Pending {
+	var qs []questionRequest
+	if err := getJSON(ctx, baseURL+"/question", &qs); err != nil {
+		return nil
+	}
+	for _, req := range qs {
+		if !family[req.SessionID] {
+			continue
+		}
+		if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
+			continue
+		}
+		// A request can carry several questions; only the first is
+		// surfaced, since a compact widget has room for one headline and
+		// the rest are visible in the TUI anyway.
+		if len(req.Questions) == 0 {
+			continue
+		}
+		q := req.Questions[0]
+		p := &Pending{Kind: BlockQuestion, Header: q.Header, Detail: q.Question}
+		for _, o := range q.Options {
+			p.Options = append(p.Options, o.Label)
+		}
+		return p
+	}
+	return nil
+}
+
+// pendingPermission reports the first genuinely open permission request
+// raised against a session in family, nil if there is none.
+func pendingPermission(ctx context.Context, baseURL, sessionID string, family map[string]bool, completedByID map[string]bool) *Pending {
+	var perms []permissionRequest
+	if err := getJSON(ctx, baseURL+"/permission", &perms); err != nil {
+		return nil
+	}
+	for _, req := range perms {
+		if !family[req.SessionID] {
+			continue
+		}
+		if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
+			continue
+		}
+		return &Pending{
+			Kind:      BlockPermission,
+			Header:    req.Permission,
+			Detail:    req.Permission,
+			Resources: req.Patterns,
+		}
+	}
+	return nil
+}
+
+// isRetrying reports whether sessionID is currently auto-retrying after a
+// provider error.
+func isRetrying(ctx context.Context, baseURL, sessionID string) bool {
+	var statuses map[string]sessionStatusInfo
+	if err := getJSON(ctx, baseURL+"/session/status", &statuses); err != nil {
+		return false
+	}
+	st, ok := statuses[sessionID]
+	return ok && st.Type == "retry"
 }
 
 // toolCallStillOpen reports whether the message a question or permission
