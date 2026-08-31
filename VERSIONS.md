@@ -32,6 +32,20 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Changed
 
+- The launcher popup closes the moment you submit, instead of holding focus
+  while a feature comes up. Bringing one up takes as long as its slowest
+  readiness probe, and a still-typeable window is the wrong place to wait now
+  that the bar's own row reports the same work. Failures that happen before the
+  feature record exists — an unknown project, a name already taken — have no row
+  to appear on, and become a desktop notification instead.
+
+- The launcher runs commands behind `env -u CANAVERAL_PROJECT -u
+  CANAVERAL_FEATURE -u CANAVERAL_WORKTREE` rather than setting
+  `Process.environment`. Assigning a JS object to that property silently fails
+  on quickshell 0.3.0 — it logs "Unable to assign QJSValue to QVariantHash" and
+  leaves the environment untouched, which is the one failure mode a guard
+  against a stray `rm` must not have.
+
 - `canaveral watch` re-reads feature state every 200ms, separately from its
   existing rescan, reusing the previous refresh's agent probes rather than
   issuing new ones. Progress comes from state and owes nothing to the agent API,
