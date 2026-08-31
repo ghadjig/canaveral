@@ -257,3 +257,20 @@ func TestBuildOmitsTodosWhenUnused(t *testing.T) {
 		t.Errorf("Todos = %+v, want nil so the field is omitted entirely", got.Agents[0].Todos)
 	}
 }
+
+// The two timers are distinct and both have to reach the wire: Worked is
+// generation time only, SincePrompt is wall-clock since the user last spoke.
+func TestBuildSurfacesBothTimers(t *testing.T) {
+	h := map[string]agent.Health{"main": {
+		Reachable: true, State: agent.StateBusy,
+		Worked:      90 * time.Second,
+		SincePrompt: 13*time.Minute + 13*time.Second,
+	}}
+	got := Build(feat("f", "main"), h, nil, time.Now())
+	if got.Agents[0].Worked != 90 {
+		t.Errorf("Worked = %v, want 90 seconds", got.Agents[0].Worked)
+	}
+	if got.Agents[0].SincePrompt != 793 {
+		t.Errorf("SincePrompt = %v, want 793 seconds", got.Agents[0].SincePrompt)
+	}
+}
