@@ -12,6 +12,7 @@ import (
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -21,7 +22,32 @@ func loadManifest() (*manifest.Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return manifest.Load(root)
+	m, err := manifest.Load(root)
+	if err != nil {
+		return nil, err
+	}
+	recordProject(m)
+	return m, nil
+}
+
+// recordProject keeps the global project registry current as a side effect of
+// ordinary use: touch a project once and the launcher can address it by name
+// from anywhere, forever after. This sits here rather than in a registration
+// command because every project resolution in canaveral funnels through
+// loadManifest, and an index nobody has to maintain is the only kind that stays
+// accurate.
+//
+// Failures are advisory — no command should stop working because an index could
+// not be updated — with one exception. A name conflict means two checkouts
+// already share <state>/features/<name>/, and therefore each other's features;
+// that is a real problem only the user can resolve, so it is said out loud. On
+// stderr, so the machine-readable stdout of `status --json` and `watch` is
+// unaffected.
+func recordProject(m *manifest.Manifest) {
+	if err := registry.Record(m.Name, m.Root); errors.Is(err, registry.ErrConflict) {
+		fmt.Fprintf(os.Stderr, "canaveral: %v\n", err)
+		fmt.Fprintf(os.Stderr, "canaveral: both share feature state; rename one in its %s\n", manifest.FileName)
+	}
 }
 
 func runNew(ctx context.Context, args []string) error {

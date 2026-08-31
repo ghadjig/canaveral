@@ -51,6 +51,7 @@ $ canaveral new small-fixes
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
+| `canaveral projects` | List the projects canaveral knows about, and where they live |
 | `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -68,6 +69,18 @@ canaveral: no feature "stratus" in norules
   did you mean `canaveral status`?
   create it with `canaveral new stratus`
 ```
+
+Every command works on the project you are standing in. `-C` puts you in one
+without moving:
+
+```bash
+canaveral -C norules ls
+canaveral -C norules new small-fixes --focus
+```
+
+The name comes from the project registry (see below); a path works too. The
+registry is checked first, so `-C norules` means the registered project even if
+a directory called `norules` happens to sit in the one you are in.
 
 `canaveral new`, `canaveral <feature>` and `canaveral reset` run the same
 reconcile pass, so all three are idempotent: run them any number of times and only the missing pieces start.
@@ -311,11 +324,50 @@ For a shell shortcut with tab-completion, in `~/.bash_aliases`:
 
 ```bash
 cv() {
-    [ -z "$1" ] && { cd "$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")"; return; }
-    cd "$(canaveral path "$1")" || return
+    local d
+    if [ -n "$1" ]; then
+        d=$(canaveral path "$1") || return
+    else
+        # Bare `cv` goes to the root of wherever you are: the worktree of the
+        # feature you're in, or the project's main checkout if you're not in
+        # one. Both are "up and out of here", which is the only thing anyone
+        # means by it.
+        d=$(canaveral path 2>/dev/null) ||
+            d=$(dirname "$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)") ||
+            return
+    fi
+    cd "$d"
 }
-complete -F _cv_complete cv   # completes from `canaveral ls --names`
 ```
+
+## The project registry
+
+canaveral needs to find a project without being inside it — for `-C`, and for
+the launcher, which has no meaningful working directory at all. It keeps an
+index at `~/.local/state/canaveral/projects.json`.
+
+Nothing has to be maintained: a project registers itself the first time any
+command resolves its manifest, and projects that predate the registry are
+recovered from their features' own state records. Use one and it is addressable
+by name forever after.
+
+```bash
+canaveral projects                    # name, root, when it was last used
+canaveral projects --scan ~/code      # register everything under a directory
+canaveral projects --add ~/work/thing # register one checkout
+canaveral projects --prune            # drop entries whose checkout is gone
+canaveral projects --forget norules   # drop one, leaving the checkout alone
+```
+
+`--scan` stops at the first `canaveral.toml` it finds down any path and skips
+linked git worktrees, so it will not register a project once per feature —
+canaveral copies the manifest into every worktree it provisions, and a naive
+walk would find one "project" per worktree, all claiming the same name.
+
+A name is also the project's key in the state directory, so two checkouts
+calling themselves the same thing already share each other's features. The
+registry refuses to record the second and says so rather than quietly
+repointing.
 
 ## Ports and databases
 
@@ -512,6 +564,7 @@ permanently wrong.
 
 ```
 ~/.local/state/canaveral/
+  projects.json                       the project registry: name -> checkout, last used
   features/<project>/<feature>.json   slot, branch, ports, units, windows
   logs/<project>/<feature>/*.log      service and agent logs
   worktrees/<project>/<feature>/      the feature checkout, only with [worktree] root = "state"

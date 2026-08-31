@@ -11,6 +11,9 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/registry"
 )
 
 // Version, Commit and BuildDate are overridden at build time via -ldflags by
@@ -56,6 +59,7 @@ func commands() []command {
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
+		{"projects", "list the projects canaveral knows about, and where they live", runProjects},
 		{"hyprwatch", "record layout ratios when you leave a workspace", runHyprwatch},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
@@ -89,6 +93,11 @@ func reserved() map[string]bool {
 // *existing* feature, so `canaveral small-fixes` opens that feature. It never
 // creates one — see openFeature for why `canaveral new` earns its keyword.
 func Main(ctx context.Context, args []string) int {
+	args, err := chdirToProject(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "canaveral: %v\n", err)
+		return 1
+	}
 	if len(args) == 0 {
 		usage(os.Stdout)
 		return 0
@@ -128,12 +137,95 @@ func Main(ctx context.Context, args []string) int {
 	return run(runOpen, args)
 }
 
+// chdirToProject consumes leading -C/--project flags and moves into the
+// project each one names, returning the remaining arguments.
+//
+// It changes the working directory rather than threading a root through every
+// command, because project resolution already funnels through one place
+// (manifest.Find walking up from "."), and every command's subprocesses inherit
+// the directory for free. The alternative — a root parameter on each of a dozen
+// command functions plus everything they spawn — buys nothing a chdir at the
+// entrypoint does not.
+//
+// A name is looked up in the project registry first and treated as a path
+// second, so `-C norules` means the registered project even when a directory of
+// that name happens to sit in the current one. That precedence is the whole
+// point of the flag: it exists to be usable from anywhere, and "anywhere"
+// includes directories with confusing names in them.
+func chdirToProject(args []string) ([]string, error) {
+	for len(args) > 0 {
+		var target string
+		switch a := args[0]; {
+		case a == "-C" || a == "--project":
+			if len(args) < 2 {
+				return nil, fmt.Errorf("%s needs a project name or path", a)
+			}
+			target, args = args[1], args[2:]
+		case strings.HasPrefix(a, "-C="):
+			target, args = strings.TrimPrefix(a, "-C="), args[1:]
+		case strings.HasPrefix(a, "--project="):
+			target, args = strings.TrimPrefix(a, "--project="), args[1:]
+		default:
+			return args, nil
+		}
+		root, err := resolveProject(target)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Chdir(root); err != nil {
+			return nil, fmt.Errorf("enter project %s: %w", target, err)
+		}
+		// Redundant while the chdir holds, but a worktree carries its own copy
+		// of the manifest, so leaving a stale root from the surrounding shell
+		// in place would let the env fallback in manifest.Find answer for a
+		// different project than the one just selected.
+		if err := os.Setenv("CANAVERAL_ROOT", root); err != nil {
+			return nil, err
+		}
+	}
+	return args, nil
+}
+
+// resolveProject turns a -C argument into a project root.
+func resolveProject(target string) (string, error) {
+	if target == "" {
+		return "", fmt.Errorf("empty project name")
+	}
+	p, found, err := registry.Find(target)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		if !p.Alive() {
+			return "", fmt.Errorf("project %s is registered at %s, which no longer exists (run `canaveral projects --prune`)", target, p.Root)
+		}
+		return p.Root, nil
+	}
+	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+		root, findErr := manifest.Find(target)
+		if findErr != nil {
+			return "", findErr
+		}
+		return root, nil
+	}
+	known, _ := registry.Load()
+	if len(known) == 0 {
+		return "", fmt.Errorf("unknown project %q, and no projects are registered (run `canaveral projects --scan ~/code`)", target)
+	}
+	names := make([]string, 0, len(known))
+	for _, k := range known {
+		names = append(names, k.Name)
+	}
+	return "", fmt.Errorf("unknown project %q (known: %s)", target, strings.Join(names, ", "))
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "canaveral - one workspace per feature")
 	fmt.Fprintln(w, "\nUsage:")
 	fmt.Fprintln(w, "  canaveral new <feature>    create a feature workspace")
 	fmt.Fprintln(w, "  canaveral <feature>        reconcile an existing feature, then focus it")
 	fmt.Fprintln(w, "  canaveral <command> ...")
+	fmt.Fprintln(w, "  canaveral -C <project> ... run a command against a project from anywhere")
 	fmt.Fprintln(w, "\nCommands:")
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	cs := commands()

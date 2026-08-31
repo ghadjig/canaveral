@@ -12,6 +12,24 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- A global project registry at `~/.local/state/canaveral/projects.json`, so
+  canaveral can find a project without standing in it. Projects register
+  themselves the first time any command resolves their manifest, and ones that
+  predate the registry are recovered from their features' own state records, so
+  there is nothing to maintain. `canaveral projects` lists them with
+  `--add`, `--scan`, `--prune` and `--forget` for repairs. `--scan` stops at the
+  first `canaveral.toml` down any path and skips linked git worktrees, since
+  canaveral copies the manifest into every worktree it provisions and a naive
+  walk would find one "project" per feature, all claiming the same name.
+
+- `canaveral -C <project|path> <command>` runs any command against a project
+  from anywhere. Registry names are resolved before paths, since the flag exists
+  to be used from directories whose contents you know nothing about.
+
 ## v0.3.0 — 2026-08-31
 
 ### Changed
