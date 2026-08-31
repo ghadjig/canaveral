@@ -11,6 +11,7 @@ import (
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
+	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -398,18 +399,12 @@ func completeFirstWord(m *manifest.Manifest, prefix string) completion {
 // before it became unusable. So a prefix of "" offers each namespace as a
 // single entry, and accepting one narrows to its contents — the same shape as
 // completing a directory path, for the same reason.
-// featureCandidates lists a project's features one path segment at a time.
-//
-// Namespaced features are stored as "namespace/feature", and offering the whole
-// string at once would make a project with several namespaces unreadable long
-// before it became unusable. So a prefix of "" offers each namespace as a
-// single entry, and accepting one narrows to its contents — the same shape as
-// completing a directory path, for the same reason.
 //
 // `creating` switches this from naming something that exists to naming
 // something that must not: existing features are dropped, since `new` refuses
 // one that is already there and offering it would be offering an error, while
-// namespaces stay, since creating inside an existing one is ordinary.
+// namespaces stay, since creating inside an existing one is ordinary. It also
+// widens where namespaces come from — see skills.Namespaces.
 func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []candidate {
 	names, err := state.List(m.Name)
 	if err != nil {
@@ -431,7 +426,14 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 
 	var out []candidate
 	nsCount := map[string]int{}
+	nsSeen := map[string]bool{}
 	var nsOrder []string
+	note := func(ns string) {
+		if !nsSeen[ns] {
+			nsSeen[ns] = true
+			nsOrder = append(nsOrder, ns)
+		}
+	}
 	exact := false
 	for _, n := range names {
 		if n == prefix {
@@ -443,9 +445,7 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 		rest := n[len(base):]
 		if i := strings.Index(rest, "/"); i >= 0 {
 			ns := base + rest[:i]
-			if nsCount[ns] == 0 {
-				nsOrder = append(nsOrder, ns)
-			}
+			note(ns)
 			nsCount[ns]++
 			continue
 		}
@@ -454,25 +454,68 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 	if creating {
 		// Namespaces survive, the features inside them do not.
 		out = out[:0]
+
+		// An emptied namespace is still a namespace: its shared skill and
+		// recorded sessions are exactly what the next feature under it wants
+		// to inherit, so it has to stay offerable once its last feature is
+		// gone. Failures are swallowed because a completer that goes silent
+		// mid-keystroke is worse than one missing a few entries. These land
+		// after the namespaces that still have features in them, which is the
+		// order worth having: what is open now, then what could be reopened.
+		if known, err := skills.Namespaces(m.Name); err == nil {
+			for _, ns := range known {
+				if !strings.HasPrefix(ns, base) {
+					continue
+				}
+				rest := ns[len(base):]
+				if rest == "" {
+					continue
+				}
+				// A deeper namespace still only contributes its next segment,
+				// the same as a feature path does.
+				if i := strings.Index(rest, "/"); i >= 0 {
+					rest = rest[:i]
+				}
+				note(base + rest)
+			}
+		}
 	}
 	for _, ns := range nsOrder {
 		out = append(out, candidate{
 			Value:     ns + "/",
 			Kind:      candNamespace,
-			Desc:      plural(nsCount[ns], "feature"),
+			Desc:      namespaceDesc(nsCount[ns]),
 			Continues: true,
 		})
 	}
 
-	if creating && prefix != "" && !exact {
+	if creating && !exact {
 		// Slugged, because that is the name that will actually be created — a
 		// launcher that shows "My Feature" and produces "my-feature" is lying
 		// about what Enter does.
-		if slug := feature.Slug(prefix); slug != "" && !reserved()[slug] && records[slug] == nil {
+		//
+		// The slug has to genuinely extend what is settled, not just be
+		// non-empty: Slug drops empty segments, so "onboarding/" and
+		// "onboarding/!!!" both come back as "onboarding" and would offer to
+		// create the namespace itself as a flat feature — the opposite of what
+		// someone who just typed a separator is asking for.
+		slug := feature.Slug(prefix)
+		if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] && records[slug] == nil {
 			out = append(out, candidate{Value: slug, Kind: candNew, Desc: "create this feature"})
 		}
 	}
 	return out
+}
+
+// namespaceDesc describes a namespace by what is currently open under it. A
+// count of zero means one held open by its skill alone, which is worth saying
+// outright: it looks identical to a populated one otherwise, and "0 features"
+// reads like an error rather than an invitation.
+func namespaceDesc(n int) string {
+	if n == 0 {
+		return "shared skill, no open features"
+	}
+	return plural(n, "feature")
 }
 
 func featureDesc(f *state.Feature) string {

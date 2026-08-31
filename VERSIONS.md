@@ -12,6 +12,23 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Changed
+
+- `canaveral new` now completes every namespace the project has ever had, not
+  just those with a feature currently open. A namespace's shared skill and
+  recorded sessions outlive the features that wrote them, so a namespace whose
+  last feature was torn down used to vanish from the launcher and the shell
+  while still holding everything the next feature under it would inherit.
+
+### Fixed
+
+- `canaveral new <namespace>/` no longer offers to create a feature named after
+  the namespace itself. Slugging drops empty segments, so a trailing separator
+  read back as the namespace, answering "create inside onboarding" with "create
+  a feature called onboarding".
+
 ## v0.4.1 — 2026-08-31
 
 ### Added

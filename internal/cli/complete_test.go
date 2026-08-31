@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -99,6 +100,75 @@ func TestCompleteNewOffersCreationAndNotExistingFeatures(t *testing.T) {
 		if cand.Kind == candFeature {
 			t.Errorf("existing feature %q offered to `new`", cand.Value)
 		}
+	}
+}
+
+func TestCompleteNewOffersNamespacesWithNoFeaturesLeft(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+
+	// A namespace outlives the features that were in it: its SKILL.md and
+	// recorded sessions are exactly what the next feature under it inherits.
+	// Deriving the list from live features alone hid the namespace with the
+	// most accumulated knowledge behind having to retype it from memory.
+	for _, ns := range []string{"onboarding", "leaves"} {
+		if _, err := skills.Dir("norules", ns); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := complete([]string{root, "new", ""}, true)
+	got := kinds(c)
+	for _, want := range []string{"onboarding/", "leaves/"} {
+		if got[want] != candNamespace {
+			t.Errorf("%q missing from `new` candidates %v", want, values(c))
+		}
+	}
+
+	// Only `new` creates, so only `new` gains them: an empty namespace has
+	// nothing to open or remove, and offering it elsewhere is offering an
+	// error.
+	if v := values(complete([]string{root, "rm", ""}, true)); len(v) != 0 {
+		t.Errorf("rm candidates = %v, want none; an empty namespace holds nothing to remove", v)
+	}
+}
+
+func TestCompleteNewNarrowsIntoAFeaturelessNamespace(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+
+	if _, err := skills.Dir("norules", "onboarding/deep"); err != nil {
+		t.Fatal(err)
+	}
+
+	// One segment at a time, the same as feature paths: "onboarding" is an
+	// intermediate directory with no skill of its own, but it is still the
+	// next segment to type.
+	c := complete([]string{root, "new", ""}, true)
+	if kinds(c)["onboarding/"] != candNamespace {
+		t.Fatalf("candidates = %v, want the first segment", values(c))
+	}
+	c = complete([]string{root, "new", "onboarding/"}, true)
+	if kinds(c)["onboarding/deep/"] != candNamespace {
+		t.Fatalf("candidates = %v, want the nested namespace", values(c))
+	}
+	// Slug drops empty segments, so a bare separator slugs back to the
+	// namespace itself. Offering that would answer "create inside onboarding"
+	// with "create a feature called onboarding".
+	for _, cand := range c.Candidates {
+		if cand.Kind == candNew {
+			t.Errorf("offered to create %q from a bare separator", cand.Value)
+		}
+	}
+	if v := values(complete([]string{root, "new", "onboarding/!!!"}, true)); len(v) != 0 {
+		t.Errorf("candidates = %v, want none; that slugs back to the namespace", v)
+	}
+	// Still creatable, and still slugged.
+	c = complete([]string{root, "new", "onboarding/Step One"}, true)
+	if kinds(c)["onboarding/step-one"] != candNew {
+		t.Errorf("candidates = %v, want the slug it will create inside the namespace", values(c))
 	}
 }
 
