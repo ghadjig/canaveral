@@ -472,17 +472,64 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 		base = prefix[:i+1]
 	}
 
+	leaves, ns, exact := partitionByNamespace(names, prefix, base)
+
 	var out []candidate
-	nsCount := map[string]int{}
-	nsSeen := map[string]bool{}
-	var nsOrder []string
-	note := func(ns string) {
-		if !nsSeen[ns] {
-			nsSeen[ns] = true
-			nsOrder = append(nsOrder, ns)
+	if creating {
+		// Namespaces survive, the features inside them do not.
+		namespacesFromSkills(m.Name, base, ns)
+	} else {
+		for _, n := range leaves {
+			out = append(out, candidate{Value: n, Kind: candFeature, Desc: featureDesc(records[n])})
 		}
 	}
-	exact := false
+
+	// These land after the namespaces that still have features in them,
+	// which is the order worth having: what is open now, then what could be
+	// reopened.
+	for _, name := range ns.order {
+		out = append(out, candidate{
+			Value:     name + "/",
+			Kind:      candNamespace,
+			Desc:      namespaceDesc(ns.count[name]),
+			Continues: true,
+		})
+	}
+
+	if creating && !exact {
+		if c, ok := newFeatureCandidate(prefix, base, records); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// nsBucket accumulates the namespaces to offer as completions, in the order
+// first seen, deduplicated, alongside how many currently-recorded features
+// each holds.
+type nsBucket struct {
+	order []string
+	seen  map[string]bool
+	count map[string]int
+}
+
+func newNsBucket() *nsBucket {
+	return &nsBucket{seen: map[string]bool{}, count: map[string]int{}}
+}
+
+func (b *nsBucket) note(ns string) {
+	if !b.seen[ns] {
+		b.seen[ns] = true
+		b.order = append(b.order, ns)
+	}
+}
+
+// partitionByNamespace splits names (recorded feature names) into the ones
+// that complete prefix directly (leaves) and the namespaces one level below
+// base that some of them share. exact reports whether prefix itself already
+// names an existing feature.
+func partitionByNamespace(names []string, prefix, base string) (leaves []string, ns *nsBucket, exact bool) {
+	ns = newNsBucket()
 	for _, n := range names {
 		if n == prefix {
 			exact = true
@@ -492,67 +539,63 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 		}
 		rest := n[len(base):]
 		if i := strings.Index(rest, "/"); i >= 0 {
-			ns := base + rest[:i]
-			note(ns)
-			nsCount[ns]++
+			name := base + rest[:i]
+			ns.note(name)
+			ns.count[name]++
 			continue
 		}
-		out = append(out, candidate{Value: n, Kind: candFeature, Desc: featureDesc(records[n])})
+		leaves = append(leaves, n)
 	}
-	if creating {
-		// Namespaces survive, the features inside them do not.
-		out = out[:0]
+	return leaves, ns, exact
+}
 
-		// An emptied namespace is still a namespace: its shared skill and
-		// recorded sessions are exactly what the next feature under it wants
-		// to inherit, so it has to stay offerable once its last feature is
-		// gone. Failures are swallowed because a completer that goes silent
-		// mid-keystroke is worse than one missing a few entries. These land
-		// after the namespaces that still have features in them, which is the
-		// order worth having: what is open now, then what could be reopened.
-		if known, err := skills.Namespaces(m.Name); err == nil {
-			for _, ns := range known {
-				if !strings.HasPrefix(ns, base) {
-					continue
-				}
-				rest := ns[len(base):]
-				if rest == "" {
-					continue
-				}
-				// A deeper namespace still only contributes its next segment,
-				// the same as a feature path does.
-				if i := strings.Index(rest, "/"); i >= 0 {
-					rest = rest[:i]
-				}
-				note(base + rest)
-			}
+// namespacesFromSkills adds any namespace under base that still has a
+// recorded skill or session even though its last feature is gone.
+//
+// An emptied namespace is still a namespace: its shared skill and recorded
+// sessions are exactly what the next feature under it wants to inherit, so
+// it has to stay offerable once its last feature is gone. Failures are
+// swallowed because a completer that goes silent mid-keystroke is worse
+// than one missing a few entries.
+func namespacesFromSkills(project, base string, b *nsBucket) {
+	known, err := skills.Namespaces(project)
+	if err != nil {
+		return
+	}
+	for _, full := range known {
+		if !strings.HasPrefix(full, base) {
+			continue
 		}
+		rest := full[len(base):]
+		if rest == "" {
+			continue
+		}
+		// A deeper namespace still only contributes its next segment, the
+		// same as a feature path does.
+		if i := strings.Index(rest, "/"); i >= 0 {
+			rest = rest[:i]
+		}
+		b.note(base + rest)
 	}
-	for _, ns := range nsOrder {
-		out = append(out, candidate{
-			Value:     ns + "/",
-			Kind:      candNamespace,
-			Desc:      namespaceDesc(nsCount[ns]),
-			Continues: true,
-		})
-	}
+}
 
-	if creating && !exact {
-		// Slugged, because that is the name that will actually be created — a
-		// launcher that shows "My Feature" and produces "my-feature" is lying
-		// about what Enter does.
-		//
-		// The slug has to genuinely extend what is settled, not just be
-		// non-empty: Slug drops empty segments, so "onboarding/" and
-		// "onboarding/!!!" both come back as "onboarding" and would offer to
-		// create the namespace itself as a flat feature — the opposite of what
-		// someone who just typed a separator is asking for.
-		slug := feature.Slug(prefix)
-		if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] && records[slug] == nil {
-			out = append(out, candidate{Value: slug, Kind: candNew, Desc: "create this feature"})
-		}
+// newFeatureCandidate offers to create prefix as a new feature, when it
+// does not already name one and genuinely extends what is settled.
+func newFeatureCandidate(prefix, base string, records map[string]*state.Feature) (candidate, bool) {
+	// Slugged, because that is the name that will actually be created — a
+	// launcher that shows "My Feature" and produces "my-feature" is lying
+	// about what Enter does.
+	//
+	// The slug has to genuinely extend what is settled, not just be
+	// non-empty: Slug drops empty segments, so "onboarding/" and
+	// "onboarding/!!!" both come back as "onboarding" and would offer to
+	// create the namespace itself as a flat feature — the opposite of what
+	// someone who just typed a separator is asking for.
+	slug := feature.Slug(prefix)
+	if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] && records[slug] == nil {
+		return candidate{Value: slug, Kind: candNew, Desc: "create this feature"}, true
 	}
-	return out
+	return candidate{}, false
 }
 
 // namespaceDesc describes a namespace by what is currently open under it. A
