@@ -188,6 +188,11 @@ name = "norules"
 branch = "{{.Feature}}"
 toolchain = "auto"          # resolve mise/asdf versions per directory
 
+# Asserted on every open, before any service starts. A non-zero exit aborts
+# the open with the command's output. For what must be true each time a
+# feature comes up but is not a property of the worktree — see Hooks below.
+# precheck = "docker compose up -d --wait db && bin/rails db:prepare"
+
 # Feature slot 0 gets the base port, slot 1 gets base+1, and so on, so several
 # features run their own server at once.
 [ports]
@@ -267,6 +272,38 @@ broken URL.
 
 Services also receive `CANAVERAL_FEATURE`, `CANAVERAL_WORKTREE`,
 `CANAVERAL_PROJECT`, `CANAVERAL_ROOT` and `CANAVERAL_PORT_<NAME>`.
+
+## Hooks
+
+Three commands, distinguished by *when* they run. All of them execute in the
+feature's worktree with the resolved toolchain on `PATH`, so `bin/rails` and
+friends work exactly as they do for a service. A non-zero exit aborts, with
+the tail of the command's output attached.
+
+| Hook | Runs | For |
+| --- | --- | --- |
+| `worktree.setup` | once, when the worktree is created | `bundle install`, `npm ci` |
+| `database.setup` | once, when the worktree is created | creating this feature's databases |
+| `precheck` | **every open** | preconditions that live outside the worktree |
+
+The distinction that matters is the last one. The two `setup` hooks provision a
+worktree, and a worktree stays as it was left. A `precheck` asserts things about
+the machine *around* the worktree, which do not: the database server gets
+stopped, a colleague merges a migration, the VPN drops. Nothing touched the
+worktree, and yet the feature no longer comes up.
+
+```toml
+precheck = "docker compose -p {{.Project}} -f {{.Root}}/docker-compose.yml up -d --wait db && bin/rails db:prepare"
+precheck_timeout = "5m"     # the default
+```
+
+Put a precheck before your services and a dead database costs you a few seconds
+and an error naming the database. Leave it out and it costs you the full
+`ready.timeout` of every service that needs one, and the error names the
+readiness probe.
+
+Keep it idempotent and fast — it runs every time. `up -d` on a running
+container and `db:prepare` with nothing pending are both no-ops.
 
 ## Windows
 

@@ -182,6 +182,12 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		return nil, fmt.Errorf("save state: %w", err)
 	}
 
+	// Before services, so a precondition failure costs seconds and names
+	// itself rather than surfacing as a readiness probe timing out.
+	if err := runPrecheck(ctx, m, f, vars, baseEnv, r); err != nil {
+		return nil, err
+	}
+
 	if !opt.NoServices {
 		if err := reconcileServices(ctx, m, f, vars, baseEnv, res, r); err != nil {
 			res.abort(ctx, r)
@@ -461,15 +467,55 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 		} else {
 			r.Info("preparing databases")
 		}
-		db := worktree.Provision{
-			Setup:        dbSetup,
-			SetupTimeout: m.Database.SetupTimeout.Duration,
-			Env:          manifest.MergeEnv(env, m.Env),
-		}
-		if err := db.Apply(ctx, m.Root, f.Worktree, r.Info); err != nil {
+		if err := worktree.RunHook(ctx, "database setup", f.Worktree, dbSetup,
+			manifest.MergeEnv(env, m.Env), m.Database.SetupTimeout.Or(defaultSetupTimeout)); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// defaultSetupTimeout bounds a create-time setup command that has no explicit
+// one. Generous, because a first provision legitimately installs dependencies.
+const defaultSetupTimeout = 10 * time.Minute
+
+// defaultPrecheckTimeout bounds a precheck with no explicit one. Much shorter
+// than setup: a precheck runs on every open and asserts things that are either
+// already true or quick to make true, so a long wait means something is wrong
+// rather than that work is being done.
+const defaultPrecheckTimeout = 5 * time.Minute
+
+// runPrecheck satisfies the project's declared preconditions before anything
+// starts.
+//
+// Runs on every open, unlike worktree and database setup, which provision a
+// worktree once when it is created. The distinction is what the command is
+// asserting: setup is about the worktree, which stays as it was left, while a
+// precheck is about the machine around it, which does not. A database server
+// stops, a colleague merges a migration — nothing touched the worktree, and
+// the feature no longer comes up.
+func runPrecheck(ctx context.Context, m *manifest.Manifest, f *state.Feature,
+	vars tmpl.Vars, tc map[string]string, r Reporter) error {
+
+	cmd, err := tmpl.Render("precheck", m.Precheck, vars)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+
+	r.Step("precheck  %s", cmd)
+	// The same env services get, so a precheck can run the project's own
+	// tooling: the toolchain PATH is what makes `bin/rails` resolve at all,
+	// and the port and database-suffix variables are what make it act on this
+	// feature's resources rather than another's.
+	env := manifest.MergeEnv(baseEnvFor(m, f, tc), m.Env)
+	if err := worktree.RunHook(ctx, "precheck", f.Worktree, cmd, env,
+		m.PrecheckTimeout.Or(defaultPrecheckTimeout)); err != nil {
+		return err
+	}
+	r.OK("precheck")
 	return nil
 }
 
@@ -575,9 +621,21 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	}
 
 	if k := ready.Kind(); k != "" {
+		// Say so before blocking. ready.timeout is routinely a minute or two
+		// for anything as slow to boot as a Rails server, and a terminal that
+		// goes silent for that long is indistinguishable from a hang.
+		r.Info("waiting for %s readiness probe, up to %s", k, ready.Timeout.Or(probe.DefaultTimeout))
 		if err := probe.Wait(ctx, ready, rec.Dir, rec.LogPath, aliveCheck(ctx, rec.Unit, rec.LogPath)); err != nil {
 			_ = unit.Stop(ctx, rec.Unit)
 			unit.Reset(ctx, rec.Unit)
+			// A dead process already reports its log through aliveCheck. A
+			// timeout is the other case: still running, still not ready, and
+			// its own output is then the only thing that says why — a Rails
+			// server answering 500 because the database is down looks
+			// identical from outside to one that is merely slow.
+			if errors.Is(err, probe.ErrTimeout) {
+				err = fmt.Errorf("%w\n%s", err, tailIndent(rec.LogPath, 15))
+			}
 			if s.Optional {
 				r.Warn("optional service %s: %v", s.Name, err)
 				return false, nil

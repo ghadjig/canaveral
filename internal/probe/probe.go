@@ -4,6 +4,7 @@ package probe
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,6 +24,11 @@ const interval = 300 * time.Millisecond
 // Alive is called between attempts; returning false aborts the wait early
 // (for example when the underlying unit has already died).
 type Alive func() error
+
+// ErrTimeout reports that a probe never succeeded before its deadline. Callers
+// match on it to attach diagnostics this package cannot reach, chiefly the
+// service's own log.
+var ErrTimeout = errors.New("readiness probe timed out")
 
 // Wait blocks until the readiness probe succeeds, the timeout expires, or the
 // alive check fails. A probe with no configured check returns immediately.
@@ -48,13 +54,17 @@ func Wait(ctx context.Context, r manifest.Ready, dir, logPath string, alive Aliv
 		}
 		if err := check(ctx, r, dir, logPath); err == nil {
 			return nil
-		} else {
+		} else if lastErr == nil || ctx.Err() == nil {
+			// Past the deadline, check fails with the context's own error,
+			// which says nothing about why the service was not ready. The
+			// attempt before it — "got status 500", "connection refused" — is
+			// the one worth reporting, so do not let it be overwritten.
 			lastErr = err
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("readiness probe (%s) timed out after %s: %w", kind, timeout, lastErr)
+			return fmt.Errorf("%w (%s) after %s: %w", ErrTimeout, kind, timeout, lastErr)
 		case <-ticker.C:
 		}
 	}

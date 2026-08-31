@@ -14,6 +14,18 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Added
+
+- `precheck`, a manifest command run on **every** open, before any service
+  starts, aborting the open with its output when it fails. The existing
+  `worktree.setup` and `database.setup` run once, when the worktree is created,
+  which is right for provisioning a worktree and wrong for everything that has
+  to be true each time a feature comes up: a database server that is running,
+  migrations that match the branch. Those stop being true while nobody is
+  looking, and without somewhere to assert them the first sign of trouble is a
+  readiness probe timing out minutes later, blaming the probe. Bounded by
+  `precheck_timeout`, five minutes by default.
+
 ### Changed
 
 - `canaveral new` now completes every namespace the project has ever had, not
@@ -22,7 +34,31 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   last feature was torn down used to vanish from the launcher and the shell
   while still holding everything the next feature under it would inherit.
 
+- Starting a service now says it is waiting for the readiness probe, and for
+  how long. `ready.timeout` is routinely a minute or two for anything as slow
+  to boot as a Rails server, and a terminal that printed the service command
+  and then went silent for that long was indistinguishable from a hang.
+
+- A readiness probe that times out now reports the last failure that meant
+  something and prints the tail of the service's log. It used to report the
+  attempt the deadline cut short, which is never the interesting one: a Rails
+  server answering 500 for two minutes because its database was down came out
+  as `Get "http://localhost:3000/up": context deadline exceeded`, describing
+  the prober rather than the problem.
+
+- A failing `database.setup` now names itself, instead of reporting as
+  `worktree setup failed`. Both hooks shared a runner that knew only the one
+  name.
+
 ### Fixed
+
+- Every call to systemd is now bounded. `systemd-run` waits for the start job
+  over D-Bus and `systemctl --user show` for the status read, neither has a
+  timeout of its own, and both were given a context that only cancelled on
+  Ctrl-C — so an unresponsive user manager left `canaveral new` hanging after
+  `:: service <name>` with no error, ever. They now fail with a message naming
+  systemd instead. The status read mattered twice over: the readiness wait
+  calls it between attempts, where blocking outlived the probe's own timeout.
 
 - `canaveral new <namespace>/` no longer offers to create a feature named after
   the namespace itself. Slugging drops empty segments, so a trailing separator

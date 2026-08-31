@@ -44,13 +44,30 @@ type Manifest struct {
 	Terminal string            `toml:"terminal"`
 	Env      map[string]string `toml:"env"`
 	// Ports maps a logical name to the base port for feature slot 0.
-	Ports    map[string]int `toml:"ports"`
-	Database Database       `toml:"database"`
-	Worktree Worktree       `toml:"worktree"`
-	Services []Service      `toml:"service"`
-	Agents   []Agent        `toml:"agent"`
-	Windows  []Window       `toml:"window"`
-	Layout   Layout         `toml:"layout"`
+	Ports map[string]int `toml:"ports"`
+	// Precheck is a command run on every open, before any service starts,
+	// aborting the open when it exits non-zero.
+	//
+	// Distinct from worktree.setup and database.setup, which provision a
+	// worktree once when it is created. What belongs here is whatever must be
+	// true *each time* a feature comes up and is not a property of the
+	// worktree: a database server that is running, migrations that match the
+	// branch, a VPN that is connected. Those stop being true while nobody is
+	// looking, and the alternative to asserting them here is discovering it
+	// from a readiness probe several silent minutes later.
+	//
+	// Runs in the feature's worktree with the resolved toolchain on PATH, so
+	// `bin/rails` and friends work exactly as they do for a service.
+	Precheck string `toml:"precheck"`
+	// PrecheckTimeout bounds the precheck command. Defaults to 5 minutes:
+	// this runs on every open, so it should fail fast rather than wedge one.
+	PrecheckTimeout Duration  `toml:"precheck_timeout"`
+	Database        Database  `toml:"database"`
+	Worktree        Worktree  `toml:"worktree"`
+	Services        []Service `toml:"service"`
+	Agents          []Agent   `toml:"agent"`
+	Windows         []Window  `toml:"window"`
+	Layout          Layout    `toml:"layout"`
 
 	// Root is the absolute directory containing the manifest. Not read from TOML.
 	Root string `toml:"-"`
