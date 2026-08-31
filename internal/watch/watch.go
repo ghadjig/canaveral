@@ -280,6 +280,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			Pending:       h.Pending,
 			Error:         h.LastError,
 			Worked:        h.Worked.Seconds(),
+			SincePrompt:   h.SincePrompt.Seconds(),
 		}
 		if h.Todos.Total > 0 {
 			ag.Todos = &Todos{

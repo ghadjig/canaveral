@@ -14,7 +14,13 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- `canaveral watch` never emitted `since_prompt_seconds`. The field was
+  declared and documented in the snapshot format but never assigned, so
+  `omitempty` dropped it and no consumer could see how long an agent had been
+  working on the current request — `canaveral status` showed it from the same
+  probe all along.
 
 ## v0.1.2 — 2026-08-31
 
