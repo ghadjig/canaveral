@@ -9,6 +9,7 @@ package feature
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1124,7 +1125,57 @@ func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) []strin
 	return failed
 }
 
+// mergeTarget reports whether a feature's branch has landed in the repo's
+// default branch, and what that branch is called.
+//
+// ok is false when the question cannot be answered — no discoverable default
+// branch, a branch git no longer knows about. Callers treat that as "do not
+// block", because refusing to tear a feature down just because the repo has
+// no `main` would be a worse failure than the one being guarded against.
+func mergeTarget(ctx context.Context, f *state.Feature) (merged bool, target string, ok bool) {
+	if f.Root == "" || f.Branch == "" {
+		return false, "", false
+	}
+	def, err := worktree.DefaultBranch(ctx, f.Root)
+	if err != nil {
+		return false, "", false
+	}
+	if def == f.Branch {
+		// The feature is sitting on the default branch itself; there is
+		// nothing to merge it into.
+		return true, def, true
+	}
+	m, err := worktree.IsMerged(ctx, f.Root, f.Branch, def)
+	if err != nil {
+		return false, def, false
+	}
+	return m, def, true
+}
+
+// ErrUnmerged reports a teardown refused because the work has not landed.
+// Match it with errors.Is; the message itself comes from unmergedError.
+var ErrUnmerged = errors.New("not merged into the default branch")
+
+// unmergedError explains a refusal in the terms the user needs to act on:
+// which branch, which target, and the two ways forward.
+type unmergedError struct{ feature, branch, target string }
+
+func (e *unmergedError) Is(target error) bool { return target == ErrUnmerged }
+
+func (e *unmergedError) Error() string {
+	return fmt.Sprintf(
+		"%s is not merged into %s\n  land it with `canaveral merge %s`\n  or discard the workspace with `canaveral rm %s --force` (the branch is kept)",
+		e.branch, e.target, e.feature, e.feature)
+}
+
 // Remove tears a feature down: units, windows, worktree and state.
+//
+// Refuses outright when the feature's branch has not been merged into the
+// repo's default branch, unless force is set or the worktree is being kept.
+// Committed work survives on the branch either way — Remove has never deleted
+// an unmerged branch — but tearing down the workspace, ports and agent of
+// something you have not landed yet is nearly always a mistake, and the branch
+// left behind is easy to lose track of.
 //
 // Once the worktree is gone, the branch is deleted too if (and only if) it
 // has been fully merged into the repo's default branch — merge history is
@@ -1132,6 +1183,15 @@ func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) []strin
 // kept regardless of keepBranch. keepBranch exists purely to opt out of
 // deletion even when merged, e.g. to keep it around for a while longer.
 func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
+	// Checked before anything else: every step below this point is
+	// destructive, and stopping a feature's services only to then refuse to
+	// remove it would leave it half torn down.
+	if !force && !keepWorktree && f.Worktree != "" {
+		if merged, target, ok := mergeTarget(ctx, f); ok && !merged {
+			return &unmergedError{feature: f.Name, branch: f.Branch, target: target}
+		}
+	}
+
 	// Best-effort: if this feature is namespaced, remember its newest
 	// opencode session before tearing down its agent, so a later sibling
 	// under the same namespace can still fork from it even though this

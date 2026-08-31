@@ -42,7 +42,7 @@ $ canaveral new small-fixes
 | `canaveral reset [feature...]` | Bring up whatever is missing; `--all` for every feature |
 | `canaveral ls` | Features, branches, ports, service and window counts |
 | `canaveral status [feature...]` | Per-item state, idle/worked time, CPU, memory, tokens, cost, branch status |
-| `canaveral rm <feature>` | Stop everything and drop the worktree; deletes the branch too once merged |
+| `canaveral rm [feature]` | Stop everything and drop the worktree; defaults to the feature you're in |
 | `canaveral prune` | Stop leftover units whose feature no longer exists; `--dry-run` to look first |
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
@@ -78,6 +78,26 @@ Services must be named; there is no "restart everything". The feature defaults
 to the worktree you are in, so name it only to reach a different one
 (`canaveral restart small-fixes web`); a leading argument that is not one of the
 manifest's services is read as the feature.
+
+`canaveral rm` and `canaveral merge` both default to whichever feature's
+worktree you are standing in, so finishing up is `canaveral merge` from where
+you already are.
+
+`rm` refuses a feature whose branch has not been merged into the default
+branch:
+
+```
+$ canaveral rm
+canaveral: mywork is not merged into main
+  land it with `canaveral merge mywork`
+  or discard the workspace with `canaveral rm mywork --force` (the branch is kept)
+```
+
+Committed work was never actually at risk — `rm` has always kept an unmerged
+branch — but tearing down the workspace, ports and agent of something you
+haven't landed leaves a branch behind that is easy to lose track of. `--force`
+removes the workspace anyway and still keeps the branch; `--all` skips
+unmerged features and says so rather than stopping.
 
 Command names are reserved and cannot be used as feature names. Use
 `canaveral open <name>` if you need a feature whose name clashes.

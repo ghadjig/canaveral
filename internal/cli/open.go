@@ -236,12 +236,12 @@ func runReset(ctx context.Context, args []string) error {
 func runRm(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral rm <feature...> [flags]\n\nStop a feature and remove its worktree. The branch is deleted too if it has\nalready been fully merged into the default branch; otherwise it is kept.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral rm [feature...] [flags]\n\nStop a feature and remove its worktree. Defaults to whichever feature's\nworktree you're currently in.\n\nRefuses to remove a feature whose branch has not been merged into the\ndefault branch; merge it first, or pass --force. Once removed, the branch\nis deleted too if it was fully merged, and kept otherwise.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (
 		keep       = fs.Bool("keep-worktree", false, "leave the worktree on disk")
-		force      = fs.Bool("force", false, "remove the worktree even with uncommitted changes")
+		force      = fs.Bool("force", false, "remove even with uncommitted changes or an unmerged branch")
 		keepBranch = fs.Bool("keep-branch", false, "never delete the branch, even if merged")
 		all        = fs.Bool("all", false, "remove every feature of the project")
 	)
@@ -261,7 +261,15 @@ func runRm(ctx context.Context, args []string) error {
 		}
 	}
 	if len(names) == 0 {
-		return fmt.Errorf("specify a feature name, or use --all")
+		// Default to the feature you are standing in, the same way `merge`
+		// and `restart` do. Removing a feature from inside its own worktree
+		// is the common case — you finish, you tear it down — and having to
+		// name what you are already in was busywork.
+		f, err := currentFeature(m)
+		if err != nil {
+			return fmt.Errorf("not inside a feature worktree; specify a feature name, or use --all")
+		}
+		names = []string{f.Name}
 	}
 
 	r := reporter{}
@@ -276,6 +284,12 @@ func runRm(ctx context.Context, args []string) error {
 		if err := feature.Remove(ctx, f, *keep, *force, *keepBranch, r); err != nil {
 			if len(names) == 1 {
 				return err
+			}
+			// Across a batch the full explanation repeats badly; one line
+			// each is enough to see what was left alone and why.
+			if errors.Is(err, feature.ErrUnmerged) {
+				r.Warn("%s: not merged into the default branch, skipping", name)
+				continue
 			}
 			r.Warn("%v", err)
 		}

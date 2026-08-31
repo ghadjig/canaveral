@@ -12,6 +12,20 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Changed
+
+- `canaveral rm` with no arguments removes the feature whose worktree you are
+  standing in, the way `merge` and `restart` already did, instead of demanding
+  a name you had just typed your way into.
+- `canaveral rm` refuses a feature whose branch has not been merged into the
+  default branch. Committed work was never at risk — an unmerged branch has
+  always been kept — but tearing down the workspace, ports and agent of
+  something unlanded leaves a branch behind that is easy to lose track of.
+  `--force` removes it anyway and still keeps the branch; `--all` skips
+  unmerged features with a one-line reason rather than stopping.
+
 ## v0.2.0 — 2026-08-31
 
 ### Added

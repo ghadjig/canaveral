@@ -3,9 +3,11 @@ package feature
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -539,3 +541,125 @@ func (quietReporter) Step(string, ...any) {}
 func (quietReporter) OK(string, ...any)   {}
 func (quietReporter) Info(string, ...any) {}
 func (quietReporter) Warn(string, ...any) {}
+
+// gitFeature builds a real repo with a feature branch and returns a state
+// record pointing at it. mergeTarget shells out to git, so there is no
+// meaningful way to test it against a fake.
+func gitFeature(t *testing.T, merge bool) *state.Feature {
+	t.Helper()
+	// These tests run Remove far enough to touch the state directory, and
+	// this suite executes inside a real canaveral worktree where XDG_STATE_HOME
+	// points at the live one. Isolate it.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "init")
+
+	run("checkout", "-q", "-b", "feat")
+	if err := os.WriteFile(filepath.Join(repo, "b.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "work")
+	run("checkout", "-q", "main")
+	if merge {
+		run("merge", "-q", "--no-ff", "-m", "merge feat", "feat")
+	}
+	return &state.Feature{
+		Project: "p", Name: "feat", Root: repo, Branch: "feat",
+		Worktree: filepath.Join(repo, "wt"),
+	}
+}
+
+func TestMergeTargetDetectsUnmergedBranch(t *testing.T) {
+	merged, target, ok := mergeTarget(context.Background(), gitFeature(t, false))
+	if !ok {
+		t.Fatal("mergeTarget could not answer for a plain repo")
+	}
+	if merged {
+		t.Error("a branch with its own commit is not merged into main")
+	}
+	if target != "main" {
+		t.Errorf("target = %q, want main", target)
+	}
+}
+
+func TestMergeTargetDetectsMergedBranch(t *testing.T) {
+	merged, target, ok := mergeTarget(context.Background(), gitFeature(t, true))
+	if !ok || !merged {
+		t.Errorf("merged = %v, ok = %v, want both true", merged, ok)
+	}
+	if target != "main" {
+		t.Errorf("target = %q, want main", target)
+	}
+}
+
+func TestMergeTargetTreatsTheDefaultBranchAsMerged(t *testing.T) {
+	// A feature sitting on main itself has nothing to be merged into, and
+	// must not be blocked from removal by the guard.
+	f := gitFeature(t, false)
+	f.Branch = "main"
+	merged, _, ok := mergeTarget(context.Background(), f)
+	if !ok || !merged {
+		t.Errorf("merged = %v, ok = %v, want both true", merged, ok)
+	}
+}
+
+func TestMergeTargetCannotAnswerWithoutARepo(t *testing.T) {
+	// ok=false means "do not block": refusing teardown because the repo has
+	// no discoverable default branch would be worse than the risk guarded.
+	f := &state.Feature{Project: "p", Name: "f", Root: t.TempDir(), Branch: "feat"}
+	if _, _, ok := mergeTarget(context.Background(), f); ok {
+		t.Error("mergeTarget claimed an answer for a non-repo")
+	}
+}
+
+func TestMergeTargetCannotAnswerWithoutABranch(t *testing.T) {
+	f := &state.Feature{Project: "p", Name: "f", Root: "", Branch: ""}
+	if _, _, ok := mergeTarget(context.Background(), f); ok {
+		t.Error("mergeTarget claimed an answer with no root or branch")
+	}
+}
+
+func TestRemoveRefusesUnmergedWork(t *testing.T) {
+	f := gitFeature(t, false)
+	err := Remove(context.Background(), f, false, false, false, quietReporter{})
+	if !errors.Is(err, ErrUnmerged) {
+		t.Fatalf("Remove err = %v, want ErrUnmerged", err)
+	}
+	// The refusal must come before anything destructive: state is still there.
+	if !strings.Contains(err.Error(), "canaveral merge feat") {
+		t.Errorf("error should point at merge: %v", err)
+	}
+}
+
+func TestRemoveAllowsUnmergedWorkWithForce(t *testing.T) {
+	f := gitFeature(t, false)
+	// Not a full teardown (no state file, no worktree), but it must get past
+	// the guard rather than refusing.
+	err := Remove(context.Background(), f, false, true, false, quietReporter{})
+	if errors.Is(err, ErrUnmerged) {
+		t.Error("--force must override the merge guard")
+	}
+}
+
+func TestRemoveSkipsTheGuardWhenKeepingTheWorktree(t *testing.T) {
+	f := gitFeature(t, false)
+	err := Remove(context.Background(), f, true, false, false, quietReporter{})
+	if errors.Is(err, ErrUnmerged) {
+		t.Error("--keep-worktree leaves the checkout and branch intact; nothing to guard")
+	}
+}
