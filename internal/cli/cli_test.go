@@ -145,3 +145,63 @@ func TestShorten(t *testing.T) {
 		t.Errorf("shorten should not pad: %q", got)
 	}
 }
+
+func TestNearestCatchesCommandTypos(t *testing.T) {
+	// The motivating case: `canaveral stratus` used to spawn a feature.
+	if got := nearest("stratus", commandNames()); got != "status" {
+		t.Errorf("nearest(stratus) = %q, want status", got)
+	}
+	if got := nearest("merg", commandNames()); got != "merge" {
+		t.Errorf("nearest(merg) = %q, want merge", got)
+	}
+}
+
+func TestNearestStaysQuietOnRealFeatureNames(t *testing.T) {
+	// A deliberate feature name must not be second-guessed.
+	for _, n := range []string{"small-fixes", "onboarding", "fix-dangling"} {
+		if got := nearest(n, commandNames()); got != "" {
+			t.Errorf("nearest(%q) = %q, want no suggestion", n, got)
+		}
+	}
+}
+
+func TestNearestWillNotConfuseShortDestructiveCommands(t *testing.T) {
+	// "ls" and "rm" are one edit apart; suggesting the wrong one is worse
+	// than suggesting nothing.
+	if got := nearest("rs", commandNames()); got != "" {
+		t.Errorf("nearest(rs) = %q, want no suggestion", got)
+	}
+}
+
+func TestEditDistance(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"abc", "abc", 0},
+		{"stratus", "status", 1},
+		{"kitten", "sitting", 3},
+		{"", "abc", 3},
+	}
+	for _, c := range cases {
+		if got := editDistance(c.a, c.b); got != c.want {
+			t.Errorf("editDistance(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestNewAndPruneAreRegistered(t *testing.T) {
+	// Bare dispatch only opens existing features now, so `new` has to exist
+	// for anything to be creatable at all — and being registered is what
+	// reserves it against a feature shadowing it.
+	have := map[string]bool{}
+	for _, c := range commands() {
+		have[c.name] = true
+	}
+	for _, n := range []string{"new", "prune"} {
+		if !have[n] {
+			t.Errorf("command %q is not registered", n)
+		}
+	}
+}

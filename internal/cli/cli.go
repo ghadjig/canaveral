@@ -43,12 +43,14 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"init", "write a starter canaveral.toml for a project", runInit},
-		{"open", "open a feature explicitly (for names clashing with commands)", runOpen},
+		{"new", "create a feature: worktree, branch, services, agent and windows", runNew},
+		{"open", "open an existing feature explicitly (for names clashing with commands)", runOpen},
 		{"reset", "bring up whatever is missing for a feature", runReset},
 		{"restart", "stop and restart named services of a feature", runRestart},
 		{"ls", "list features", runLs},
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
+		{"prune", "stop leftover units whose feature no longer exists", runPrune},
 		{"merge", "rebase and merge the current (or named) feature, then tear it down", runMerge},
 		{"attach", "attach a terminal to a feature's agent", runAttach},
 		{"logs", "print or follow a service or agent log", runLogs},
@@ -58,6 +60,18 @@ func commands() []command {
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
 	}
+}
+
+// commandNames returns every dispatchable command name, sorted.
+func commandNames() []string {
+	cs := commands()
+	out := make([]string, 0, len(cs)+2)
+	for _, c := range cs {
+		out = append(out, c.name)
+	}
+	out = append(out, "help", "version")
+	sort.Strings(out)
+	return out
 }
 
 // reserved lists names that cannot be used as bare feature arguments.
@@ -71,8 +85,9 @@ func reserved() map[string]bool {
 
 // Main dispatches a command and returns a process exit code.
 //
-// A bare word that is not a known command is treated as a feature name, so
-// `canaveral small-fixes` opens that feature.
+// A bare word that is not a known command is treated as the name of an
+// *existing* feature, so `canaveral small-fixes` opens that feature. It never
+// creates one — see openFeature for why `canaveral new` earns its keyword.
 func Main(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		usage(os.Stdout)
@@ -116,7 +131,8 @@ func Main(ctx context.Context, args []string) int {
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "canaveral - one workspace per feature")
 	fmt.Fprintln(w, "\nUsage:")
-	fmt.Fprintln(w, "  canaveral <feature>        create or reconcile a feature, then focus it")
+	fmt.Fprintln(w, "  canaveral new <feature>    create a feature workspace")
+	fmt.Fprintln(w, "  canaveral <feature>        reconcile an existing feature, then focus it")
 	fmt.Fprintln(w, "  canaveral <command> ...")
 	fmt.Fprintln(w, "\nCommands:")
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
@@ -127,10 +143,62 @@ func usage(w io.Writer) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w, "\nExamples:")
+	fmt.Fprintln(w, "  canaveral new small-fixes  create the small-fixes feature")
 	fmt.Fprintln(w, "  canaveral small-fixes      open the small-fixes feature")
 	fmt.Fprintln(w, "  canaveral reset            respawn anything missing")
 	fmt.Fprintln(w, "  canaveral ls               list features and their ports")
 	fmt.Fprintln(w, "\nRun 'canaveral <command> -h' for command flags.")
+}
+
+// nearest returns the candidate closest to s, or "" when none is close enough.
+//
+// Deliberately timid. A suggestion is printed right next to potentially
+// destructive commands, and "rs" sits one edit from both `ls` and `rm` — so
+// anything shorter than four characters gets no suggestion at all, and a tie
+// between two candidates gets none either.
+func nearest(s string, candidates []string) string {
+	if len(s) < 4 {
+		return ""
+	}
+	max := 1
+	if len(s) > 6 {
+		max = 2
+	}
+	best, bestD, tied := "", max+1, false
+	for _, c := range candidates {
+		switch d := editDistance(s, c); {
+		case d < bestD:
+			best, bestD, tied = c, d, false
+		case d == bestD:
+			tied = true
+		}
+	}
+	if tied {
+		return ""
+	}
+	return best
+}
+
+// editDistance is Levenshtein distance over bytes, which is enough for the
+// ASCII slugs canaveral deals in.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(prev[j]+1, min(curr[j-1]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
 }
 
 // parseArgs parses flags that may appear before, after or between positional

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -23,10 +24,31 @@ func loadManifest() (*manifest.Manifest, error) {
 	return manifest.Load(root)
 }
 
+func runNew(ctx context.Context, args []string) error {
+	return openFeature(ctx, "new", args, true)
+}
+
 func runOpen(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("open", flag.ContinueOnError)
+	return openFeature(ctx, "open", args, false)
+}
+
+// openFeature reconciles a feature, creating it only when asked to.
+//
+// Creation is gated behind `canaveral new` because bare dispatch treats any
+// unrecognised word as a feature name, and the cost of a typo was wildly
+// asymmetric: `canaveral stratus` silently built a worktree, a branch, a
+// server and an agent, which then had to be found and torn down. Bare
+// dispatch now only ever opens something that already exists, so a mistyped
+// command fails in the one way you want it to — immediately and without side
+// effects.
+func openFeature(ctx context.Context, verb string, args []string, create bool) error {
+	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral <feature> [flags]\n\nCreate or reconcile a feature workspace in the background, without\nswitching your view to it. Pass --focus to jump there once it's ready.\n\nFlags:")
+		if create {
+			fmt.Fprintln(os.Stderr, "Usage: canaveral new <feature> [flags]\n\nCreate a feature workspace — worktree, branch, services, agent and windows —\nin the background, without switching your view to it. Pass --focus to jump\nthere once it's ready.\n\nFlags:")
+		} else {
+			fmt.Fprintln(os.Stderr, "Usage: canaveral <feature> [flags]\n\nReconcile an existing feature, bringing up whatever is missing, without\nswitching your view to it. Pass --focus to jump there once it's ready.\nUse `canaveral new <feature>` to create one.\n\nFlags:")
+		}
 		fs.PrintDefaults()
 	}
 	var (
@@ -41,6 +63,9 @@ func runOpen(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
+		if create {
+			return fmt.Errorf("specify a feature name, e.g. `canaveral new small-fixes`")
+		}
 		return fmt.Errorf("specify a feature name, e.g. `canaveral small-fixes`")
 	}
 	if len(pos) > 1 {
@@ -54,6 +79,19 @@ func runOpen(ctx context.Context, args []string) error {
 	name := feature.Slug(pos[0])
 	if reserved()[name] {
 		return fmt.Errorf("%q is a canaveral command; feature names cannot shadow commands", name)
+	}
+
+	// Distinguish "no such feature" from an unreadable record: a corrupt
+	// state file must not look like a free name, or `new` would allocate a
+	// fresh slot over the top of a feature that still has units running.
+	_, loadErr := state.Load(m.Name, name)
+	switch {
+	case loadErr != nil && !errors.Is(loadErr, state.ErrNotFound):
+		return loadErr
+	case create && loadErr == nil:
+		return fmt.Errorf("feature %q already exists; run `canaveral %s` to bring it up to date", name, name)
+	case !create && loadErr != nil:
+		return unknownFeature(m.Name, name)
 	}
 
 	opt := feature.Options{
@@ -92,6 +130,23 @@ func runOpen(ctx context.Context, args []string) error {
 		}
 	}
 	return nil
+}
+
+// unknownFeature explains a name that is neither a command nor a feature.
+//
+// The overwhelmingly likely cause is a mistyped command — `stratus` for
+// `status` — so guess at that first and only then mention creating a feature,
+// which is almost certainly not what was wanted.
+func unknownFeature(project, name string) error {
+	msg := fmt.Sprintf("no feature %q in %s", name, project)
+	if s := nearest(name, commandNames()); s != "" {
+		msg += fmt.Sprintf("\n  did you mean `canaveral %s`?", s)
+	} else if known, err := state.List(project); err == nil {
+		if s := nearest(name, known); s != "" {
+			msg += fmt.Sprintf("\n  did you mean `canaveral %s`?", s)
+		}
+	}
+	return fmt.Errorf("%s\n  create it with `canaveral new %s`", msg, name)
 }
 
 func printFeatureSummary(f *state.Feature) {
@@ -152,7 +207,7 @@ func runReset(ctx context.Context, args []string) error {
 			return err
 		}
 		if len(names) == 0 {
-			return fmt.Errorf("no features exist for %s yet (create one with `canaveral <feature>`)", m.Name)
+			return fmt.Errorf("no features exist for %s yet (create one with `canaveral new <feature>`)", m.Name)
 		}
 	}
 
@@ -305,7 +360,7 @@ func runInit(ctx context.Context, args []string) error {
 	}
 	r := reporter{}
 	r.OK("wrote %s", homeTilde(out))
-	r.Info("review it, then run: canaveral <feature>")
+	r.Info("review it, then run: canaveral new <feature>")
 	return nil
 }
 
