@@ -3,19 +3,19 @@
 One workspace per feature.
 
 ```
-canaveral small-fixes
-canaveral change-onboarding-workflow
-canaveral add-tasks-per-role
-canaveral onboarding/ask-for-name-at-first-step
+canaveral new small-fixes
+canaveral new change-onboarding-workflow
+canaveral new add-tasks-per-role
+canaveral new onboarding/ask-for-name-at-first-step
 ```
 
-Each command creates (or repairs) a fully independent universe for that feature:
+Each command creates a fully independent universe for that feature:
 its own git worktree and branch, its own ports, its own services and agent, and
 its own Hyprland workspace with the windows you declared — opencode, a terminal,
 tailed server logs, a browser.
 
 ```
-$ canaveral small-fixes
+$ canaveral new small-fixes
 :: norules/small-fixes  ~/projects/norules
  ok worktree ~/projects/norules/worktrees/small-fixes on small-fixes
     linked node_modules
@@ -37,11 +37,13 @@ $ canaveral small-fixes
 
 | Command | Purpose |
 | --- | --- |
-| `canaveral <feature>` | Create or repair a feature; add `--focus` to also switch to its workspace |
+| `canaveral new <feature>` | Create a feature; add `--focus` to also switch to its workspace |
+| `canaveral <feature>` | Repair an existing feature; add `--focus` to also switch to its workspace |
 | `canaveral reset [feature...]` | Bring up whatever is missing; `--all` for every feature |
 | `canaveral ls` | Features, branches, ports, service and window counts |
 | `canaveral status [feature...]` | Per-item state, idle/worked time, CPU, memory, tokens, cost, branch status |
 | `canaveral rm <feature>` | Stop everything and drop the worktree; deletes the branch too once merged |
+| `canaveral prune` | Stop leftover units whose feature no longer exists; `--dry-run` to look first |
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
 | `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
@@ -53,8 +55,22 @@ $ canaveral small-fixes
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
-`canaveral <feature>` and `canaveral reset` run the same reconcile pass, so both
-are idempotent: run them any number of times and only the missing pieces start.
+Creating a feature needs the `new` keyword. Everything else is a bare word, and
+an unrecognised bare word used to be taken as "make me this feature" — so one
+fumbled keystroke (`canaveral stratus` for `status`) would silently build a
+worktree, a branch, a server and an agent that you then had to go and find.
+A bare name now only ever opens something that already exists, and a near miss
+says so:
+
+```
+$ canaveral stratus
+canaveral: no feature "stratus" in norules
+  did you mean `canaveral status`?
+  create it with `canaveral new stratus`
+```
+
+`canaveral new`, `canaveral <feature>` and `canaveral reset` run the same
+reconcile pass, so all three are idempotent: run them any number of times and only the missing pieces start.
 A service that is already up is left alone, so `reset` will not pick up a code
 change — `canaveral restart web` is what bounces one. It truncates the log and
 waits on the manifest's `ready`, neither of which `systemctl restart` does.
@@ -66,13 +82,22 @@ manifest's services is read as the feature.
 Command names are reserved and cannot be used as feature names. Use
 `canaveral open <name>` if you need a feature whose name clashes.
 
+Services and agents are transient systemd units, and canaveral records each one
+before asking systemd to start it, so an interrupted or failed launch is still
+something `rm` knows to stop. Teardown asks systemd what is actually running
+rather than trusting that record, and runs even when the context that triggered
+it has already been cancelled — a Ctrl-C part-way through `canaveral new` stops
+what it started rather than leaving a server holding the feature's port. If one
+does escape anyway, `canaveral prune` reaps every feature unit that no feature
+still claims.
+
 ## Namespaces
 
 A feature name can contain `/`, like a git ref:
 
 ```
-canaveral onboarding/ask-for-name
-canaveral onboarding/skip-button
+canaveral new onboarding/ask-for-name
+canaveral new onboarding/skip-button
 ```
 
 Each is still a fully independent feature — its own branch (`onboarding/ask-for-name`),

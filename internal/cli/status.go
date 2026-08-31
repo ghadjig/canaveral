@@ -49,7 +49,7 @@ func runLs(ctx context.Context, args []string) error {
 		return nil
 	}
 	if len(features) == 0 {
-		fmt.Println("no features yet — create one with `canaveral <feature>`")
+		fmt.Println("no features yet — create one with `canaveral new <feature>`")
 		return nil
 	}
 
@@ -258,7 +258,7 @@ func runStatus(ctx context.Context, args []string) error {
 				fmt.Println("[]")
 				return nil
 			}
-			fmt.Println("no features yet — create one with `canaveral <feature>`")
+			fmt.Println("no features yet — create one with `canaveral new <feature>`")
 			return nil
 		}
 		rows := collect(ctx, fsList)

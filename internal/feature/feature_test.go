@@ -474,3 +474,68 @@ func TestServiceNamesReportsEmpty(t *testing.T) {
 		t.Errorf("serviceNames = %v", got)
 	}
 }
+
+func TestUnitsForOrdersAgentsFirstThenServicesInReverse(t *testing.T) {
+	// Reverse service order matters: a service started later may depend on an
+	// earlier one, so it has to go down first.
+	f := &state.Feature{
+		Project: "unitsfor-test-project", Name: "nonexistent-feature",
+		Services: []state.Service{{Unit: "a"}, {Unit: "b"}, {Unit: "c"}},
+		Agents:   []state.Agent{{Unit: "agent"}},
+	}
+	got := UnitsFor(context.Background(), f)
+	want := []string{"agent", "c", "b", "a"}
+	if len(got) < len(want) {
+		t.Fatalf("UnitsFor = %v, want at least %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("UnitsFor[%d] = %q, want %q (full: %v)", i, got[i], w, got)
+		}
+	}
+}
+
+func TestUnitsForDeduplicates(t *testing.T) {
+	f := &state.Feature{
+		Project: "unitsfor-test-project", Name: "nonexistent-feature",
+		Services: []state.Service{{Unit: "dup"}, {Unit: "dup"}},
+		Agents:   []state.Agent{{Unit: "dup"}},
+	}
+	if got := UnitsFor(context.Background(), f); len(got) != 1 || got[0] != "dup" {
+		t.Errorf("UnitsFor = %v, want [dup]", got)
+	}
+}
+
+func TestUnitsForSkipsEmptyNames(t *testing.T) {
+	// An interrupted reconcile can leave a half-written record; stopping ""
+	// would ask systemctl to stop ".service".
+	f := &state.Feature{
+		Project: "unitsfor-test-project", Name: "nonexistent-feature",
+		Services: []state.Service{{Unit: ""}, {Unit: "real"}},
+	}
+	if got := UnitsFor(context.Background(), f); len(got) != 1 || got[0] != "real" {
+		t.Errorf("UnitsFor = %v, want [real]", got)
+	}
+}
+
+func TestAbortDoesNothingWithoutAnInterrupt(t *testing.T) {
+	// An ordinary failure leaves healthy units up on purpose so `reset` can
+	// adopt them instead of re-running a slow application boot.
+	res := &Result{
+		launched:     []string{"canaveral-x-y-svc-web"},
+		StartedSvc:   []string{"web"},
+		StartedAgent: []string{"main"},
+	}
+	res.abort(context.Background(), quietReporter{})
+	if len(res.StartedSvc) != 1 || len(res.StartedAgent) != 1 {
+		t.Error("abort cleared results without an interrupt")
+	}
+}
+
+// quietReporter satisfies Reporter without printing during tests.
+type quietReporter struct{}
+
+func (quietReporter) Step(string, ...any) {}
+func (quietReporter) OK(string, ...any)   {}
+func (quietReporter) Info(string, ...any) {}
+func (quietReporter) Warn(string, ...any) {}

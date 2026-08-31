@@ -96,13 +96,44 @@ func Start(ctx context.Context, s Spec) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// systemd-run is a D-Bus client, not a supervisor. Cancelling ctx
+		// kills the client, but the manager has already been asked to start
+		// the unit and happily goes on doing so — so an interrupted launch
+		// leaves a live process behind that no caller ever learns about.
+		// Undo it here, where the unit name is still known.
+		if ctx.Err() != nil {
+			_ = Stop(ctx, s.Name)
+			Reset(ctx, s.Name)
+		}
 		return fmt.Errorf("systemd-run %s: %w: %s", s.Name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
 
+// stopTimeout bounds a teardown command. It has to clear the units' own
+// TimeoutStopSec=15 with room to spare, or a service that ignores SIGTERM
+// would look like a stop failure even though systemd is about to SIGKILL it.
+const stopTimeout = 30 * time.Second
+
+// teardown detaches from ctx's cancellation.
+//
+// Teardown almost always runs *because* something went wrong, and the most
+// common something is the user pressing Ctrl-C — which cancels the very
+// context the stop would otherwise inherit. exec.CommandContext on a
+// cancelled context never execs at all, so every cleanup path in canaveral
+// used to become a silent no-op at exactly the moment it was needed, leaving
+// live units behind that nothing would ever stop.
+func teardown(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), stopTimeout)
+}
+
 // Stop stops a unit and waits for systemd to release it. Missing units are ignored.
+//
+// Runs to completion even if ctx is already cancelled; see teardown.
 func Stop(ctx context.Context, name string) error {
+	ctx, cancel := teardown(ctx)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, "systemctl", "--user", "stop", name+".service")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -118,7 +149,24 @@ func Stop(ctx context.Context, name string) error {
 
 // Reset clears a failed transient unit so the name can be reused immediately.
 func Reset(ctx context.Context, name string) {
+	ctx, cancel := teardown(ctx)
+	defer cancel()
 	_ = exec.CommandContext(ctx, "systemctl", "--user", "reset-failed", name+".service").Run()
+}
+
+// StopAll stops every named unit and clears it, returning the units that could
+// not be stopped. Order is preserved: callers stop services in reverse start
+// order so dependents go down before what they depend on.
+func StopAll(ctx context.Context, names []string) []string {
+	var failed []string
+	for _, n := range names {
+		if err := Stop(ctx, n); err != nil {
+			failed = append(failed, n)
+			continue
+		}
+		Reset(ctx, n)
+	}
+	return failed
 }
 
 // Status is a point-in-time view of a unit and its resource usage.
@@ -218,7 +266,8 @@ func readUint(path string) uint64 {
 	return v
 }
 
-// List returns the names of all canaveral units currently known to systemd.
+// List returns the names of all canaveral units currently known to systemd,
+// running or failed, sorted.
 func List(ctx context.Context) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "systemctl", "--user", "list-units",
 		"--type=service", "--all", "--plain", "--no-legend", "--no-pager",
@@ -237,6 +286,91 @@ func List(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// FeaturePrefixes returns the name prefixes every unit of a workspace shares.
+//
+// Two rather than one, per kind, so that "login" does not also claim
+// "login-fixes": "canaveral-p-login-svc-" is not a prefix of
+// "canaveral-p-login-fixes-svc-web", whereas "canaveral-p-login-" is.
+func FeaturePrefixes(workspace string) []string {
+	ws := sanitize(workspace)
+	return []string{
+		fmt.Sprintf("%s-%s-svc-", Prefix, ws),
+		fmt.Sprintf("%s-%s-agent-", Prefix, ws),
+	}
+}
+
+// IsFeatureUnit reports whether a unit name is a feature's service or agent,
+// as opposed to one of canaveral's own long-lived units like hyprwatch.
+func IsFeatureUnit(name string) bool {
+	rest, ok := strings.CutPrefix(name, Prefix+"-")
+	if !ok {
+		return false
+	}
+	return strings.Contains(rest, "-svc-") || strings.Contains(rest, "-agent-")
+}
+
+// Orphans returns the units in live that no workspace in known lays claim to.
+//
+// Pure so it can be tested without systemd. Ambiguity is resolved in favour of
+// leaving a unit alone: reaping something a live feature still needs is far
+// worse than missing a corpse, which the next sweep catches anyway.
+func Orphans(live, known []string) []string {
+	var prefixes []string
+	for _, ws := range known {
+		prefixes = append(prefixes, FeaturePrefixes(ws)...)
+	}
+	var out []string
+	for _, u := range live {
+		if !IsFeatureUnit(u) {
+			continue
+		}
+		claimed := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(u, p) {
+				claimed = true
+				break
+			}
+		}
+		if !claimed {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// FeatureUnits returns every unit systemd currently holds for a workspace,
+// whether or not the feature's state file knows about it.
+//
+// State is written after a unit starts, so anything that interrupts a
+// reconcile in between leaves a unit that no record mentions. Unit names are
+// deterministic, so systemd itself can be asked instead — it is the only
+// source that cannot be out of date.
+//
+// The query detaches from ctx's cancellation for the same reason Stop does:
+// its only callers are teardown paths, which run precisely when ctx has been
+// cancelled, and a listing that returns nothing there would quietly reduce the
+// sweep to the state-file behaviour it exists to backstop.
+func FeatureUnits(ctx context.Context, workspace string) ([]string, error) {
+	ctx, cancel := teardown(ctx)
+	defer cancel()
+
+	all, err := List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefixes := FeaturePrefixes(workspace)
+	var out []string
+	for _, u := range all {
+		for _, p := range prefixes {
+			if strings.HasPrefix(u, p) {
+				out = append(out, u)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // Available reports whether a usable systemd user manager is reachable.

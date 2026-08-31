@@ -2,8 +2,9 @@
 //
 // Reconcile is idempotent and is the single entry point for both creating a
 // feature and repairing one: it brings up whatever is missing and leaves
-// whatever is already healthy untouched. `canaveral <feature>` and
-// `canaveral reset` differ only in whether they focus the workspace afterwards.
+// whatever is already healthy untouched. `canaveral new`, `canaveral
+// <feature>` and `canaveral reset` differ only in whether they create the
+// feature and whether they focus the workspace afterwards.
 package feature
 
 import (
@@ -54,6 +55,42 @@ type Result struct {
 	StartedSvc    []string
 	StartedAgent  []string
 	SpawnedWindow []string
+
+	// launched names every unit this pass asked systemd to start, recorded
+	// before the request goes out so a launch that is interrupted mid-flight
+	// is still known to have possibly happened. Only meaningful for undoing
+	// an aborted pass; see abort.
+	launched []string
+}
+
+// abort undoes a reconcile pass that was cut short by a signal.
+//
+// Only an interrupt triggers this. An ordinary failure — a ready probe that
+// timed out, an agent that never printed a URL — leaves the healthy units of
+// the pass running on purpose, because `canaveral reset` adopts them and
+// re-running a five-minute application boot to recover from an unrelated
+// error is worse than leaving it up. An interrupt is different: the user said
+// stop, and services they never asked to keep would otherwise sit there
+// holding the feature's ports.
+func (res *Result) abort(ctx context.Context, r Reporter) {
+	if ctx.Err() == nil || len(res.launched) == 0 {
+		return
+	}
+	// Reverse start order, so dependents go down before their dependencies.
+	names := make([]string, 0, len(res.launched))
+	for i := len(res.launched) - 1; i >= 0; i-- {
+		names = append(names, res.launched[i])
+	}
+	// unit.Stop deliberately ignores ctx's cancellation; that is the whole
+	// reason this can run at all.
+	failed := unit.StopAll(ctx, names)
+	if n := len(names) - len(failed); n > 0 {
+		r.OK("interrupted; stopped %d unit(s) started by this run", n)
+	}
+	if len(failed) > 0 {
+		r.Warn("could not stop %s — run `canaveral prune`", strings.Join(failed, ", "))
+	}
+	res.StartedSvc, res.StartedAgent = nil, nil
 }
 
 // pendingSpawn is a window whose Spawn arguments have been fully prepared
@@ -146,11 +183,13 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 
 	if !opt.NoServices {
 		if err := reconcileServices(ctx, m, f, vars, baseEnv, res, r); err != nil {
+			res.abort(ctx, r)
 			return nil, err
 		}
 	}
 	if !opt.NoAgents {
 		if err := reconcileAgents(ctx, m, f, vars, baseEnv, res, r); err != nil {
+			res.abort(ctx, r)
 			return nil, err
 		}
 	}
@@ -162,6 +201,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		// Agent URLs are only known after agents start, so windows render last.
 		vars = varsFor(ctx, m, f, res.Created)
 		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, originalWS); err != nil {
+			res.abort(ctx, r)
 			return nil, err
 		}
 		if err := state.Save(f); err != nil {
@@ -456,6 +496,11 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 			continue
 		}
 
+		// Recorded before the start request, not after: systemd owns the unit
+		// from the moment the request lands, so anything that interrupts the
+		// call in between must still be able to find it again.
+		res.launched = append(res.launched, rec.Unit)
+
 		started, err := startService(ctx, m, f, s, rec, base, vars, r)
 		if err != nil {
 			return err
@@ -466,6 +511,14 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		}
 		res.StartedSvc = append(res.StartedSvc, s.Name)
 		records = append(records, rec)
+
+		// Persist per service rather than once at the end. A later service
+		// failing used to discard the record of every healthy one before it,
+		// which left `rm` with nothing to stop and the ports held forever.
+		f.Services = records
+		if err := state.Save(f); err != nil {
+			return fmt.Errorf("save state: %w", err)
+		}
 	}
 	f.Services = records
 	return nil
@@ -617,6 +670,7 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 
 		unit.Reset(ctx, unitName)
 		r.Step("agent %s", a.Name)
+		res.launched = append(res.launched, unitName)
 		if err := unit.Start(ctx, unit.Spec{
 			Name:        unitName,
 			Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
@@ -629,12 +683,23 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		}
 		url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
 		if err != nil {
+			// An agent that never announced a URL is unusable and, unlike a
+			// service, nothing can adopt it later — the URL is only ever
+			// printed once, at startup. Leaving it running would strand an
+			// opencode server that no window can attach to.
+			_ = unit.Stop(ctx, unitName)
+			unit.Reset(ctx, unitName)
 			return fmt.Errorf("agent %q: %w", a.Name, err)
 		}
 		rec.URL, rec.Port = url, portOf(url)
 		r.OK("agent %s listening on %s", a.Name, url)
 		res.StartedAgent = append(res.StartedAgent, a.Name)
 		records = append(records, rec)
+
+		f.Agents = records
+		if err := state.Save(f); err != nil {
+			return fmt.Errorf("save state: %w", err)
+		}
 	}
 	f.Agents = records
 	return nil
@@ -1012,6 +1077,53 @@ func portOf(url string) int {
 	return p
 }
 
+// UnitsFor returns every systemd unit belonging to a feature: the ones its
+// state records, plus any the manager still holds that state does not mention.
+// Agents come first, then services in reverse start order, then strays.
+func UnitsFor(ctx context.Context, f *state.Feature) []string {
+	var names []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, a := range f.Agents {
+		add(a.Unit)
+	}
+	// Reverse order: dependents go down before what they depend on.
+	for i := len(f.Services) - 1; i >= 0; i-- {
+		add(f.Services[i].Unit)
+	}
+	// Ask systemd as well. A reconcile interrupted between starting a unit
+	// and saving the record leaves a unit that state has never heard of, and
+	// state is about to be deleted — after which the only way back to it is
+	// its name. This is what used to leave a live server holding a feature's
+	// port long after the feature was gone, answering the *next* feature's
+	// readiness probe from a deleted worktree.
+	if live, err := unit.FeatureUnits(ctx, f.Project+"-"+f.Name); err == nil {
+		for _, n := range live {
+			add(n)
+		}
+	}
+	return names
+}
+
+// stopFeatureUnits stops everything belonging to a feature and reports what
+// happened, returning the units that would not stop.
+func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) []string {
+	names := UnitsFor(ctx, f)
+	if len(names) == 0 {
+		return nil
+	}
+	failed := unit.StopAll(ctx, names)
+	// Count what actually stopped, not what was attempted: a teardown that
+	// silently stopped nothing used to report success just the same.
+	r.OK("stopped %d unit(s)", len(names)-len(failed))
+	return failed
+}
+
 // Remove tears a feature down: units, windows, worktree and state.
 //
 // Once the worktree is gone, the branch is deleted too if (and only if) it
@@ -1041,15 +1153,13 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		}
 	}
 
-	for _, a := range f.Agents {
-		_ = unit.Stop(ctx, a.Unit)
-		unit.Reset(ctx, a.Unit)
+	if failed := stopFeatureUnits(ctx, f, r); len(failed) > 0 {
+		// Deliberately not fatal: refusing to remove a feature because one
+		// unit is wedged would strand the worktree and branch too. Say so
+		// loudly instead — `prune` finds these by name once state is gone.
+		r.Warn("could not stop %s — run `canaveral prune` to reap it",
+			strings.Join(failed, ", "))
 	}
-	for i := len(f.Services) - 1; i >= 0; i-- {
-		_ = unit.Stop(ctx, f.Services[i].Unit)
-		unit.Reset(ctx, f.Services[i].Unit)
-	}
-	r.OK("stopped %d service(s), %d agent(s)", len(f.Services), len(f.Agents))
 
 	// Windows are closed last, deliberately. `canaveral merge` (and `remove`)
 	// is very often invoked from a terminal that is itself one of this

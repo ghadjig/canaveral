@@ -12,6 +12,51 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- `canaveral new <feature>` creates a feature. Creation now requires the
+  keyword.
+- `canaveral prune` stops leftover service and agent units whose feature no
+  longer exists, with `--dry-run` to look before reaping. These are what a
+  failed teardown leaves behind: a server still holding a feature's port,
+  serving a worktree that has been deleted.
+
+### Changed
+
+- A bare `canaveral <name>` only opens a feature that already exists; it no
+  longer creates one. Every other word on the command line is a command, so a
+  mistyped one (`canaveral stratus` for `status`) used to silently build a
+  worktree, branch, server and agent that you then had to find and tear down.
+  An unknown name is now an error that suggests the command you probably meant.
+- Teardown reports how many units actually stopped rather than how many it
+  tried to stop, and names any it could not.
+
+### Fixed
+
+- Interrupting `canaveral new` left its services and agents running with
+  nothing recording their existence. Three separate causes, all now fixed:
+  `systemd-run` is a D-Bus client, so killing it on Ctrl-C left the unit the
+  manager had already been asked to start; units were only written to state
+  after the whole reconcile succeeded, so an abort lost every record of them;
+  and `stop` inherited the cancelled context, which meant `exec` never ran it
+  at all and every cleanup path silently did nothing. Units are recorded before
+  they start, teardown ignores cancellation, and an interrupted run stops what
+  it started.
+- `canaveral rm` only stopped the units its state file listed, so anything
+  started by an interrupted reconcile survived it — and `rm` then deleted the
+  one record that could have found it. Teardown now asks systemd which units
+  the feature has, and stops those too.
+- A feature that failed part-way through no longer discards the record of the
+  services that did start; each is saved as it comes up.
+- An agent that never announced its URL was left running. Nothing could adopt
+  it later, since the URL is only printed once at startup.
+- A leaked unit kept the port its feature had been allocated. Because slots are
+  reused, the next feature was given that same port, failed to bind, and had
+  its readiness probe answered by the corpse — so it was declared ready while
+  its own server was dead.
+
 ## v0.1.3 — 2026-08-31
 
 ### Fixed
