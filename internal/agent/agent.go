@@ -482,7 +482,7 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	// The newest text on each side of the conversation. Messages arrive
 	// oldest-first and a message can hold several text parts, so simply
 	// keeping the last non-empty one seen lands on the most recent.
-	lastUserIdx, lastAssistantIdx := -1, -1
+	lastUserIdx, lastAssistantIdx, lastTodoWriteIdx := -1, -1, -1
 	assistantText := ""
 	for i := range msgs {
 		role := msgs[i].Info.Role
@@ -490,6 +490,9 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 			continue
 		}
 		for _, part := range msgs[i].Parts {
+			if role == "assistant" && part.Type == "tool" && strings.EqualFold(part.Tool, "todowrite") {
+				lastTodoWriteIdx = i
+			}
 			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
 				continue
 			}
@@ -553,6 +556,16 @@ func Probe(ctx context.Context, baseURL, dir string) Health {
 	}
 
 	h.Todos = fetchTodos(ctx, baseURL, newest.ID)
+	// A list with nothing left in_progress or pending is a finished plan.
+	// opencode never clears it, so without this check it would go on
+	// reporting the same "N/N done" bar forever, including once the
+	// conversation has moved on to unrelated work. If a newer prompt has
+	// arrived since the list was last touched, treat it the same way as a
+	// stale LastAssistant above and drop it, rather than showing finished
+	// work next to whatever the agent is doing now.
+	if h.Todos.Total > 0 && h.Todos.InProgress == 0 && h.Todos.Pending == 0 && lastUserIdx > lastTodoWriteIdx {
+		h.Todos = Todos{}
+	}
 	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, completedByID)
 	return h
 }

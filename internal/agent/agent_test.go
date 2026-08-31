@@ -561,6 +561,68 @@ func TestProbeReadsTodos(t *testing.T) {
 	}
 }
 
+// A todo list opencode reports as fully resolved (nothing in_progress or
+// pending) describes a task that has already wrapped up. If the
+// conversation has since moved on — a new user prompt arrived with no
+// further todowrite call — the list belongs to finished, unrelated work and
+// must not keep reporting as if it were live progress on whatever the agent
+// is doing now.
+func TestProbeClearsStaleCompletedTodos(t *testing.T) {
+	allDone := `[
+      {"content":"Verify schemas","status":"completed","priority":"high"},
+      {"content":"Fix parsing","status":"completed","priority":"high"}
+    ]`
+	msgs := msgList(
+		msgWithTool("todowrite", "completed", "", 1),
+		textMsg("user", "totally different follow-up ask"),
+	)
+	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Todos.Total != 0 {
+		t.Errorf("Todos = %+v, want zeroed once a newer prompt makes the finished list stale", h.Todos)
+	}
+}
+
+// The same finished list, but with no prompt after the last todowrite call,
+// must still be reported: the task just finished and nothing has moved on.
+func TestProbeKeepsCompletedTodosWithoutNewerPrompt(t *testing.T) {
+	allDone := `[
+      {"content":"Verify schemas","status":"completed","priority":"high"},
+      {"content":"Fix parsing","status":"completed","priority":"high"}
+    ]`
+	msgs := msgList(
+		textMsg("user", "do the thing"),
+		msgWithTool("todowrite", "completed", "", 1),
+	)
+	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Todos.Total != 2 || h.Todos.Completed != 2 {
+		t.Errorf("Todos = %+v, want the just-finished list still reported", h.Todos)
+	}
+}
+
+// A list that still has work outstanding must be kept even across a newer
+// prompt: follow-up guidance on an in-flight task does not make that task's
+// own list stale.
+func TestProbeKeepsInProgressTodosDespiteNewerPrompt(t *testing.T) {
+	stillGoing := `[
+      {"content":"Verify schemas","status":"completed","priority":"high"},
+      {"content":"Wire the widget","status":"in_progress","priority":"medium"}
+    ]`
+	msgs := msgList(
+		msgWithTool("todowrite", "completed", "", 1),
+		textMsg("user", "also handle the edge case"),
+	)
+	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, stillGoing)
+
+	h := Probe(context.Background(), srv.URL, "/w/mine")
+	if h.Todos.Total != 2 || h.Todos.Current != "Wire the widget" {
+		t.Errorf("Todos = %+v, want the in-progress list kept", h.Todos)
+	}
+}
+
 func TestProbeNoTodosIsZeroed(t *testing.T) {
 	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
 	h := Probe(context.Background(), srv.URL, "/w/mine")
