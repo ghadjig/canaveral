@@ -12,6 +12,25 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- `canaveral rebase [feature]` fetches from the remote and replays the
+  feature's branch on top of the default branch, defaulting to the feature
+  whose worktree you are standing in. It is the first half of `merge`, on its
+  own and repeatable, so a long-running feature can keep up with `main` a few
+  conflicts at a time instead of meeting all of them at the end. The fetch is
+  the part that matters: rebasing onto a local `main` last updated a week ago
+  catches up with nothing, so the target is `origin/main` (or `origin/master`),
+  not the local branch of the same name. `--onto` picks a different target,
+  `--remote` a different remote, `--no-fetch` skips the fetch.
+- Unlike the rebase inside `merge`, a conflicted `canaveral rebase` is left in
+  progress for `git rebase --continue`, rather than being aborted. Aborting is
+  right when the rebase is one step of something larger that must not
+  half-finish; it is wrong when the rebase is the whole command, since it
+  throws the work away in exactly the case you needed the command for.
+
 ## v0.4.0 — 2026-08-31
 
 ### Added

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -454,4 +455,208 @@ func TestRemoveStillRefusesRealWorkWithoutForce(t *testing.T) {
 	if _, err := os.Stat(wt); err != nil {
 		t.Error("worktree should still exist after a refused Remove")
 	}
+}
+
+// gitRunner returns a helper that runs git in dir and fails the test on error.
+func gitRunner(t *testing.T, dir string) func(...string) {
+	t.Helper()
+	return func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+}
+
+func TestFetchAndRemoteDefaultBranch(t *testing.T) {
+	ctx := context.Background()
+	upstream := t.TempDir()
+	up := gitRunner(t, upstream)
+	up("init", "-q", "-b", "main")
+	up("config", "user.email", "t@t")
+	up("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(upstream, "f.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	up("add", "-A")
+	up("commit", "-qm", "one")
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	if out, err := exec.Command("git", "clone", "-q", upstream, clone).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+
+	if !HasRemote(ctx, clone, "origin") {
+		t.Error("HasRemote(origin) = false for a clone")
+	}
+	if HasRemote(ctx, clone, "nowhere") {
+		t.Error("HasRemote(nowhere) = true")
+	}
+
+	got, err := RemoteDefaultBranch(ctx, clone, "origin")
+	if err != nil {
+		t.Fatalf("RemoteDefaultBranch: %v", err)
+	}
+	if got != "origin/main" {
+		t.Errorf("RemoteDefaultBranch = %q, want origin/main", got)
+	}
+
+	// origin/HEAD only exists because this was a clone; a remote added by hand
+	// has none, and the conventional-name fallback has to carry it. Delete it
+	// with symbolic-ref, not update-ref: the latter dereferences and would
+	// take origin/main with it.
+	gitRunner(t, clone)("symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	got, err = RemoteDefaultBranch(ctx, clone, "origin")
+	if err != nil {
+		t.Fatalf("RemoteDefaultBranch without origin/HEAD: %v", err)
+	}
+	if got != "origin/main" {
+		t.Errorf("RemoteDefaultBranch without origin/HEAD = %q, want origin/main", got)
+	}
+
+	// A commit landing upstream is invisible until we fetch.
+	if err := os.WriteFile(filepath.Join(upstream, "f.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	up("commit", "-qam", "two")
+
+	before, err := revParse(ctx, clone, "origin/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Fetch(ctx, clone, "origin"); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	after, err := revParse(ctx, clone, "origin/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Error("Fetch did not advance origin/main")
+	}
+
+	if err := Fetch(ctx, clone, "nowhere"); err == nil {
+		t.Error("Fetch from an unknown remote should fail")
+	}
+}
+
+func TestRemoteDefaultBranchUnresolvable(t *testing.T) {
+	repo := t.TempDir()
+	run := gitRunner(t, repo)
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if _, err := RemoteDefaultBranch(context.Background(), repo, "origin"); err == nil {
+		t.Error("RemoteDefaultBranch with no remote refs should fail")
+	}
+}
+
+// conflictRepo builds a repo whose "feat" branch conflicts with "main".
+func conflictRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	run := gitRunner(t, repo)
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	write := func(s string) {
+		if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("base\n")
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	run("checkout", "-q", "-b", "feat")
+	write("feat\n")
+	run("commit", "-qam", "feat")
+	run("checkout", "-q", "main")
+	write("main\n")
+	run("commit", "-qam", "main")
+	run("checkout", "-q", "feat")
+	return repo
+}
+
+func TestRebaseKeepingConflictsLeavesItInProgress(t *testing.T) {
+	ctx := context.Background()
+	repo := conflictRepo(t)
+
+	if RebaseInProgress(ctx, repo) {
+		t.Fatal("RebaseInProgress before any rebase")
+	}
+	err := RebaseKeepingConflicts(ctx, repo, "main")
+	if err == nil {
+		t.Fatal("RebaseKeepingConflicts on a conflict: want error")
+	}
+	if !errors.Is(err, ErrRebaseConflict) {
+		t.Errorf("error = %v, want ErrRebaseConflict", err)
+	}
+	if !RebaseInProgress(ctx, repo) {
+		t.Error("conflicted rebase was not left in progress")
+	}
+
+	gitRunner(t, repo)("rebase", "--abort")
+	if RebaseInProgress(ctx, repo) {
+		t.Error("RebaseInProgress after --abort")
+	}
+}
+
+func TestRebaseAbortsOnConflict(t *testing.T) {
+	ctx := context.Background()
+	repo := conflictRepo(t)
+
+	err := Rebase(ctx, repo, "main")
+	if err == nil {
+		t.Fatal("Rebase on a conflict: want error")
+	}
+	if errors.Is(err, ErrRebaseConflict) {
+		t.Error("Rebase should not report a conflict it already cleaned up")
+	}
+	if RebaseInProgress(ctx, repo) {
+		t.Error("Rebase left a half-finished rebase behind")
+	}
+}
+
+func TestRebaseKeepingConflictsSucceeds(t *testing.T) {
+	ctx := context.Background()
+	repo := t.TempDir()
+	run := gitRunner(t, repo)
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	run("checkout", "-q", "-b", "feat")
+	if err := os.WriteFile(filepath.Join(repo, "feat.txt"), []byte("feat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "feat")
+	run("checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "main")
+	run("checkout", "-q", "feat")
+
+	if err := RebaseKeepingConflicts(ctx, repo, "main"); err != nil {
+		t.Fatalf("RebaseKeepingConflicts: %v", err)
+	}
+	merged, err := IsMerged(ctx, repo, "main", "feat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged {
+		t.Error("feat is not on top of main after a clean rebase")
+	}
+}
+
+func revParse(ctx context.Context, dir, rev string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", rev).Output()
+	return strings.TrimSpace(string(out)), err
 }
