@@ -14,6 +14,10 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.1.1 — 2026-08-31
+
 ### Added
 
 - `canaveral ws-slot [n]` maps a stable, 1-indexed slot number to a feature's
