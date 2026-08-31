@@ -13,9 +13,12 @@ transient systemd `--user` units, driven from one Go binary.
 - **Run `go test ./...` before committing.** `go test -race ./...` too when you
   touch anything concurrent — the watch, probe, agent and hyprevents packages
   all have goroutines in play.
-- Note that `internal/manifest` `TestFindMissing` currently fails on a clean
-  checkout. That is pre-existing; don't attribute it to your change, but don't
-  add to it either.
+- **A test that reads the environment will lie to you here.** You are running
+  inside a feature worktree, so `CANAVERAL_ROOT`, `CANAVERAL_FEATURE` and the
+  port variables are all set, and a test that inherits them is not testing what
+  it claims. `t.Setenv` the ones your code path reads, including to `""`.
+  `TestFindMissing` failed for exactly this reason and was mistaken for a
+  pre-existing breakage for some time.
 
 ## Layout
 
