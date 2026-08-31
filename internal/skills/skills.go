@@ -26,9 +26,11 @@ package skills
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"time"
 
 	"github.com/bandito/canaveral/internal/state"
@@ -66,6 +68,59 @@ func Dir(project, namespace string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// Namespaces returns every namespace of a project that has a skill on disk,
+// slash-separated and sorted.
+//
+// This is the durable list, not the live one: a namespace's skill outlives
+// the features that wrote it, which is the entire point of keeping it out of
+// any single worktree. `canaveral new` completes from here so that starting
+// the next feature under a namespace stays one keystroke away long after the
+// last one was torn down — otherwise the namespace with the most accumulated
+// knowledge is the one you have to retype from memory.
+//
+// Deliberately read-only, unlike Dir: completion runs on every keystroke, and
+// merely looking at the launcher must not scaffold a SKILL.md for a namespace
+// nobody has committed to yet.
+func Namespaces(project string) ([]string, error) {
+	base, err := state.Dir()
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Join(base, "skills", project)
+
+	var out []string
+	err = filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			// A project with no skills yet is not an error, it is the common
+			// case; anything else is worth reporting.
+			if os.IsNotExist(err) && p == root {
+				return fs.SkipAll
+			}
+			return err
+		}
+		if !e.IsDir() || p == root {
+			return nil
+		}
+		// A nested namespace ("a/b") is a directory inside another one, so
+		// intermediate directories are walked past rather than skipped — but
+		// only those carrying a SKILL.md are namespaces in their own right.
+		if _, serr := os.Stat(filepath.Join(p, "SKILL.md")); serr != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func scaffold(namespace string) string {

@@ -414,9 +414,17 @@ Creating goes through the same `new` keyword the CLI requires, and the popup
 completes namespaces for it while refusing to offer names that already exist:
 
 ```
-norules new work        ->  workflows/
+norules new             ->  childcare-allowance/  documents/  leaves/  onboarding/
+work                    ->  workflows/
 <Tab> shiny-thing       ->  shiny-thing   (create this feature)
 ```
+
+The namespaces offered there are every namespace the project has ever had, not
+just the ones with a feature open right now. A namespace's shared skill and
+recorded sessions outlive the features that wrote them — that is the whole
+reason they live outside any worktree — so the namespace with the most
+accumulated knowledge is exactly the one you want one keystroke away when
+starting the next feature under it, not the one you have to retype from memory.
 
 The line is `<project> <argv>`, and `<argv>` is an ordinary canaveral command
 line — the whole thing maps onto `canaveral -C <project> <argv>`, which is shown

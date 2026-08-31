@@ -190,6 +190,65 @@ func TestLinkLeavesRealContentAlone(t *testing.T) {
 	}
 }
 
+func TestNamespacesListsWhatHasASkill(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	for _, ns := range []string{"onboarding", "leaves", "onboarding/deep"} {
+		if _, err := Dir("norules", ns); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Dir("other-project", "elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Namespaces("norules")
+	if err != nil {
+		t.Fatalf("Namespaces: %v", err)
+	}
+	want := []string{"leaves", "onboarding", "onboarding/deep"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Namespaces = %v, want %v (sorted, slash-separated, this project only)", got, want)
+	}
+}
+
+func TestNamespacesSkipsDirectoriesWithoutASkill(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Only "a/b" is a namespace; "a" is an intermediate directory that exists
+	// solely to hold it, and offering it would name something with no skill
+	// and no features behind it.
+	if _, err := Dir("norules", "a/b"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Namespaces("norules")
+	if err != nil {
+		t.Fatalf("Namespaces: %v", err)
+	}
+	if len(got) != 1 || got[0] != "a/b" {
+		t.Errorf("Namespaces = %v, want just the namespace that has a SKILL.md", got)
+	}
+}
+
+func TestNamespacesIsReadOnlyAndForgivingOfAnEmptyProject(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+
+	// Completion calls this on every keystroke: a project nobody has made a
+	// namespace in is the ordinary case, not an error, and merely asking must
+	// not scaffold anything.
+	got, err := Namespaces("norules")
+	if err != nil {
+		t.Fatalf("Namespaces on an unknown project: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Namespaces = %v, want none", got)
+	}
+	if _, err := os.Stat(filepath.Join(state, "canaveral", "skills", "norules")); err == nil {
+		t.Error("Namespaces created the skills directory; it must not write")
+	}
+}
+
 func TestSessionRecordRoundTrip(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
