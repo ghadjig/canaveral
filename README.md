@@ -630,6 +630,10 @@ canaveral 8d9fb0e-dirty built 2026-08-31T07:29:42Z
 A `-dirty` suffix means it was built from uncommitted changes. Set
 `CANAVERAL_VERSION` to override the derived string for a release build.
 
+Between releases the description carries the distance from the last tag —
+`v0.1.0-3-gbb9dacf` is three commits past `v0.1.0` — so a running binary maps
+back to an entry in [VERSIONS.md](VERSIONS.md).
+
 ## Testing
 
 ```
