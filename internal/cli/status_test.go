@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -105,6 +106,127 @@ func TestCollectBranchStatusSkipsFeaturesWithoutAWorktree(t *testing.T) {
 	got := collectBranchStatus(context.Background(), features)
 	if _, ok := got["no-worktree"]; ok {
 		t.Error("expected no entry for a feature with no worktree")
+	}
+}
+
+func TestCollectOrdersRowsByFeatureThenServiceAgentWindow(t *testing.T) {
+	f1 := &state.Feature{
+		Project: "collect-test", Name: "f1",
+		Services: []state.Service{{Name: "web", Unit: "canaveral-collect-test-f1-svc-web-nonexistent"}},
+		Agents:   []state.Agent{{Name: "main", Unit: "canaveral-collect-test-f1-agent-main-nonexistent"}},
+		Windows:  []state.Window{{Name: "term", Class: "canaveral-collect-test-f1-term-nonexistent"}},
+	}
+	f2 := &state.Feature{
+		Project: "collect-test", Name: "f2",
+		Services: []state.Service{{Name: "jobs", Unit: "canaveral-collect-test-f2-svc-jobs-nonexistent"}},
+	}
+
+	rows := collect(context.Background(), []*state.Feature{f1, f2})
+	want := []struct {
+		feature string
+		kind    rowKind
+		name    string
+	}{
+		{"f1", kindService, "web"},
+		{"f1", kindAgent, "main"},
+		{"f1", kindWindow, "term"},
+		{"f2", kindService, "jobs"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("len(rows) = %d, want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		if rows[i].Feature != w.feature || rows[i].Kind != w.kind || rows[i].Name != w.name {
+			t.Errorf("rows[%d] = %+v, want feature=%s kind=%s name=%s", i, rows[i], w.feature, w.kind, w.name)
+		}
+	}
+}
+
+func TestCollectServiceRowReportsGoneForANonexistentUnit(t *testing.T) {
+	f := &state.Feature{
+		Project: "collect-test", Name: "f",
+		Services: []state.Service{{Name: "web", Unit: "canaveral-collect-test-f-svc-web-nonexistent"}},
+	}
+	rows := collect(context.Background(), []*state.Feature{f})
+	if len(rows) != 1 || rows[0].State != "gone" {
+		t.Errorf("rows = %+v, want a single gone service row", rows)
+	}
+}
+
+func TestCollectAgentRowSkipsProbingAnInactiveUnit(t *testing.T) {
+	// Nothing should reach out over HTTP for an agent whose unit is not
+	// even running — a.URL is deliberately unreachable to catch that.
+	f := &state.Feature{
+		Project: "collect-test", Name: "f",
+		Agents: []state.Agent{{
+			Name: "main", Unit: "canaveral-collect-test-f-agent-main-nonexistent",
+			URL: "http://127.0.0.1:1",
+		}},
+	}
+	rows := collect(context.Background(), []*state.Feature{f})
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if rows[0].State != "gone" {
+		t.Errorf("State = %q, want gone", rows[0].State)
+	}
+	if rows[0].AgentState != "" {
+		t.Errorf("AgentState = %q, want empty: probing must be skipped for an inactive unit", rows[0].AgentState)
+	}
+}
+
+func TestWindowRowUnknownWithoutAWindowList(t *testing.T) {
+	got := windowRow(&state.Feature{Name: "f"}, state.Window{Name: "term"}, nil, false)
+	if got.State != "unknown" {
+		t.Errorf("State = %q, want unknown", got.State)
+	}
+}
+
+func TestWindowRowOpenWhenClassMatches(t *testing.T) {
+	w := state.Window{Name: "term", Class: "canaveral-p-f-term"}
+	clients := []hypr.Client{{InitialClass: "canaveral-p-f-term"}}
+	got := windowRow(&state.Feature{Name: "f"}, w, clients, true)
+	if got.State != "open" {
+		t.Errorf("State = %q, want open", got.State)
+	}
+}
+
+func TestWindowRowClosedWhenClassAbsent(t *testing.T) {
+	w := state.Window{Name: "term", Class: "canaveral-p-f-term"}
+	got := windowRow(&state.Feature{Name: "f"}, w, nil, true)
+	if got.State != "closed" {
+		t.Errorf("State = %q, want closed", got.State)
+	}
+}
+
+func TestApplyPendingPrefersOptionsOverResources(t *testing.T) {
+	r := &row{}
+	applyPending(r, &agent.Pending{
+		Kind: agent.BlockQuestion, Header: "h", Detail: "d",
+		Options:   []string{"yes", "no"},
+		Resources: []string{"/etc/passwd"},
+	})
+	if r.PendKind != string(agent.BlockQuestion) || r.PendHeader != "h" || r.PendDetail != "d" {
+		t.Errorf("row = %+v", r)
+	}
+	if r.PendExtra != "yes / no" {
+		t.Errorf("PendExtra = %q, want the joined options", r.PendExtra)
+	}
+}
+
+func TestApplyPendingFallsBackToResources(t *testing.T) {
+	r := &row{}
+	applyPending(r, &agent.Pending{Kind: agent.BlockPermission, Resources: []string{"a", "b"}})
+	if r.PendExtra != "a, b" {
+		t.Errorf("PendExtra = %q, want the joined resources", r.PendExtra)
+	}
+}
+
+func TestApplyPendingNilIsANoop(t *testing.T) {
+	r := &row{State: "active"}
+	applyPending(r, nil)
+	if r.PendKind != "" || r.PendExtra != "" {
+		t.Errorf("row mutated by a nil Pending: %+v", r)
 	}
 }
 

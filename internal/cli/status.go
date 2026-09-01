@@ -295,23 +295,6 @@ func runStatus(ctx context.Context, args []string) error {
 // collect queries units, agents and windows concurrently; serial probing with
 // HTTP timeouts would make --watch unusable.
 func collect(ctx context.Context, features []*state.Feature) []row {
-	type slot struct {
-		idx int
-		r   row
-	}
-	var (
-		mu    sync.Mutex
-		wg    sync.WaitGroup
-		slots []slot
-		n     int
-	)
-	add := func(fn func(int)) {
-		i := n
-		n++
-		wg.Add(1)
-		go func() { defer wg.Done(); fn(i) }()
-	}
-
 	// Query the window list once rather than per feature.
 	var clients []hypr.Client
 	haveWindows := false
@@ -321,84 +304,109 @@ func collect(ctx context.Context, features []*state.Feature) []row {
 		}
 	}
 
+	var fns []func() row
 	for _, f := range features {
 		f := f
 		for _, s := range f.Services {
 			s := s
-			add(func(i int) {
-				r := row{Feature: f.Name, Kind: kindService, Name: s.Name, Unit: s.Unit}
-				fillUnit(ctx, &r)
-				mu.Lock()
-				slots = append(slots, slot{i, r})
-				mu.Unlock()
-			})
+			fns = append(fns, func() row { return serviceRow(ctx, f, s) })
 		}
 		for _, a := range f.Agents {
 			a := a
-			add(func(i int) {
-				r := row{Feature: f.Name, Kind: kindAgent, Name: a.Name, Unit: a.Unit, URL: a.URL}
-				fillUnit(ctx, &r)
-				if r.State == "active" && a.URL != "" {
-					h := agent.Probe(ctx, a.URL, a.Dir)
-					r.Busy, r.Sessions = h.Busy, h.Sessions
-					r.AgentState = string(h.State)
-					r.Worked, r.Working = h.Worked, h.Working
-					r.SincePrompt = h.SincePrompt
-					r.Idle = idleFor(h)
-					r.TodoTotal = h.Todos.Total
-					r.TodoDone = h.Todos.Completed + h.Todos.Cancelled
-					r.TodoNow = h.Todos.Current
-					r.Tokens, r.Cost = h.Tokens.Total(), h.Cost
-					r.Model, r.LastError = h.Model, h.LastError
-					r.Variant, r.Provider = h.Variant, h.Provider
-					r.SubAgents = h.SubSessions
-					if h.Activity != nil {
-						r.ActTool, r.ActTitle = h.Activity.Tool, h.Activity.Title
-					}
-					r.LastUser, r.LastAgent = h.LastUser, h.LastAssistant
-					if p := h.Pending; p != nil {
-						r.PendKind, r.PendHeader, r.PendDetail = string(p.Kind), p.Header, p.Detail
-						switch {
-						case len(p.Options) > 0:
-							r.PendExtra = strings.Join(p.Options, " / ")
-						case len(p.Resources) > 0:
-							r.PendExtra = strings.Join(p.Resources, ", ")
-						}
-					}
-					if !h.Reachable {
-						r.Detail = "unreachable"
-					}
-				}
-				mu.Lock()
-				slots = append(slots, slot{i, r})
-				mu.Unlock()
-			})
+			fns = append(fns, func() row { return agentRow(ctx, f, a) })
 		}
 		for _, w := range f.Windows {
 			w := w
-			add(func(i int) {
-				r := row{Feature: f.Name, Kind: kindWindow, Name: w.Name}
-				switch {
-				case !haveWindows:
-					r.State = "unknown"
-				case windowOpen(clients, w):
-					r.State = "open"
-				default:
-					r.State = "closed"
-				}
-				mu.Lock()
-				slots = append(slots, slot{i, r})
-				mu.Unlock()
-			})
+			fns = append(fns, func() row { return windowRow(f, w, clients, haveWindows) })
 		}
 	}
-	wg.Wait()
+	return runConcurrent(fns)
+}
 
-	out := make([]row, n)
-	for _, s := range slots {
-		out[s.idx] = s.r
+// runConcurrent runs each fn concurrently and returns their results in the
+// same order fns were given, regardless of completion order. Each fn writes
+// to its own index only, so no further synchronization is needed.
+func runConcurrent(fns []func() row) []row {
+	out := make([]row, len(fns))
+	var wg sync.WaitGroup
+	for i, fn := range fns {
+		wg.Add(1)
+		go func(i int, fn func() row) {
+			defer wg.Done()
+			out[i] = fn()
+		}(i, fn)
 	}
+	wg.Wait()
 	return out
+}
+
+// serviceRow queries a single service's unit status.
+func serviceRow(ctx context.Context, f *state.Feature, s state.Service) row {
+	r := row{Feature: f.Name, Kind: kindService, Name: s.Name, Unit: s.Unit}
+	fillUnit(ctx, &r)
+	return r
+}
+
+// agentRow queries a single agent's unit status and, if it is active,
+// probes its opencode server for the fuller telemetry (busy/state, tokens,
+// pending question or permission, and so on).
+func agentRow(ctx context.Context, f *state.Feature, a state.Agent) row {
+	r := row{Feature: f.Name, Kind: kindAgent, Name: a.Name, Unit: a.Unit, URL: a.URL}
+	fillUnit(ctx, &r)
+	if r.State != "active" || a.URL == "" {
+		return r
+	}
+	h := agent.Probe(ctx, a.URL, a.Dir)
+	r.Busy, r.Sessions = h.Busy, h.Sessions
+	r.AgentState = string(h.State)
+	r.Worked, r.Working = h.Worked, h.Working
+	r.SincePrompt = h.SincePrompt
+	r.Idle = idleFor(h)
+	r.TodoTotal = h.Todos.Total
+	r.TodoDone = h.Todos.Completed + h.Todos.Cancelled
+	r.TodoNow = h.Todos.Current
+	r.Tokens, r.Cost = h.Tokens.Total(), h.Cost
+	r.Model, r.LastError = h.Model, h.LastError
+	r.Variant, r.Provider = h.Variant, h.Provider
+	r.SubAgents = h.SubSessions
+	if h.Activity != nil {
+		r.ActTool, r.ActTitle = h.Activity.Tool, h.Activity.Title
+	}
+	r.LastUser, r.LastAgent = h.LastUser, h.LastAssistant
+	applyPending(&r, h.Pending)
+	if !h.Reachable {
+		r.Detail = "unreachable"
+	}
+	return r
+}
+
+// applyPending copies what an agent is blocked on, if anything, onto r.
+func applyPending(r *row, p *agent.Pending) {
+	if p == nil {
+		return
+	}
+	r.PendKind, r.PendHeader, r.PendDetail = string(p.Kind), p.Header, p.Detail
+	switch {
+	case len(p.Options) > 0:
+		r.PendExtra = strings.Join(p.Options, " / ")
+	case len(p.Resources) > 0:
+		r.PendExtra = strings.Join(p.Resources, ", ")
+	}
+}
+
+// windowRow reports whether a single declared window is currently open,
+// against a client list already fetched once for every feature.
+func windowRow(f *state.Feature, w state.Window, clients []hypr.Client, haveWindows bool) row {
+	r := row{Feature: f.Name, Kind: kindWindow, Name: w.Name}
+	switch {
+	case !haveWindows:
+		r.State = "unknown"
+	case windowOpen(clients, w):
+		r.State = "open"
+	default:
+		r.State = "closed"
+	}
+	return r
 }
 
 // idleFor is how long an agent has been idle, or 0 when it's busy or has

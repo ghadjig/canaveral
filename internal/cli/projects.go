@@ -32,66 +32,88 @@ func runProjects(ctx context.Context, args []string) error {
 	r := reporter{}
 	switch {
 	case *add != "":
-		p, err := registry.Add(*add)
-		if err != nil {
-			return err
-		}
-		r.OK("registered %s  %s", color(cBold, p.Name), color(cDim, homeTilde(p.Root)))
-		return nil
+		return runProjectsAdd(r, *add)
 	case *forget != "":
-		found, err := registry.Forget(*forget)
-		if err != nil {
-			return err
-		}
-		if !found {
-			// Saying "not found" would be a lie: the name is still listable,
-			// because it was never in the file to begin with.
-			r.Warn("%s was not in the registry (it is derived from its feature state, and will keep appearing until those features are removed)", *forget)
-			return nil
-		}
-		r.OK("forgot %s", *forget)
-		return nil
+		return runProjectsForget(r, *forget)
 	case *scan != "":
-		found, conflicts, err := registry.Scan(*scan)
-		if err != nil {
-			return err
-		}
-		for _, p := range found {
-			r.OK("%s  %s", color(cBold, p.Name), color(cDim, homeTilde(p.Root)))
-		}
-		for _, c := range conflicts {
-			r.Warn("%v", c)
-		}
-		if len(found) == 0 && len(conflicts) == 0 {
-			r.Info("no project checkouts found under %s", homeTilde(*scan))
-		}
-		return nil
+		return runProjectsScan(r, *scan)
 	case *prune:
-		dropped, err := registry.Prune()
-		if err != nil {
-			return err
-		}
-		if len(dropped) == 0 {
-			r.OK("nothing to prune")
-			return nil
-		}
-		for _, p := range dropped {
-			r.OK("dropped %s (%s is gone)", p.Name, homeTilde(p.Root))
-		}
-		return nil
+		return runProjectsPrune(r)
 	}
 
 	projects, err := registry.MRU()
 	if err != nil {
 		return err
 	}
-	if *names {
+	return printProjectsList(projects, *names, *asJSON)
+}
+
+func runProjectsAdd(r reporter, path string) error {
+	p, err := registry.Add(path)
+	if err != nil {
+		return err
+	}
+	r.OK("registered %s  %s", color(cBold, p.Name), color(cDim, homeTilde(p.Root)))
+	return nil
+}
+
+func runProjectsForget(r reporter, name string) error {
+	found, err := registry.Forget(name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// Saying "not found" would be a lie: the name is still listable,
+		// because it was never in the file to begin with.
+		r.Warn("%s was not in the registry (it is derived from its feature state, and will keep appearing until those features are removed)", name)
+		return nil
+	}
+	r.OK("forgot %s", name)
+	return nil
+}
+
+func runProjectsScan(r reporter, dir string) error {
+	found, conflicts, err := registry.Scan(dir)
+	if err != nil {
+		return err
+	}
+	for _, p := range found {
+		r.OK("%s  %s", color(cBold, p.Name), color(cDim, homeTilde(p.Root)))
+	}
+	for _, c := range conflicts {
+		r.Warn("%v", c)
+	}
+	if len(found) == 0 && len(conflicts) == 0 {
+		r.Info("no project checkouts found under %s", homeTilde(dir))
+	}
+	return nil
+}
+
+func runProjectsPrune(r reporter) error {
+	dropped, err := registry.Prune()
+	if err != nil {
+		return err
+	}
+	if len(dropped) == 0 {
+		r.OK("nothing to prune")
+		return nil
+	}
+	for _, p := range dropped {
+		r.OK("dropped %s (%s is gone)", p.Name, homeTilde(p.Root))
+	}
+	return nil
+}
+
+// printProjectsList prints the registry as names, JSON, or a human table,
+// depending on which output flag was given — in that priority order.
+func printProjectsList(projects []registry.Project, names, asJSON bool) error {
+	if names {
 		for _, p := range projects {
 			fmt.Println(p.Name)
 		}
 		return nil
 	}
-	if *asJSON {
+	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if projects == nil {

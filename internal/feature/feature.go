@@ -717,62 +717,17 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		logPath := filepath.Join(logDir, "agent-"+a.Name+".log")
 		dir := serviceDir(f, m, a.Dir)
 
-		rec := state.Agent{
-			Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath,
-		}
 		if st, err := unit.Query(ctx, unitName); err == nil && st.Running() {
-			if prev, ok := f.Agent(a.Name); ok {
-				rec.URL, rec.Port = prev.URL, prev.Port
-			}
-			if rec.URL == "" {
-				// The unit is alive but we lost its URL; recover it from the log.
-				if u, err := agent.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
-					rec.URL, rec.Port = u, portOf(u)
-				}
-			}
+			rec := adoptRunningAgent(ctx, f, a, unitName, dir, logPath)
 			records = append(records, rec)
 			prog.done()
 			continue
 		}
 
-		agentEnv, err := tmpl.RenderMap("agent."+a.Name+".env", a.Env, vars)
+		rec, err := startAgent(ctx, m, f, a, bin, base, vars, unitName, dir, logPath, res, r)
 		if err != nil {
 			return err
 		}
-		env := manifest.MergeEnv(base, m.Env, agentEnv)
-		if a.Model != "" {
-			env["OPENCODE_MODEL"] = a.Model
-		}
-		if a.Agent != "" {
-			env["OPENCODE_AGENT"] = a.Agent
-		}
-
-		unit.Reset(ctx, unitName)
-		r.Step("agent %s", a.Name)
-		res.launched = append(res.launched, unitName)
-		if err := unit.Start(ctx, unit.Spec{
-			Name:        unitName,
-			Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
-			Dir:         dir,
-			Cmd:         agent.ServeCmd(bin),
-			Env:         env,
-			LogPath:     logPath,
-		}); err != nil {
-			return err
-		}
-		url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
-		if err != nil {
-			// An agent that never announced a URL is unusable and, unlike a
-			// service, nothing can adopt it later — the URL is only ever
-			// printed once, at startup. Leaving it running would strand an
-			// opencode server that no window can attach to.
-			_ = unit.Stop(ctx, unitName)
-			unit.Reset(ctx, unitName)
-			return fmt.Errorf("agent %q: %w", a.Name, err)
-		}
-		rec.URL, rec.Port = url, portOf(url)
-		r.OK("agent %s listening on %s", a.Name, url)
-		res.StartedAgent = append(res.StartedAgent, a.Name)
 		records = append(records, rec)
 
 		f.Agents = records
@@ -783,6 +738,72 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	}
 	f.Agents = records
 	return nil
+}
+
+// adoptRunningAgent recovers connection info for an agent whose unit is
+// already running: from the feature's previous state if we already knew it,
+// otherwise from its log (the unit is alive but the URL was lost, e.g.
+// after canaveral itself restarted).
+func adoptRunningAgent(ctx context.Context, f *state.Feature, a manifest.Agent, unitName, dir, logPath string) state.Agent {
+	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
+	if prev, ok := f.Agent(a.Name); ok {
+		rec.URL, rec.Port = prev.URL, prev.Port
+	}
+	if rec.URL == "" {
+		// The unit is alive but we lost its URL; recover it from the log.
+		if u, err := agent.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
+			rec.URL, rec.Port = u, portOf(u)
+		}
+	}
+	return rec
+}
+
+// startAgent renders a's environment, starts its unit, and waits for it to
+// announce its listen URL, tearing the unit back down if it never does. An
+// agent that never announces a URL is unusable and, unlike a service,
+// nothing can adopt it later — the URL is only ever printed once, at
+// startup — so leaving it running would strand an opencode server that no
+// window can attach to.
+func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a manifest.Agent,
+	bin string, base map[string]string, vars tmpl.Vars, unitName, dir, logPath string,
+	res *Result, r Reporter) (state.Agent, error) {
+	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
+
+	agentEnv, err := tmpl.RenderMap("agent."+a.Name+".env", a.Env, vars)
+	if err != nil {
+		return rec, err
+	}
+	env := manifest.MergeEnv(base, m.Env, agentEnv)
+	if a.Model != "" {
+		env["OPENCODE_MODEL"] = a.Model
+	}
+	if a.Agent != "" {
+		env["OPENCODE_AGENT"] = a.Agent
+	}
+
+	unit.Reset(ctx, unitName)
+	r.Step("agent %s", a.Name)
+	res.launched = append(res.launched, unitName)
+	if err := unit.Start(ctx, unit.Spec{
+		Name:        unitName,
+		Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
+		Dir:         dir,
+		Cmd:         agent.ServeCmd(bin),
+		Env:         env,
+		LogPath:     logPath,
+	}); err != nil {
+		return rec, err
+	}
+	url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
+	if err != nil {
+		_ = unit.Stop(ctx, unitName)
+		unit.Reset(ctx, unitName)
+		return rec, fmt.Errorf("agent %q: %w", a.Name, err)
+	}
+	rec.URL, rec.Port = url, portOf(url)
+	r.OK("agent %s listening on %s", a.Name, url)
+	res.StartedAgent = append(res.StartedAgent, a.Name)
+	return rec, nil
 }
 
 func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Feature,
@@ -805,24 +826,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	}
 	open := hypr.ByClass(clients)
 	base := baseEnvFor(m, f, tc)
-
-	// The split-ratio chain that gives [layout] its exact column widths only
-	// makes sense when every one of its windows is being created together:
-	// each ratio is relative to whichever windows are still undivided at
-	// that point in the chain, so inserting just one window into an already-
-	// tiled arrangement cannot reliably reproduce it. When some (but not
-	// all) layout windows already exist — a `reset` after closing just one
-	// of them, say — the missing one is still spawned, just via dwindle's
-	// ordinary placement instead of a re-derived chain.
-	layoutFresh := m.Layout.Enabled()
-	if layoutFresh {
-		for _, name := range m.Layout.Order {
-			if _, alive := open[hypr.Class(f.Project, f.Name, name)]; alive {
-				layoutFresh = false
-				break
-			}
-		}
-	}
+	layoutFresh := isLayoutFresh(m, f, open)
 
 	var records []state.Window
 	pendingByName := map[string]pendingSpawn{}
@@ -833,65 +837,113 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		// layout and free paths), and seeding a browser profile here is the
 		// slow part regardless.
 		prog.start("window " + w.Name)
-
-		class := hypr.Class(f.Project, f.Name, w.Name)
-
-		profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
+		rec, pending, err := buildWindowSpec(ctx, m, f, w, vars, base, open, r)
 		if err != nil {
 			return err
 		}
-		wv := vars
-		wv.Class, wv.Profile = class, profile
-
-		cmd, err := tmpl.Render("window."+w.Name, w.Command(), wv)
-		if err != nil {
-			return err
+		records = append(records, rec)
+		if pending != nil {
+			pendingByName[w.Name] = *pending
 		}
-		dir := f.Worktree
-		if w.Dir != "" {
-			dir = serviceDir(f, m, w.Dir)
-		}
-		records = append(records, state.Window{
-			Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
-		})
-
-		// Detection is purely by the class canaveral assigns. Matching anything
-		// looser risks adopting one of the user's own windows.
-		if _, alive := open[class]; alive {
-			// Already up: still a step, and still done. Skipping the counter
-			// here would stall the bar short of its total on every `reset`.
-			prog.done()
-			continue
-		}
-
-		if w.ProfileSource != "" {
-			src, err := expandHome(w.ProfileSource)
-			if err != nil {
-				return fmt.Errorf("window %q: profile_source: %w", w.Name, err)
-			}
-			seed := worktree.Provision{Copy: w.ProfileSeed}
-			if err := seed.Apply(ctx, src, profile, r.Info); err != nil {
-				return fmt.Errorf("window %q: seeding profile: %w", w.Name, err)
-			}
-		}
-
-		spec := hypr.SpawnSpec{
-			Class:      class,
-			Title:      f.Name + " · " + w.Name,
-			Workspace:  f.HyprWorkspace(),
-			Dir:        dir,
-			IsTerminal: w.IsTerminal(),
-			Terminal:   m.Terminal,
-			Cmd:        cmd,
-			Hold:       w.Hold,
-			Env:        manifest.MergeEnv(base, m.Env),
-		}
-		pendingByName[w.Name] = pendingSpawn{name: w.Name, spec: spec}
 		prog.done()
 	}
 
-	// Windows not managed by [layout] spawn exactly as before: independently,
-	// in manifest order, no chaining.
+	spawnFreeWindows(ctx, m, pendingByName, res, r)
+
+	if m.Layout.Enabled() {
+		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, layoutFresh, res, r, originalWS); err != nil {
+			return fmt.Errorf("layout: %w", err)
+		}
+	}
+
+	f.Windows = records
+	return nil
+}
+
+// isLayoutFresh reports whether every window in [layout] is missing from
+// the currently open windows.
+//
+// The split-ratio chain that gives [layout] its exact column widths only
+// makes sense when every one of its windows is being created together:
+// each ratio is relative to whichever windows are still undivided at that
+// point in the chain, so inserting just one window into an already-tiled
+// arrangement cannot reliably reproduce it. When some (but not all) layout
+// windows already exist — a `reset` after closing just one of them, say —
+// the missing one is still spawned, just via dwindle's ordinary placement
+// instead of a re-derived chain.
+func isLayoutFresh(m *manifest.Manifest, f *state.Feature, open map[string]hypr.Client) bool {
+	if !m.Layout.Enabled() {
+		return false
+	}
+	for _, name := range m.Layout.Order {
+		if _, alive := open[hypr.Class(f.Project, f.Name, name)]; alive {
+			return false
+		}
+	}
+	return true
+}
+
+// buildWindowSpec resolves a single declared window's spawn spec (rendering
+// its command template, seeding a browser profile if configured) and the
+// state record to persist for it. pending is nil when the window is already
+// open — detection is purely by the class canaveral assigns; matching
+// anything looser risks adopting one of the user's own windows.
+func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
+	vars tmpl.Vars, base map[string]string, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
+
+	class := hypr.Class(f.Project, f.Name, w.Name)
+
+	profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
+	if err != nil {
+		return state.Window{}, nil, err
+	}
+	wv := vars
+	wv.Class, wv.Profile = class, profile
+
+	cmd, err := tmpl.Render("window."+w.Name, w.Command(), wv)
+	if err != nil {
+		return state.Window{}, nil, err
+	}
+	dir := f.Worktree
+	if w.Dir != "" {
+		dir = serviceDir(f, m, w.Dir)
+	}
+	rec := state.Window{
+		Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
+	}
+
+	if _, alive := open[class]; alive {
+		return rec, nil, nil
+	}
+
+	if w.ProfileSource != "" {
+		src, err := expandHome(w.ProfileSource)
+		if err != nil {
+			return rec, nil, fmt.Errorf("window %q: profile_source: %w", w.Name, err)
+		}
+		seed := worktree.Provision{Copy: w.ProfileSeed}
+		if err := seed.Apply(ctx, src, profile, r.Info); err != nil {
+			return rec, nil, fmt.Errorf("window %q: seeding profile: %w", w.Name, err)
+		}
+	}
+
+	spec := hypr.SpawnSpec{
+		Class:      class,
+		Title:      f.Name + " · " + w.Name,
+		Workspace:  f.HyprWorkspace(),
+		Dir:        dir,
+		IsTerminal: w.IsTerminal(),
+		Terminal:   m.Terminal,
+		Cmd:        cmd,
+		Hold:       w.Hold,
+		Env:        manifest.MergeEnv(base, m.Env),
+	}
+	return rec, &pendingSpawn{name: w.Name, spec: spec}, nil
+}
+
+// spawnFreeWindows spawns every pending window not managed by [layout]
+// exactly as before: independently, in manifest order, no chaining.
+func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName map[string]pendingSpawn, res *Result, r Reporter) {
 	inOrder := map[string]bool{}
 	for _, name := range m.Layout.Order {
 		inOrder[name] = true
@@ -908,15 +960,6 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		r.OK("window %s", w.Name)
 		res.SpawnedWindow = append(res.SpawnedWindow, w.Name)
 	}
-
-	if m.Layout.Enabled() {
-		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, layoutFresh, res, r, originalWS); err != nil {
-			return fmt.Errorf("layout: %w", err)
-		}
-	}
-
-	f.Windows = records
-	return nil
 }
 
 // reconcileLayoutWindows spawns [layout]'s windows.
@@ -965,32 +1008,43 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 	defer restore()
 
 	if !layoutFresh {
-		for _, name := range missing {
-			p := pending[name]
-			if err := hypr.Spawn(ctx, p.spec); err != nil {
-				r.Warn("window %s: %v", name, err)
-				continue
-			}
-			r.OK("window %s", name)
-			res.SpawnedWindow = append(res.SpawnedWindow, name)
-		}
+		spawnMissingIndependently(ctx, missing, pending, res, r)
 		return nil
 	}
+
+	return spawnLayoutChain(ctx, m, hyprWorkspace, pending, res, r)
+}
+
+// spawnMissingIndependently spawns each still-missing layout window on its
+// own, without the preselect chaining that builds an exact-ratio layout —
+// used when the layout is not "fresh" (see reconcileLayoutWindows' doc for
+// why a partial chain cannot be reliably re-derived).
+func spawnMissingIndependently(ctx context.Context, missing []string, pending map[string]pendingSpawn, res *Result, r Reporter) {
+	for _, name := range missing {
+		p := pending[name]
+		if err := hypr.Spawn(ctx, p.spec); err != nil {
+			r.Warn("window %s: %v", name, err)
+			continue
+		}
+		r.OK("window %s", name)
+		res.SpawnedWindow = append(res.SpawnedWindow, name)
+	}
+}
+
+// spawnLayoutChain builds [layout] from scratch: every window in Order is
+// spawned in sequence, each preselected to open beside the previous one so
+// the result is a single left-to-right dwindle split, then the exact
+// ratios from splitRatioChain are applied.
+func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
+	pending map[string]pendingSpawn, res *Result, r Reporter) error {
 
 	ratios := splitRatioChain(m.Layout.Order, m.Layout.Fractions())
 	addresses := make(map[string]string, len(m.Layout.Order))
 	for i, name := range m.Layout.Order {
 		p := pending[name]
 		if i > 0 {
-			prevAddr := addresses[m.Layout.Order[i-1]]
-			if prevAddr == "" {
-				return fmt.Errorf("could not locate %q to chain %q after it", m.Layout.Order[i-1], name)
-			}
-			if err := hypr.FocusWindow(ctx, prevAddr); err != nil {
-				return fmt.Errorf("focus %q: %w", m.Layout.Order[i-1], err)
-			}
-			if err := hypr.Preselect(ctx, "r"); err != nil {
-				return fmt.Errorf("preselect after %q: %w", m.Layout.Order[i-1], err)
+			if err := chainAfter(ctx, addresses[m.Layout.Order[i-1]], m.Layout.Order[i-1], name); err != nil {
+				return err
 			}
 		}
 		if err := hypr.Spawn(ctx, p.spec); err != nil {
@@ -1013,11 +1067,7 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 			// monitor the user is not actively looking at, leaving whichever
 			// one they are using completely undisturbed for the entire
 			// operation — not just restored afterwards.
-			if sec, ok, err := hypr.SecondaryMonitor(ctx); err == nil && ok {
-				if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
-					r.Warn("could not build on a secondary monitor: %v", err)
-				}
-			}
+			relocateToSecondaryMonitor(ctx, hyprWorkspace, r)
 		}
 
 		// Applied here, immediately, rather than in a second pass over all
@@ -1033,6 +1083,39 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 		}
 	}
 	return nil
+}
+
+// chainAfter focuses the previously-spawned window and preselects the
+// direction the next spawn should open in, continuing the dwindle chain.
+// Hyprland's preselect dispatcher operates on whichever window is currently
+// focused, which is why this must run immediately before each spawn rather
+// than once up front.
+func chainAfter(ctx context.Context, prevAddr, prevName, nextName string) error {
+	if prevAddr == "" {
+		return fmt.Errorf("could not locate %q to chain %q after it", prevName, nextName)
+	}
+	if err := hypr.FocusWindow(ctx, prevAddr); err != nil {
+		return fmt.Errorf("focus %q: %w", prevName, err)
+	}
+	if err := hypr.Preselect(ctx, "r"); err != nil {
+		return fmt.Errorf("preselect after %q: %w", prevName, err)
+	}
+	return nil
+}
+
+// relocateToSecondaryMonitor moves the just-created workspace onto any
+// monitor other than the one the user is currently focused on, confirmed
+// empirically to neither change what is shown on their monitor nor steal
+// their keyboard focus — it only affects what the *other* monitor displays.
+// A no-op when there is no secondary monitor to use.
+func relocateToSecondaryMonitor(ctx context.Context, hyprWorkspace string, r Reporter) {
+	sec, ok, err := hypr.SecondaryMonitor(ctx)
+	if err != nil || !ok {
+		return
+	}
+	if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
+		r.Warn("could not build on a secondary monitor: %v", err)
+	}
 }
 
 // waitForClass polls for a window of the given class to appear, returning
@@ -1291,27 +1374,7 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// left to clear on the way out. A failure before that point does leave the
 	// phase set, which the staleness bound in state.InPhase covers.
 	prog.start("saving session")
-
-	// Best-effort: if this feature is namespaced, remember its newest
-	// opencode session before tearing down its agent, so a later sibling
-	// under the same namespace can still fork from it even though this
-	// feature's own state (and therefore any record of it) is about to be
-	// deleted. Recorded here rather than continuously because this is the
-	// last point at which the agent is guaranteed to still be reachable.
-	if ns := Namespace(f.Name); ns != "" {
-		for _, a := range f.Agents {
-			if a.Tool != "opencode" || a.URL == "" {
-				continue
-			}
-			h := agent.Probe(ctx, a.URL, f.Worktree)
-			if h.Reachable && h.SessionID != "" {
-				_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
-					Feature: f.Name, SessionID: h.SessionID,
-					Worktree: f.Worktree, UpdatedAt: h.Updated,
-				})
-			}
-		}
-	}
+	recordNamespaceSession(ctx, f)
 
 	prog.done()
 	prog.start("stopping services")
@@ -1335,27 +1398,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 
 	prog.done()
 	prog.start("removing worktree")
-	if !keepWorktree && f.Worktree != "" {
-		if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
-			return err
-		}
-		_ = worktree.Prune(ctx, f.Root)
-		r.OK("removed worktree")
-
-		deleted := false
-		if !keepBranch {
-			if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
-				if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
-					if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
-						deleted = true
-						r.OK("deleted merged branch %s", f.Branch)
-					}
-				}
-			}
-		}
-		if !deleted {
-			r.OK("kept branch %s", f.Branch)
-		}
+	if err := removeWorktreeAndBranch(ctx, f, keepWorktree, force, keepBranch, r); err != nil {
+		return err
 	}
 
 	prog.done()
@@ -1363,55 +1407,120 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	if err := state.Remove(f.Project, f.Name); err != nil {
 		return err
 	}
-
-	if err := hypr.Available(ctx); err == nil && len(f.Windows) > 0 {
-		if clients, err := hypr.Clients(ctx); err == nil {
-			open := hypr.ByClass(clients)
-			closed := 0
-			var self *hypr.Client
-			for _, w := range f.Windows {
-				if c, ok := open[w.Class]; ok {
-					if hypr.IsSelf(c) {
-						// Close our own window last of all, and after
-						// everything above has already returned
-						// successfully, so the report below reaches the
-						// user before their terminal potentially dies.
-						cc := c
-						self = &cc
-						continue
-					}
-					if err := hypr.Close(ctx, c.Address); err == nil {
-						closed++
-					}
-				}
-			}
-			if closed > 0 {
-				r.OK("closed %d window(s)", closed)
-			}
-			if self != nil {
-				r.OK("closing this window")
-				_ = hypr.Close(ctx, self.Address)
-				closed++
-			}
-		}
-		// Windows the user opened here themselves are not canaveral's to
-		// close — they may hold real work — but leaving them behind
-		// strands them on a workspace named for a feature that no longer
-		// exists, and keeps that workspace alive. Move them somewhere
-		// ordinary on the same monitor instead.
-		rehomeStrays(ctx, f, r)
-
-		// Hyprland won't destroy a workspace while it's a monitor's active
-		// one, even with zero windows left (confirmed empirically) — so
-		// closing the last window above can leave the feature's workspace
-		// dangling forever on whatever monitor last displayed it, as a
-		// phantom entry in the waybar pill list. Release it explicitly.
-		if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
-			r.Warn("%v", err)
-		}
-	}
+	closeFeatureWindows(ctx, f, r)
 
 	return nil
+}
+
+// recordNamespaceSession is a best-effort step: if this feature is
+// namespaced, remember its newest opencode session before tearing down its
+// agent, so a later sibling under the same namespace can still fork from it
+// even though this feature's own state (and therefore any record of it) is
+// about to be deleted. Called here rather than continuously because this is
+// the last point at which the agent is guaranteed to still be reachable.
+func recordNamespaceSession(ctx context.Context, f *state.Feature) {
+	ns := Namespace(f.Name)
+	if ns == "" {
+		return
+	}
+	for _, a := range f.Agents {
+		if a.Tool != "opencode" || a.URL == "" {
+			continue
+		}
+		h := agent.Probe(ctx, a.URL, f.Worktree)
+		if h.Reachable && h.SessionID != "" {
+			_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
+				Feature: f.Name, SessionID: h.SessionID,
+				Worktree: f.Worktree, UpdatedAt: h.Updated,
+			})
+		}
+	}
+}
+
+// removeWorktreeAndBranch removes f's worktree (unless keepWorktree) and,
+// once the worktree is gone, deletes the branch too if (and only if) it has
+// been fully merged into the repo's default branch — merge history is what
+// makes it safe, not the caller's say-so, so unmerged work is always kept
+// regardless of keepBranch. keepBranch exists purely to opt out of deletion
+// even when merged, e.g. to keep it around for a while longer.
+func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
+	if keepWorktree || f.Worktree == "" {
+		return nil
+	}
+	if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
+		return err
+	}
+	_ = worktree.Prune(ctx, f.Root)
+	r.OK("removed worktree")
+
+	deleted := false
+	if !keepBranch {
+		if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
+			if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
+				if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
+					deleted = true
+					r.OK("deleted merged branch %s", f.Branch)
+				}
+			}
+		}
+	}
+	if !deleted {
+		r.OK("kept branch %s", f.Branch)
+	}
+	return nil
+}
+
+// closeFeatureWindows closes every window canaveral opened for f, rehomes
+// any stray windows the user opened themselves, and releases the feature's
+// workspace. A no-op when Hyprland is not available or the feature has no
+// windows.
+func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
+	if err := hypr.Available(ctx); err != nil || len(f.Windows) == 0 {
+		return
+	}
+	if clients, err := hypr.Clients(ctx); err == nil {
+		open := hypr.ByClass(clients)
+		closed := 0
+		var self *hypr.Client
+		for _, w := range f.Windows {
+			if c, ok := open[w.Class]; ok {
+				if hypr.IsSelf(c) {
+					// Close our own window last of all, and after
+					// everything above has already returned
+					// successfully, so the report below reaches the
+					// user before their terminal potentially dies.
+					cc := c
+					self = &cc
+					continue
+				}
+				if err := hypr.Close(ctx, c.Address); err == nil {
+					closed++
+				}
+			}
+		}
+		if closed > 0 {
+			r.OK("closed %d window(s)", closed)
+		}
+		if self != nil {
+			r.OK("closing this window")
+			_ = hypr.Close(ctx, self.Address)
+		}
+	}
+	// Windows the user opened here themselves are not canaveral's to
+	// close — they may hold real work — but leaving them behind
+	// strands them on a workspace named for a feature that no longer
+	// exists, and keeps that workspace alive. Move them somewhere
+	// ordinary on the same monitor instead.
+	rehomeStrays(ctx, f, r)
+
+	// Hyprland won't destroy a workspace while it's a monitor's active
+	// one, even with zero windows left (confirmed empirically) — so
+	// closing the last window above can leave the feature's workspace
+	// dangling forever on whatever monitor last displayed it, as a
+	// phantom entry in the waybar pill list. Release it explicitly.
+	if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
+		r.Warn("%v", err)
+	}
 }
 
 // EnvFor returns the environment a command run inside a feature's worktree
