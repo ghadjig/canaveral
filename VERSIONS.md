@@ -12,6 +12,20 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- `canaveral prune` now also finishes any feature whose teardown was
+  interrupted before it could complete — `rm`'s own terminal window closing
+  under it, a crash, a reboot. `Remove` has no deferred cleanup (the state
+  file is deliberately the last thing it deletes, since it is what a status
+  bar reads to show progress), so an interrupted run used to leave the phase
+  stuck at "removing" forever, with no code path anywhere that ever came
+  back to finish it. `--dry-run` lists what would be finished without
+  touching it; a removal still genuinely in progress (its phase is less than
+  ten minutes old) is left alone rather than raced.
+
 ## v0.5.0 — 2026-08-31
 
 ### Added

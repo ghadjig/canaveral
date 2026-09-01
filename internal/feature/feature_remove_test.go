@@ -15,6 +15,63 @@ import (
 	"github.com/bandito/canaveral/internal/state"
 )
 
+func TestReapFinishesAStaleInterruptedRemoval(t *testing.T) {
+	f := gitFeature(t, true)
+	f.Phase = state.PhaseRemoving
+	f.PhaseSince = time.Now().Add(-2 * state.StalePhaseAfter)
+	if err := state.Save(f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	done, err := Reap(context.Background(), quietReporter{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(done) != 1 || done[0] != f.Key() {
+		t.Fatalf("Reap finished %v, want [%s]", done, f.Key())
+	}
+	if _, err := state.Load(f.Project, f.Name); !errors.Is(err, state.ErrNotFound) {
+		t.Errorf("state.Load after Reap = %v, want ErrNotFound", err)
+	}
+}
+
+func TestReapLeavesALiveRemovalAlone(t *testing.T) {
+	// PhaseSince is fresh, so InPhase is still true: an `rm` running right now
+	// on another terminal must not be raced by a concurrent Reap.
+	f := gitFeature(t, true)
+	f.Phase = state.PhaseRemoving
+	f.PhaseSince = time.Now()
+	if err := state.Save(f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	done, err := Reap(context.Background(), quietReporter{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(done) != 0 {
+		t.Errorf("Reap touched a live removal: %v", done)
+	}
+	if _, err := state.Load(f.Project, f.Name); err != nil {
+		t.Errorf("state.Load after Reap = %v, want the record still there", err)
+	}
+}
+
+func TestReapIgnoresFeaturesNotBeingRemoved(t *testing.T) {
+	f := gitFeature(t, true)
+	if err := state.Save(f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	done, err := Reap(context.Background(), quietReporter{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(done) != 0 {
+		t.Errorf("Reap touched a feature with no phase set: %v", done)
+	}
+}
+
 func TestUnitsForOrdersAgentsFirstThenServicesInReverse(t *testing.T) {
 	// Reverse service order matters: a service started later may depend on an
 	// earlier one, so it has to go down first.

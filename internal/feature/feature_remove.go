@@ -179,6 +179,44 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	return nil
 }
 
+// Reap finishes any feature whose teardown was interrupted before it could
+// complete: `rm` killed by the very terminal window it was closing, a crash,
+// a hard reboot. Remove has no deferred cleanup — the state file is what
+// carries progress between the process doing the work and whatever is
+// watching it, so it is deliberately the last thing deleted — which means an
+// interrupted run leaves it behind with Phase still set to "removing"
+// forever, and nothing before this ever came back to finish the job.
+//
+// Only stale records are touched: state.InPhase's ten-minute bound is what
+// tells a genuinely-in-progress removal (running right now, on another
+// terminal) apart from an abandoned one, and reaping the former out from
+// under it would race a live `rm`.
+//
+// force is passed through unconditionally. It only relaxes the dirty-worktree
+// guard and the refusal to touch an unmerged branch, both of which the
+// original invocation already satisfied (or was told to skip) to get this
+// far — asking again here would just refuse a teardown that was already
+// agreed to, for a worktree nobody is coming back to un-delete.
+func Reap(ctx context.Context, r Reporter) ([]string, error) {
+	all, err := state.LoadAll()
+	if err != nil {
+		return nil, err
+	}
+	var done []string
+	for _, f := range all {
+		if f.Phase != state.PhaseRemoving || f.InPhase() {
+			continue
+		}
+		r.Step("finishing interrupted removal of %s", f.Key())
+		if err := Remove(ctx, f, false, true, false, r); err != nil {
+			r.Warn("%s: %v", f.Key(), err)
+			continue
+		}
+		done = append(done, f.Key())
+	}
+	return done, nil
+}
+
 // recordNamespaceSession is a best-effort step: if this feature is
 // namespaced, remember its newest opencode session before tearing down its
 // agent, so a later sibling under the same namespace can still fork from it
