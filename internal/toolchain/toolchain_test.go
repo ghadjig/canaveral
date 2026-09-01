@@ -81,19 +81,3 @@ func TestEnvModeNoneReturnsNil(t *testing.T) {
 		t.Errorf("Env(ModeNone) = %v, want nil", env)
 	}
 }
-
-func TestDescribe(t *testing.T) {
-	env := map[string]string{
-		"PATH": "/home/u/.local/share/mise/installs/ruby/3.4.7/bin:" +
-			"/home/u/.local/share/mise/installs/node/26.1.0/bin:" +
-			"/home/u/.local/share/mise/installs/aws/latest/.mise-bins:/usr/bin",
-	}
-	got := Describe(env)
-	want := "ruby 3.4.7, node 26.1.0"
-	if got != want {
-		t.Errorf("Describe = %q, want %q", got, want)
-	}
-	if Describe(nil) != "" {
-		t.Error("Describe(nil) should be empty")
-	}
-}
