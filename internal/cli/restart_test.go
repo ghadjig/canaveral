@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -73,5 +74,26 @@ func TestRestartTargetRefusesAmbiguousName(t *testing.T) {
 	_, _, err := restartTarget(m, []string{"web"})
 	if err == nil || !strings.Contains(err.Error(), "both a service and a feature") {
 		t.Fatalf("err = %v, want an ambiguity error", err)
+	}
+}
+
+func TestRunRestartRequiresAtLeastOneService(t *testing.T) {
+	err := runRestart(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "specify at least one service") {
+		t.Errorf("err = %v, want a specify-a-service error", err)
+	}
+}
+
+func TestRunRestartPropagatesAnUnresolvableTarget(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "restart-unresolvable"))
+
+	// "does-not-exist" is neither a declared service (completeProject's
+	// manifest only has "web") nor an existing feature, so runRestart must
+	// surface restartTarget's error rather than reaching RestartServices.
+	err := runRestart(context.Background(), []string{"does-not-exist"})
+	if err == nil {
+		t.Error("runRestart should fail for a name that is neither a service nor a feature")
 	}
 }
