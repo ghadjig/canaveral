@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/worktree"
 )
@@ -44,27 +43,13 @@ func runRebase(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var f *state.Feature
-	if len(pos) == 1 {
-		name := feature.Slug(pos[0])
-		if f, err = state.Load(m.Name, name); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	} else {
-		if f, err = currentFeature(m); err != nil {
-			return err
-		}
-	}
-
-	if worktree.RebaseInProgress(ctx, f.Worktree) {
-		return fmt.Errorf("%s already has a rebase in progress; finish it with `git rebase --continue` or drop it with `git rebase --abort`", f.Key())
-	}
-	dirty, err := worktree.IsDirty(ctx, f.Worktree, f.Provisioned)
+	f, err := featureFromArgs(m, pos)
 	if err != nil {
 		return err
 	}
-	if dirty {
-		return fmt.Errorf("%s has uncommitted changes; commit or discard them before rebasing", f.Key())
+
+	if err := ensureRebasable(ctx, f); err != nil {
+		return err
 	}
 
 	r := reporter{}
@@ -77,18 +62,9 @@ func runRebase(ctx context.Context, args []string) error {
 		r.OK("fetched")
 	}
 
-	target := *onto
-	if target == "" {
-		if hasRemote {
-			target, err = worktree.RemoteDefaultBranch(ctx, f.Worktree, *remote)
-		} else {
-			// No remote to track, so the local default branch is as current as
-			// anything gets here.
-			target, err = worktree.DefaultBranch(ctx, f.Worktree)
-		}
-		if err != nil {
-			return err
-		}
+	target, err := resolveRebaseTarget(ctx, f.Worktree, *remote, *onto, hasRemote)
+	if err != nil {
+		return err
 	}
 	if target == f.Branch {
 		return fmt.Errorf("feature branch %q is already %q", f.Branch, target)
@@ -108,4 +84,35 @@ func runRebase(ctx context.Context, args []string) error {
 		r.Info("%s", st.Label())
 	}
 	return nil
+}
+
+// ensureRebasable refuses to rebase a feature that already has a rebase in
+// progress, or whose worktree has uncommitted changes.
+func ensureRebasable(ctx context.Context, f *state.Feature) error {
+	if worktree.RebaseInProgress(ctx, f.Worktree) {
+		return fmt.Errorf("%s already has a rebase in progress; finish it with `git rebase --continue` or drop it with `git rebase --abort`", f.Key())
+	}
+	dirty, err := worktree.IsDirty(ctx, f.Worktree, f.Provisioned)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("%s has uncommitted changes; commit or discard them before rebasing", f.Key())
+	}
+	return nil
+}
+
+// resolveRebaseTarget picks what to rebase onto: onto if given, otherwise
+// the remote's default branch when there is one to track, otherwise the
+// local default branch.
+func resolveRebaseTarget(ctx context.Context, dir, remote, onto string, hasRemote bool) (string, error) {
+	if onto != "" {
+		return onto, nil
+	}
+	if hasRemote {
+		return worktree.RemoteDefaultBranch(ctx, dir, remote)
+	}
+	// No remote to track, so the local default branch is as current as
+	// anything gets here.
+	return worktree.DefaultBranch(ctx, dir)
 }
