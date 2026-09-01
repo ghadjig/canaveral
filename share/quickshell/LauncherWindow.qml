@@ -267,12 +267,22 @@ PanelWindow {
     function activate() {
         const c = currentCandidate;
         const w = lastWord();
-        if (c && c.value !== w) {
-            accept(c);
-            return;
+        // Only a word the user actually started typing can be disambiguated
+        // this way. An empty trailing word means there is nothing to
+        // complete — most often a space `accept()` itself just appended
+        // after finishing the previous argument — and treating its
+        // candidate (offered because some commands take a list, like
+        // `reset [feature...]`) as something to silently accept would eat
+        // an Enter that was meant to run an already-complete line, appending
+        // an argument nobody asked for.
+        if (w !== "") {
+            if (c && c.value !== w) {
+                accept(c);
+                return;
+            }
+            if (c && c.continues)
+                return;
         }
-        if (c && c.continues)
-            return;
         if (result && result.destructive && !confirming) {
             confirming = true;
             return;
@@ -427,12 +437,26 @@ PanelWindow {
                             // candidates share one, and the whole candidate
                             // when it is unambiguous — the completion key,
                             // never the run key.
-                            if (root.candidates.length === 1)
-                                root.accept(root.candidates[0]);
-                            else if (root.result && root.result.common !== root.lastWord())
-                                root.replaceLastWord(root.result.common);
-                            else if (root.currentCandidate)
-                                root.accept(root.currentCandidate);
+                            //
+                            // Guarded the same way Enter is: only a word the
+                            // user actually started typing can be completed
+                            // this way. An empty word means nothing was
+                            // typed, and for a command that takes a list
+                            // (`reset [feature...]`) there is always exactly
+                            // one candidate to offer for "the next one" when
+                            // a project has exactly one feature — so without
+                            // this, completing the first argument leaves a
+                            // trailing space, Tab "completes" that empty slot
+                            // to the sole candidate, which itself completes
+                            // to a single feature, and round it goes forever.
+                            if (root.lastWord() !== "") {
+                                if (root.candidates.length === 1)
+                                    root.accept(root.candidates[0]);
+                                else if (root.result && root.result.common !== root.lastWord())
+                                    root.replaceLastWord(root.result.common);
+                                else if (root.currentCandidate)
+                                    root.accept(root.currentCandidate);
+                            }
                             event.accepted = true;
                             break;
                         case Qt.Key_Down:

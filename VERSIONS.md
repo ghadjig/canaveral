@@ -16,6 +16,17 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Fixed
 
+- The launcher popup no longer loops on Tab or Enter after completing a
+  command that takes a list of features (`reset [feature...]` and
+  similar). Finishing one feature name appends a space, and completing
+  *that* empty next argument used to be unconditional — if the project has
+  exactly one feature (or one namespace), there is always exactly one
+  candidate to offer for "the next one," so Tab kept completing it forever,
+  and Enter would silently accept it instead of running an already-correct
+  line. Both keys now only let a candidate act on a word the user actually
+  started typing; an empty trailing word goes straight to running (or the
+  destructive-confirmation prompt) instead.
+
 - `canaveral rm`/`merge` no longer risks killing itself partway through
   tearing a feature down. Every service and agent unit runs under
   `KillMode=mixed`, which SIGKILLs its whole cgroup once `TimeoutStopSec`
