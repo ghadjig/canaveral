@@ -124,7 +124,10 @@ func Start(ctx context.Context, s Spec) error {
 // startTimeout bounds a launch. Starting is not slow — with Type=exec the job
 // completes as soon as the child has exec'd — so a wait this long already
 // means systemd is not answering rather than that the service is warming up.
-const startTimeout = 30 * time.Second
+//
+// A var, not a const, so a test can shrink it rather than waiting out the
+// real 30 seconds to exercise this path.
+var startTimeout = 30 * time.Second
 
 // stopTimeout bounds a teardown command. It has to clear the units' own
 // TimeoutStopSec=15 with room to spare, or a service that ignores SIGTERM
@@ -261,7 +264,9 @@ func Query(ctx context.Context, name string) (Status, error) {
 	return st, nil
 }
 
-const cgroupRoot = "/sys/fs/cgroup"
+// cgroupRoot is where cgroup v2 is mounted. A var, not a const, so a test
+// can point it at a fake hierarchy instead of the real /sys/fs/cgroup.
+var cgroupRoot = "/sys/fs/cgroup"
 
 func countProcs(cgroup string) int {
 	f, err := os.Open(filepath.Join(cgroupRoot, cgroup, "cgroup.procs"))
