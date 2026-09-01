@@ -150,6 +150,58 @@ func TestRunEmitsOnStateChange(t *testing.T) {
 	}
 }
 
+func TestRunEmitsTeardownOfAFeatureLeavingAPhase(t *testing.T) {
+	// A feature torn down straight out of a "removing" phase must still be
+	// reported gone. The lifecycle path sees it vanish first and asks for a
+	// full refresh; the regression was that it also rebuilt the view in the
+	// meantime, recording the feature-removed world as the baseline, so the
+	// woken refresh compared equal and emitted nothing — and every consumer
+	// kept drawing a feature that no longer existed.
+	var mu sync.Mutex
+	f := feat("alpha", "main")
+	f.Phase, f.PhaseSince = "removing", time.Now()
+	features := []*state.Feature{f}
+
+	r := testRunner(t, features, func(context.Context, string, string) agent.Health {
+		return agent.Health{Reachable: true, State: agent.StateIdle}
+	})
+	// The load seam has to return the live set, so the teardown below is seen.
+	r.load = func(string) ([]*state.Feature, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return features, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var buf lockedBuffer
+	done := make(chan struct{})
+	go func() { _ = r.Run(ctx, &buf); close(done) }()
+
+	// Let at least one phase tick (200ms) observe the feature in its phase, so
+	// it is recorded in the in-phase set. The bug only fires on the transition
+	// out of a KNOWN phase; tearing down before the first tick would take the
+	// ordinary path and hide it.
+	time.Sleep(320 * time.Millisecond)
+
+	// Tear it down: the next phase ticker sees a formerly-in-phase feature
+	// vanish, and must drive an emit that reports it gone.
+	mu.Lock()
+	features = []*state.Feature{}
+	mu.Unlock()
+
+	time.Sleep(320 * time.Millisecond)
+	cancel()
+	<-done
+
+	snaps := decodeLines(t, buf.String())
+	if len(snaps) < 2 {
+		t.Fatalf("got %d snapshots, want at least 2 (initial + teardown): %s", len(snaps), buf.String())
+	}
+	if n := len(snaps[len(snaps)-1].Features); n != 0 {
+		t.Errorf("final snapshot still has %d features, want 0 (teardown not emitted): %s", n, buf.String())
+	}
+}
+
 func TestRunDoesNotReEmitWhenNothingChanged(t *testing.T) {
 	// Waking repeatedly with an unchanged world must stay quiet, otherwise
 	// a busy turn's event burst would spam the consumer with identical

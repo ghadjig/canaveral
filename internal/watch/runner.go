@@ -349,11 +349,19 @@ func (r *Runner) refreshCached() (Snapshot, bool) {
 	// for a real refresh and publish nothing in the meantime — emitting the
 	// stale reading first would flash "offline" between "booting" and "idle",
 	// which is precisely the moment someone is watching the row.
+	//
+	// Publish nothing WITHOUT rebuilding: rebuild sets r.prev as a side effect,
+	// and doing so here poisons the very refresh we are about to wake. For a
+	// feature that has just gone away, this rebuild would record the
+	// feature-removed view as r.prev, so the woken refresh — comparing the same
+	// feature-removed world against it — finds nothing changed and emits
+	// nothing, and the teardown is never reported. (Boot→idle happened to
+	// survive that only because the woken refresh re-probes the agent into a
+	// materially different view; a torn-down feature has nothing left to probe.)
 	for k := range was {
 		if !now[k] {
 			r.wake()
-			snap, _ := r.rebuild(features, health, r.now())
-			return snap, false
+			return Snapshot{Time: r.now()}, false
 		}
 	}
 	return r.rebuild(features, health, r.now())

@@ -12,9 +12,18 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.5.1 — 2026-09-01
 
 ### Fixed
+
+- `watch` now reliably reports a feature that is torn down straight out of a
+  lifecycle phase (the normal `remove` path). The 200ms progress path, on
+  seeing a formerly-in-phase feature vanish, asked for a full refresh but also
+  rebuilt the view in the meantime — and that rebuild recorded the
+  feature-removed world as the baseline, so the woken refresh compared equal
+  and emitted nothing. Consumers kept drawing a feature that no longer existed
+  until something else changed. It now leaves the baseline untouched and lets
+  the woken refresh see the removal and emit it.
 
 - The launcher popup no longer loops on Tab or Enter after completing a
   command that takes a list of features (`reset [feature...]` and
