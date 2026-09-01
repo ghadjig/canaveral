@@ -483,3 +483,73 @@ func TestAgentSummaryLineOmitsPromptTimerWhenIdle(t *testing.T) {
 		t.Errorf("got %q, want no prompt timer when idle", got)
 	}
 }
+
+func TestRunStatusReportsNoFeaturesYet(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "no-features-yet"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "no features yet") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestRunStatusJSONReportsNoFeaturesYetAsEmptyArray(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "no-features-json"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), []string{"--json"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("out = %q, want an empty JSON array", out)
+	}
+}
+
+func TestRunStatusListsANamedFeature(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-named", "small-fixes"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), []string{"small-fixes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "small-fixes") {
+		t.Errorf("out = %q, want the feature name", out)
+	}
+}
+
+func TestRunStatusUnknownFeatureErrors(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-unknown"))
+
+	err := runStatus(context.Background(), []string{"does-not-exist"})
+	if err == nil {
+		t.Error("runStatus should fail asking for a feature that was never created")
+	}
+}
+
+func TestResolveStatusTargetsDefaultsToTheWholeProject(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-targets", "a", "b"))
+
+	got, err := resolveStatusTargets(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("len(got) = %d, want 2: %+v", len(got), got)
+	}
+}

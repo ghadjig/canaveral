@@ -226,68 +226,80 @@ func runStatus(ctx context.Context, args []string) error {
 		return err
 	}
 
-	targets := func() ([]*state.Feature, error) {
-		if *all {
-			return state.LoadAll()
-		}
-		m, err := loadManifest()
-		if err != nil {
-			return nil, err
-		}
-		if len(pos) == 0 {
-			return state.LoadProject(m.Name)
-		}
-		var out []*state.Feature
-		for _, n := range pos {
-			f, err := state.Load(m.Name, feature.Slug(n))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, f)
-		}
-		return out, nil
-	}
-
-	render := func() error {
-		fsList, err := targets()
-		if err != nil {
-			return err
-		}
-		if len(fsList) == 0 {
-			if *asJSON {
-				fmt.Println("[]")
-				return nil
-			}
-			fmt.Println("no features yet — create one with `canaveral new <feature>`")
-			return nil
-		}
-		rows := collect(ctx, fsList)
-		branches := collectBranchStatus(ctx, fsList)
-		if *asJSON {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(append(rows, branchRows(fsList, branches)...))
-		}
-		printStatus(fsList, rows, branches)
-		return nil
-	}
-
+	render := func() error { return renderStatus(ctx, pos, *all, *asJSON) }
 	if *watch <= 0 {
 		return render()
 	}
-	if *watch < 500*time.Millisecond {
-		*watch = 500 * time.Millisecond
+	return renderLoop(ctx, *watch, render)
+}
+
+// resolveStatusTargets resolves which features `status` should report on:
+// every project's if all is set, otherwise the given positional feature
+// names, or the whole current project when none are given.
+func resolveStatusTargets(pos []string, all bool) ([]*state.Feature, error) {
+	if all {
+		return state.LoadAll()
+	}
+	m, err := loadManifest()
+	if err != nil {
+		return nil, err
+	}
+	if len(pos) == 0 {
+		return state.LoadProject(m.Name)
+	}
+	var out []*state.Feature
+	for _, n := range pos {
+		f, err := state.Load(m.Name, feature.Slug(n))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// renderStatus resolves targets, collects their rows, and prints once, as
+// JSON or as the human table depending on asJSON.
+func renderStatus(ctx context.Context, pos []string, all, asJSON bool) error {
+	fsList, err := resolveStatusTargets(pos, all)
+	if err != nil {
+		return err
+	}
+	if len(fsList) == 0 {
+		if asJSON {
+			fmt.Println("[]")
+			return nil
+		}
+		fmt.Println("no features yet — create one with `canaveral new <feature>`")
+		return nil
+	}
+	rows := collect(ctx, fsList)
+	branches := collectBranchStatus(ctx, fsList)
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(append(rows, branchRows(fsList, branches)...))
+	}
+	printStatus(fsList, rows, branches)
+	return nil
+}
+
+// renderLoop calls render repeatedly on interval (raised to a 500ms floor),
+// clearing the screen each time, until ctx is cancelled.
+func renderLoop(ctx context.Context, interval time.Duration, render func() error) error {
+	if interval < 500*time.Millisecond {
+		interval = 500 * time.Millisecond
 	}
 	for {
 		fmt.Print("\033[H\033[2J")
 		if err := render(); err != nil {
 			return err
 		}
-		fmt.Printf("\n%s\n", dim("refreshing every "+watch.String()+" — ctrl-c to exit"))
+		fmt.Printf("\n%s\n", dim("refreshing every "+interval.String()+" — ctrl-c to exit"))
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(*watch):
+		case <-time.After(interval):
 		}
 	}
 }
@@ -471,56 +483,82 @@ func printStatus(features []*state.Feature, rows []row, branches map[string]work
 		if i > 0 {
 			fmt.Println()
 		}
-		hdr := fmt.Sprintf("%s  %s", color(cBold, f.Key()), dim(f.Branch))
-		if len(f.Ports) > 0 {
-			hdr += dim("  ports " + portSummary(f.Ports))
-		}
-		hdr += dim("  " + humanAgo(f.CreatedAt))
-		fmt.Println(hdr)
+		bs, ok := branches[f.Name]
+		printFeatureBlock(f, byFeature[f.Name], bs, ok)
+	}
+}
 
-		if bs, ok := branches[f.Name]; ok {
-			line := fmt.Sprintf("  vs %s: %s", bs.Base, bs.Label())
-			if bs.FilesChanged > 0 {
-				line += fmt.Sprintf("  +%d/-%d across %d file(s)", bs.Insertions, bs.Deletions, bs.FilesChanged)
-			}
-			if bs.Uncommitted > 0 {
-				line += fmt.Sprintf("  %d uncommitted", bs.Uncommitted)
-			}
-			fmt.Println(dim(line))
-		}
+// printFeatureBlock prints one feature's status block: a header line, its
+// branch position against its target if known, one summary line per agent,
+// and a table of every service/agent/window row followed by any errors.
+func printFeatureBlock(f *state.Feature, rows []row, bs worktree.BranchStatus, hasBranch bool) {
+	fmt.Println(featureHeaderLine(f))
+	if hasBranch {
+		fmt.Println(dim(branchStatusLine(bs)))
+	}
 
-		// The agent's current state is the thing you're most likely checking
-		// this for — is it waiting on me, still working, stuck retrying? —
-		// so it gets its own prominent line instead of being just another
-		// row buried in the service/agent/window table below.
-		for _, r := range byFeature[f.Name] {
-			if r.Kind == kindAgent && r.URL != "" {
-				fmt.Println(agentSummaryLine(r))
-			}
+	// The agent's current state is the thing you're most likely checking
+	// this for — is it waiting on me, still working, stuck retrying? —
+	// so it gets its own prominent line instead of being just another
+	// row buried in the service/agent/window table below.
+	for _, r := range rows {
+		if r.Kind == kindAgent && r.URL != "" {
+			fmt.Println(agentSummaryLine(r))
 		}
+	}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		// Plain header and data cells throughout — see stateLabelPlain's doc
-		// comment for why color and tabwriter don't mix.
+	printRowTable(rows)
+}
+
+// featureHeaderLine is the first line printed for a feature: its key and
+// branch, its declared ports if any, and how long ago it was created.
+func featureHeaderLine(f *state.Feature) string {
+	hdr := fmt.Sprintf("%s  %s", color(cBold, f.Key()), dim(f.Branch))
+	if len(f.Ports) > 0 {
+		hdr += dim("  ports " + portSummary(f.Ports))
+	}
+	hdr += dim("  " + humanAgo(f.CreatedAt))
+	return hdr
+}
+
+// branchStatusLine reports a feature's branch position against its target:
+// ahead/behind counts, and how big the diff is when there is one.
+func branchStatusLine(bs worktree.BranchStatus) string {
+	line := fmt.Sprintf("  vs %s: %s", bs.Base, bs.Label())
+	if bs.FilesChanged > 0 {
+		line += fmt.Sprintf("  +%d/-%d across %d file(s)", bs.Insertions, bs.Deletions, bs.FilesChanged)
+	}
+	if bs.Uncommitted > 0 {
+		line += fmt.Sprintf("  %d uncommitted", bs.Uncommitted)
+	}
+	return line
+}
+
+// printRowTable prints the KIND/NAME/STATE/... table for rows, followed by
+// a block of any agent errors — which get their own lines rather than being
+// truncated inside a table cell.
+func printRowTable(rows []row) {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	// Plain header and data cells throughout — see stateLabelPlain's doc
+	// comment for why color and tabwriter don't mix.
+	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		"KIND", "NAME", "STATE", "IDLE", "WORKED", "CPU", "MEM",
+		"TOKENS", "COST", "ENDPOINT")
+	var errs []row
+	for _, r := range rows {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			"KIND", "NAME", "STATE", "IDLE", "WORKED", "CPU", "MEM",
-			"TOKENS", "COST", "ENDPOINT")
-		var errs []row
-		for _, r := range byFeature[f.Name] {
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				string(r.Kind), r.Name, stateLabelPlain(r), idleDetail(r), workedDetail(r),
-				humanDuration(r.CPUNanos), humanBytes(r.MemBytes),
-				humanCount(r.Tokens), humanCost(r.Cost), r.URL)
-			if r.LastError != "" {
-				errs = append(errs, r)
-			}
+			string(r.Kind), r.Name, stateLabelPlain(r), idleDetail(r), workedDetail(r),
+			humanDuration(r.CPUNanos), humanBytes(r.MemBytes),
+			humanCount(r.Tokens), humanCost(r.Cost), r.URL)
+		if r.LastError != "" {
+			errs = append(errs, r)
 		}
-		tw.Flush()
-		// Agent errors are what the user is watching for, so they get their own
-		// block instead of being truncated inside a table cell.
-		for _, r := range errs {
-			fmt.Printf("  %s %s: %s\n", color(cRed, "!"), r.Name, shorten(oneLine(r.LastError), 100))
-		}
+	}
+	tw.Flush()
+	// Agent errors are what the user is watching for, so they get their own
+	// block instead of being truncated inside a table cell.
+	for _, r := range errs {
+		fmt.Printf("  %s %s: %s\n", color(cRed, "!"), r.Name, shorten(oneLine(r.LastError), 100))
 	}
 }
 
@@ -609,6 +647,17 @@ func workedDetail(r row) string {
 // (waiting on you? still working? stuck retrying?) shouldn't require
 // parsing it out of a table row shared with services and windows.
 func agentSummaryLine(r row) string {
+	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(summaryParts(r), " · "))
+	for _, d := range summaryDetailLines(r) {
+		line += "\n    " + d
+	}
+	return line
+}
+
+// summaryParts builds the headline pieces for an agent's summary line: its
+// state, how long it has worked and (while busy or waiting) on this prompt,
+// how long it has been idle, todo progress, model, and session count.
+func summaryParts(r row) []string {
 	parts := []string{stateLabel(r)}
 	if w := workedDetail(r); w != "-" {
 		parts = append(parts, "worked "+w)
@@ -638,7 +687,14 @@ func agentSummaryLine(r row) string {
 		}
 		parts = append(parts, sess)
 	}
-	line := fmt.Sprintf("  agent %s: %s", r.Name, strings.Join(parts, " · "))
+	return parts
+}
+
+// summaryDetailLines builds the indented detail lines under an agent's
+// summary headline: what it's blocked on, its current todo, its current
+// tool activity, and the newest message on each side of the conversation.
+func summaryDetailLines(r row) []string {
+	var lines []string
 	if r.PendKind != "" {
 		needs := r.PendKind
 		if r.PendHeader != "" {
@@ -650,25 +706,25 @@ func agentSummaryLine(r row) string {
 		if r.PendExtra != "" {
 			needs += " [" + r.PendExtra + "]"
 		}
-		line += "\n    " + color(cYellow, "needs: "+shorten(oneLine(needs), 90))
+		lines = append(lines, color(cYellow, "needs: "+shorten(oneLine(needs), 90)))
 	}
 	if r.TodoNow != "" {
-		line += "\n    " + dim("task: "+shorten(oneLine(r.TodoNow), 80))
+		lines = append(lines, dim("task: "+shorten(oneLine(r.TodoNow), 80)))
 	}
 	if r.ActTool != "" {
 		now := r.ActTool
 		if r.ActTitle != "" {
 			now += ": " + r.ActTitle
 		}
-		line += "\n    " + dim("now:  "+shorten(oneLine(now), 80))
+		lines = append(lines, dim("now:  "+shorten(oneLine(now), 80)))
 	}
 	if r.LastUser != "" {
-		line += "\n    " + dim("you:  "+shorten(oneLine(r.LastUser), 80))
+		lines = append(lines, dim("you:  "+shorten(oneLine(r.LastUser), 80)))
 	}
 	if r.LastAgent != "" {
-		line += "\n    " + dim("said: "+shorten(oneLine(r.LastAgent), 80))
+		lines = append(lines, dim("said: "+shorten(oneLine(r.LastAgent), 80)))
 	}
-	return line
+	return lines
 }
 
 func runAttach(ctx context.Context, args []string) error {
