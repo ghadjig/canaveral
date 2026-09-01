@@ -347,40 +347,8 @@ func forkArgsFor(ctx context.Context, project, name, agentName, baseURL, worktre
 		return ""
 	}
 
-	var best skills.SessionRecord
-	have := false
-	if rec, ok, err := skills.LatestSession(project, ns, agentName); err == nil && ok {
-		best, have = rec, true
-	}
-
-	siblings, err := state.List(project)
-	if err == nil {
-		for _, sib := range siblings {
-			if sib == name || Namespace(sib) != ns {
-				continue
-			}
-			sf, err := state.Load(project, sib)
-			if err != nil {
-				continue
-			}
-			a, ok := sf.Agent(agentName)
-			if !ok || a.URL == "" {
-				continue
-			}
-			h := agent.Probe(ctx, a.URL, sf.Worktree)
-			if !h.Reachable || h.SessionID == "" {
-				continue
-			}
-			if !have || h.Updated.After(best.UpdatedAt) {
-				best = skills.SessionRecord{
-					Feature: sib, SessionID: h.SessionID,
-					Worktree: sf.Worktree, UpdatedAt: h.Updated,
-				}
-				have = true
-			}
-		}
-	}
-
+	best, have := recordedSiblingSession(project, ns, agentName)
+	best, have = newestLiveSiblingSession(ctx, project, ns, name, agentName, best, have)
 	if !have {
 		return ""
 	}
@@ -397,6 +365,62 @@ func forkArgsFor(ctx context.Context, project, name, agentName, baseURL, worktre
 		return ""
 	}
 	return fmt.Sprintf("--session %s", forked)
+}
+
+// recordedSiblingSession returns the namespace's recorded newest session for
+// agentName, if any — the fallback used when no sibling feature is live to
+// ask directly.
+func recordedSiblingSession(project, ns, agentName string) (skills.SessionRecord, bool) {
+	rec, ok, err := skills.LatestSession(project, ns, agentName)
+	if err != nil || !ok {
+		return skills.SessionRecord{}, false
+	}
+	return rec, true
+}
+
+// newestLiveSiblingSession scans every other feature in ns for a reachable
+// agentName, returning the most recently updated session found — best/have
+// if none of them beat it, or if there are none to check.
+func newestLiveSiblingSession(ctx context.Context, project, ns, name, agentName string,
+	best skills.SessionRecord, have bool) (skills.SessionRecord, bool) {
+	siblings, err := state.List(project)
+	if err != nil {
+		return best, have
+	}
+	for _, sib := range siblings {
+		if sib == name || Namespace(sib) != ns {
+			continue
+		}
+		rec, ok := siblingSession(ctx, project, sib, agentName)
+		if !ok {
+			continue
+		}
+		if !have || rec.UpdatedAt.After(best.UpdatedAt) {
+			best, have = rec, true
+		}
+	}
+	return best, have
+}
+
+// siblingSession probes a single sibling feature's agent, returning its
+// newest session if the agent is reachable and has one.
+func siblingSession(ctx context.Context, project, sib, agentName string) (skills.SessionRecord, bool) {
+	sf, err := state.Load(project, sib)
+	if err != nil {
+		return skills.SessionRecord{}, false
+	}
+	a, ok := sf.Agent(agentName)
+	if !ok || a.URL == "" {
+		return skills.SessionRecord{}, false
+	}
+	h := agent.Probe(ctx, a.URL, sf.Worktree)
+	if !h.Reachable || h.SessionID == "" {
+		return skills.SessionRecord{}, false
+	}
+	return skills.SessionRecord{
+		Feature: sib, SessionID: h.SessionID,
+		Worktree: sf.Worktree, UpdatedAt: h.Updated,
+	}, true
 }
 
 // baseEnvFor layers canaveral's own variables over the toolchain environment.
