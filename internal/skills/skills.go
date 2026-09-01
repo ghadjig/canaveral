@@ -56,12 +56,12 @@ func Dir(project, namespace string) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(base, "skills", project, namespace)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	skillPath := filepath.Join(dir, "SKILL.md")
 	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
-		if err := os.WriteFile(skillPath, []byte(scaffold(namespace)), 0o644); err != nil {
+		if err := os.WriteFile(skillPath, []byte(scaffold(namespace)), 0o600); err != nil {
 			return "", fmt.Errorf("write %s: %w", skillPath, err)
 		}
 	} else if err != nil {
@@ -165,7 +165,7 @@ func Link(worktree, project, namespace string) (rel string, created bool, err er
 		return rel, false, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return rel, false, err
 	}
 	if err := os.Symlink(real, target); err != nil {
@@ -264,7 +264,7 @@ func writeSessions(p string, all map[string]SessionRecord) error {
 		return err
 	}
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, p)

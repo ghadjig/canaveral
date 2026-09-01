@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bandito/canaveral/internal/manifest"
@@ -154,4 +155,43 @@ func TestCurrentFeatureIgnoresAnotherProjectsEnvironment(t *testing.T) {
 // manifestNamed is the smallest manifest currentFeature needs: just the project.
 func manifestNamed(name string) *manifest.Manifest {
 	return &manifest.Manifest{Name: name}
+}
+
+func TestFeatureFromArgsResolvesByName(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	clearFeatureEnv(t)
+	f := saveFeature(t, "norules", "small-fixes")
+
+	got, err := featureFromArgs(manifestNamed("norules"), []string{"small-fixes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != f.Name {
+		t.Errorf("got = %+v", got)
+	}
+}
+
+func TestFeatureFromArgsFallsBackToCurrentFeatureWhenNoneNamed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	clearFeatureEnv(t)
+	f := saveFeature(t, "norules", "small-fixes")
+	t.Chdir(f.Worktree)
+
+	got, err := featureFromArgs(manifestNamed("norules"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "small-fixes" {
+		t.Errorf("got = %+v", got)
+	}
+}
+
+func TestFeatureFromArgsWrapsAnUnknownName(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	clearFeatureEnv(t)
+
+	_, err := featureFromArgs(manifestNamed("norules"), []string{"does-not-exist"})
+	if err == nil || !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("err = %v, want it to name the feature that could not be loaded", err)
+	}
 }

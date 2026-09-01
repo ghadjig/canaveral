@@ -147,33 +147,3 @@ func resolveMise(ctx context.Context, mode Mode, dir string) (map[string]string,
 	}
 	return env, nil
 }
-
-// Describe summarises a resolved environment for display, e.g. "ruby 3.4.7".
-func Describe(env map[string]string) string {
-	path := env["PATH"]
-	if path == "" {
-		return ""
-	}
-	seen := map[string]bool{}
-	var parts []string
-	for _, p := range strings.Split(path, string(os.PathListSeparator)) {
-		// mise installs live at <data>/installs/<tool>/<version>/...
-		idx := strings.Index(p, "/installs/")
-		if idx < 0 {
-			continue
-		}
-		rest := strings.Split(strings.TrimPrefix(p[idx+len("/installs/"):], "/"), "/")
-		if len(rest) < 2 || rest[1] == "latest" {
-			continue
-		}
-		label := rest[0] + " " + rest[1]
-		if !seen[label] {
-			seen[label] = true
-			parts = append(parts, label)
-		}
-	}
-	if len(parts) > 4 {
-		parts = parts[:4]
-	}
-	return strings.Join(parts, ", ")
-}

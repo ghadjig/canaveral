@@ -29,6 +29,25 @@ func resolveFeature(name string) (*state.Feature, error) {
 	return f, nil
 }
 
+// featureFromArgs resolves the feature a command should act on from its
+// positional arguments: the named feature if one was given (pos must
+// already be at most one name — callers reject more before this point),
+// otherwise whichever feature currentFeature says the shell belongs to.
+//
+// Shared by commands that accept an optional feature name and default to
+// "wherever you are" when none is given (`merge`, `rebase`).
+func featureFromArgs(m *manifest.Manifest, pos []string) (*state.Feature, error) {
+	if len(pos) == 1 {
+		name := feature.Slug(pos[0])
+		f, err := state.Load(m.Name, name)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		return f, nil
+	}
+	return currentFeature(m)
+}
+
 // currentFeature finds the feature the shell belongs to, for commands willing
 // to default to "whichever feature you're currently in" when no name is given
 // (e.g. `canaveral merge` run from inside a feature's own worktree).

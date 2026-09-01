@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
-	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -43,16 +42,9 @@ func runMerge(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var f *state.Feature
-	if len(pos) == 1 {
-		name := feature.Slug(pos[0])
-		if f, err = state.Load(m.Name, name); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	} else {
-		if f, err = currentFeature(m); err != nil {
-			return err
-		}
+	f, err := featureFromArgs(m, pos)
+	if err != nil {
+		return err
 	}
 
 	// Resolve the main checkout from the worktree rather than trusting the
@@ -89,22 +81,8 @@ func runMerge(ctx context.Context, args []string) error {
 	}
 	r.OK("rebased")
 
-	cur, err := worktree.CurrentBranch(ctx, root)
-	if err != nil {
+	if err := ensureCheckedOut(ctx, root, target); err != nil {
 		return err
-	}
-	if cur != target {
-		rootDirty, err := worktree.IsDirty(ctx, root, nil)
-		if err != nil {
-			return err
-		}
-		if rootDirty {
-			return fmt.Errorf("%s is on %q with uncommitted changes; switch to %q manually and re-run",
-				homeTilde(root), cur, target)
-		}
-		if err := worktree.Checkout(ctx, root, target); err != nil {
-			return err
-		}
 	}
 
 	r.Step("merging %s into %s", color(cBold, f.Branch), target)
@@ -118,4 +96,26 @@ func runMerge(ctx context.Context, args []string) error {
 	}
 	r.Step("removing %s", color(cBold, f.Key()))
 	return feature.Remove(ctx, f, false, false, false, r)
+}
+
+// ensureCheckedOut switches the main checkout at root onto target, unless
+// it is already there. Refuses when root itself has uncommitted changes,
+// since checking out over them would discard them.
+func ensureCheckedOut(ctx context.Context, root, target string) error {
+	cur, err := worktree.CurrentBranch(ctx, root)
+	if err != nil {
+		return err
+	}
+	if cur == target {
+		return nil
+	}
+	dirty, err := worktree.IsDirty(ctx, root, nil)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("%s is on %q with uncommitted changes; switch to %q manually and re-run",
+			homeTilde(root), cur, target)
+	}
+	return worktree.Checkout(ctx, root, target)
 }

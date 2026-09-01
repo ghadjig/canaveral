@@ -483,3 +483,152 @@ func TestAgentSummaryLineOmitsPromptTimerWhenIdle(t *testing.T) {
 		t.Errorf("got %q, want no prompt timer when idle", got)
 	}
 }
+
+func TestRunStatusReportsNoFeaturesYet(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "no-features-yet"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "no features yet") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestRunStatusJSONReportsNoFeaturesYetAsEmptyArray(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "no-features-json"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), []string{"--json"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("out = %q, want an empty JSON array", out)
+	}
+}
+
+func TestRunStatusListsANamedFeature(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-named", "small-fixes"))
+
+	out := captureStdout(t, func() {
+		if err := runStatus(context.Background(), []string{"small-fixes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "small-fixes") {
+		t.Errorf("out = %q, want the feature name", out)
+	}
+}
+
+func TestRunStatusUnknownFeatureErrors(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-unknown"))
+
+	err := runStatus(context.Background(), []string{"does-not-exist"})
+	if err == nil {
+		t.Error("runStatus should fail asking for a feature that was never created")
+	}
+}
+
+func TestResolveStatusTargetsDefaultsToTheWholeProject(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "status-targets", "a", "b"))
+
+	got, err := resolveStatusTargets(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("len(got) = %d, want 2: %+v", len(got), got)
+	}
+}
+
+func TestRunLsReportsNoFeaturesYet(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "ls-no-features"))
+
+	out := captureStdout(t, func() {
+		if err := runLs(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "no features yet") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestRunLsNamesOnlyPrintsOneNamePerLine(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(completeProject(t, "ls-names", "small-fixes", "onboarding/step1"))
+
+	out := captureStdout(t, func() {
+		if err := runLs(context.Background(), []string{"--names"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %v, want exactly two feature names", lines)
+	}
+	got := map[string]bool{lines[0]: true, lines[1]: true}
+	if !got["small-fixes"] || !got["onboarding/step1"] {
+		t.Errorf("lines = %v, want small-fixes and onboarding/step1", lines)
+	}
+}
+
+func TestRunLsListsAFeatureWithItsPorts(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := completeProject(t, "ls-feature")
+	f := &state.Feature{
+		Project: "ls-feature", Name: "small-fixes", Root: root, Branch: "small-fixes",
+		Ports:    map[string]int{"web": 3001},
+		Services: []state.Service{{Name: "web", Unit: "canaveral-ls-feature-small-fixes-svc-web-nonexistent"}},
+	}
+	if err := state.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	out := captureStdout(t, func() {
+		if err := runLs(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "small-fixes") {
+		t.Errorf("out = %q, want the feature name", out)
+	}
+	if !strings.Contains(out, "3001") {
+		t.Errorf("out = %q, want its ports summarized", out)
+	}
+}
+
+func TestRunLsAllCoversEveryProject(t *testing.T) {
+	clearFeatureEnv(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	completeProject(t, "ls-all-a", "one")
+	root := completeProject(t, "ls-all-b", "two")
+	t.Chdir(root)
+
+	out := captureStdout(t, func() {
+		if err := runLs(context.Background(), []string{"--all", "--names"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "one") || !strings.Contains(out, "two") {
+		t.Errorf("out = %q, want features from both projects", out)
+	}
+}
