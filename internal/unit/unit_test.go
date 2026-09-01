@@ -111,6 +111,47 @@ func TestIsFeatureUnitExcludesCanaveralsOwn(t *testing.T) {
 	}
 }
 
+// fakeCgroupFile writes cgroup content and points selfCgroupFile at it,
+// restoring the real path afterwards.
+func fakeCgroupFile(t *testing.T, content string) {
+	t.Helper()
+	p := t.TempDir() + "/cgroup"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := selfCgroupFile
+	selfCgroupFile = p
+	t.Cleanup(func() { selfCgroupFile = orig })
+}
+
+func TestSelfFindsAnAgentUnitInACgroupPath(t *testing.T) {
+	// A real /proc/self/cgroup line, cgroup v2 unified hierarchy: a systemd
+	// user service nests under user@<uid>.service and app.slice.
+	fakeCgroupFile(t, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"+
+		"canaveral-norules-startus-agent-main.service\n")
+	if got := Self(); got != "canaveral-norules-startus-agent-main" {
+		t.Errorf("Self() = %q, want the unit name without .service", got)
+	}
+}
+
+func TestSelfEmptyOutsideAnyUnit(t *testing.T) {
+	// An ordinary terminal or SSH session sits directly under the user's own
+	// slice, with no canaveral unit anywhere in the path.
+	fakeCgroupFile(t, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/foot.service\n")
+	if got := Self(); got != "" {
+		t.Errorf("Self() = %q, want empty outside a canaveral unit", got)
+	}
+}
+
+func TestSelfEmptyWhenCgroupFileIsMissing(t *testing.T) {
+	orig := selfCgroupFile
+	selfCgroupFile = "/nonexistent/for-real/cgroup"
+	t.Cleanup(func() { selfCgroupFile = orig })
+	if got := Self(); got != "" {
+		t.Errorf("Self() = %q, want empty when the file cannot be read", got)
+	}
+}
+
 func TestFeaturePrefixesDoNotClaimSiblings(t *testing.T) {
 	// The whole reason prefixes are per-kind: "login" must not swallow
 	// "login-fixes", or removing one would reap the other's units.

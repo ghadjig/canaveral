@@ -14,6 +14,21 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Fixed
+
+- `canaveral rm`/`merge` no longer risks killing itself partway through
+  tearing a feature down. Every service and agent unit runs under
+  `KillMode=mixed`, which SIGKILLs its whole cgroup once `TimeoutStopSec`
+  elapses — and a teardown invoked as a shell tool call from the feature's
+  own agent is a descendant of that agent's unit. Stopping that unit used to
+  happen early (second of four steps), so the process could be killed
+  mid-removal no matter which step it had reached since, leaving a
+  half-finished worktree/branch/state behind for `prune` to find later. The
+  unit this process is itself running under (if any) is now recognised via
+  its cgroup and deferred to the very end, after the worktree, branch and
+  state file are already gone — the same reasoning already applied to
+  closing windows last, extended to cover the process's own unit too.
+
 ### Added
 
 - `canaveral prune` now also finishes any feature whose teardown was

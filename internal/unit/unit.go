@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -339,6 +340,36 @@ func IsFeatureUnit(name string) bool {
 		return false
 	}
 	return strings.Contains(rest, "-svc-") || strings.Contains(rest, "-agent-")
+}
+
+// selfCgroupFile is where a process reads its own cgroup membership. A var,
+// not a const, so a test can point it at a fake file instead of the real
+// /proc/self/cgroup — which, being self-referential, cannot be faked any
+// other way.
+var selfCgroupFile = "/proc/self/cgroup"
+
+// selfUnitPattern matches a canaveral unit name inside a cgroup path, the same
+// way scripts/install.sh's self_unit() does in shell.
+var selfUnitPattern = regexp.MustCompile(Prefix + `-[^/]*\.service`)
+
+// Self returns the canaveral unit this process is currently running under, or
+// "" if it is not running under one at all (an ordinary terminal, a plain
+// SSH session). The name is bare, without ".service", matching every other
+// unit name in this package.
+//
+// This is what lets a teardown recognise it may be a descendant of the very
+// unit it is about to stop: an agent's shell tool calls run as children of
+// its own unit's cgroup, so `canaveral rm`/`merge` invoked that way shares a
+// cgroup with the agent it is tearing down. KillMode=mixed means stopping
+// that unit sends SIGKILL to the whole cgroup once TimeoutStopSec elapses —
+// including this process, wherever it has gotten to. See Remove's use of
+// this in feature_remove.go for why that unit is handled last instead.
+func Self() string {
+	b, err := os.ReadFile(selfCgroupFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(selfUnitPattern.FindString(string(b)), ".service")
 }
 
 // Orphans returns the units in live that no workspace in known lays claim to.

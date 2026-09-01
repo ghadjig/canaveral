@@ -52,16 +52,37 @@ func UnitsFor(ctx context.Context, f *state.Feature) []string {
 
 // stopFeatureUnits stops everything belonging to a feature and reports what
 // happened, returning the units that would not stop.
-func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) []string {
+// stopFeatureUnits stops everything belonging to a feature and reports what
+// happened, returning the units that would not stop and, separately, one unit
+// deliberately left running: the one this very process is executing under,
+// if any.
+//
+// `canaveral rm`/`merge` invoked as a shell tool call by the feature's own
+// agent is a descendant of that agent's unit, and every unit here is started
+// with KillMode=mixed — SIGTERM to the main process, but SIGKILL to the whole
+// cgroup once TimeoutStopSec elapses. Stopping that unit now would risk this
+// function being killed mid-teardown, no matter which step it had reached.
+// The caller stops the deferred unit at the very end instead, once the
+// worktree, branch and state file are already gone — see Remove.
+func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) (deferred string, failed []string) {
 	names := UnitsFor(ctx, f)
-	if len(names) == 0 {
-		return nil
+	self := unit.Self()
+	var now []string
+	for _, n := range names {
+		if n == self {
+			deferred = n
+			continue
+		}
+		now = append(now, n)
 	}
-	failed := unit.StopAll(ctx, names)
+	if len(now) == 0 {
+		return deferred, nil
+	}
+	failed = unit.StopAll(ctx, now)
 	// Count what actually stopped, not what was attempted: a teardown that
 	// silently stopped nothing used to report success just the same.
-	r.OK("stopped %d unit(s)", len(names)-len(failed))
-	return failed
+	r.OK("stopped %d unit(s)", len(now)-len(failed))
+	return deferred, failed
 }
 
 // mergeTarget reports whether a feature's branch has landed in the repo's
@@ -145,7 +166,8 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 
 	prog.done()
 	prog.start("stopping services")
-	if failed := stopFeatureUnits(ctx, f, r); len(failed) > 0 {
+	deferredUnit, failed := stopFeatureUnits(ctx, f, r)
+	if len(failed) > 0 {
 		// Deliberately not fatal: refusing to remove a feature because one
 		// unit is wedged would strand the worktree and branch too. Say so
 		// loudly instead — `prune` finds these by name once state is gone.
@@ -153,15 +175,18 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 			strings.Join(failed, ", "))
 	}
 
-	// Windows are closed last, deliberately. `canaveral merge` (and `remove`)
-	// is very often invoked from a terminal that is itself one of this
-	// feature's own windows, so closing windows can terminate the very
-	// process running this function. If that happens partway through, we
-	// want it to happen *after* every step that leaves durable state behind
-	// (worktree, branch, state file) has already succeeded — never before.
-	// Otherwise the feature space survives as an orphaned worktree/branch/
-	// state record with no windows left to manage it, and the terminal that
-	// invoked the command is left stuck talking to a dead shell.
+	// Windows are closed last, deliberately, and the unit this process is
+	// itself running under (if any) is stopped alongside them rather than
+	// above — see stopFeatureUnits. Both are for the same reason: `canaveral
+	// merge` (and `rm`) is very often invoked from a terminal that is one of
+	// this feature's own windows, or as a shell tool call from this feature's
+	// own agent, and either one can terminate the very process running this
+	// function. If that happens partway through, we want it to happen *after*
+	// every step that leaves durable state behind (worktree, branch, state
+	// file) has already succeeded — never before. Otherwise the feature space
+	// survives as an orphaned worktree/branch/state record with no windows
+	// left to manage it, and the terminal that invoked the command is left
+	// stuck talking to a dead shell.
 
 	prog.done()
 	prog.start("removing worktree")
@@ -175,6 +200,13 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		return err
 	}
 	closeFeatureWindows(ctx, f, r)
+	if deferredUnit != "" {
+		if err := unit.Stop(ctx, deferredUnit); err != nil {
+			r.Warn("could not stop %s — run `canaveral prune` to reap it", deferredUnit)
+		} else {
+			unit.Reset(ctx, deferredUnit)
+		}
+	}
 
 	return nil
 }
@@ -228,8 +260,17 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 	if ns == "" {
 		return
 	}
+	self := unit.Self()
 	for _, a := range f.Agents {
 		if a.Tool != "opencode" || a.URL == "" {
+			continue
+		}
+		// Probing the agent running this very teardown is worse than
+		// pointless: its HTTP server is what dispatched the shell tool call
+		// that is now blocked waiting for Remove to return, so a request to
+		// it here waits out the full client timeout for nothing — the agent
+		// cannot answer until this function already has.
+		if a.Unit != "" && a.Unit == self {
 			continue
 		}
 		h := agent.Probe(ctx, a.URL, f.Worktree)
