@@ -53,11 +53,11 @@ func sanitize(s string) string {
 // Start launches the spec as a transient systemd user service.
 func Start(ctx context.Context, s Spec) error {
 	if s.LogPath != "" {
-		if err := os.MkdirAll(filepath.Dir(s.LogPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(s.LogPath), 0o700); err != nil {
 			return fmt.Errorf("create log dir: %w", err)
 		}
 		// Truncate so port discovery and log probes never match a previous run.
-		if err := os.WriteFile(s.LogPath, nil, 0o644); err != nil {
+		if err := os.WriteFile(s.LogPath, nil, 0o600); err != nil {
 			return fmt.Errorf("reset log: %w", err)
 		}
 	}

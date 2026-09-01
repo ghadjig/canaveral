@@ -121,7 +121,7 @@ func Dir() (string, error) {
 		base = filepath.Join(home, ".local", "state")
 	}
 	dir := filepath.Join(base, "canaveral")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -133,7 +133,7 @@ func featuresDir(project string) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(d, "features", project)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -146,7 +146,7 @@ func LogDir(project, feature string) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(d, "logs", project, feature)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -212,7 +212,7 @@ func Save(f *Feature) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
@@ -220,7 +220,7 @@ func Save(f *Feature) error {
 		return err
 	}
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, p)
