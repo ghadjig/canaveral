@@ -31,7 +31,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 
 	for _, s := range m.Services {
 		prog.start("service " + s.Name)
-		rec := serviceRecord(m, f, s, logDir, vars)
+		rec := serviceRecord(m, f, s, logDir)
 		cmd, err := tmpl.Render("service."+s.Name+".cmd", s.Cmd, vars)
 		if err != nil {
 			return err
@@ -76,9 +76,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 
 // serviceRecord derives the bookkeeping for one service. Cmd is left to the
 // caller, which is the only part that can fail to render.
-func serviceRecord(m *manifest.Manifest, f *state.Feature, s manifest.Service,
-	logDir string, vars tmpl.Vars) state.Service {
-
+func serviceRecord(m *manifest.Manifest, f *state.Feature, s manifest.Service, logDir string) state.Service {
 	return state.Service{
 		Name:     s.Name,
 		Unit:     unit.Name(f.Project+"-"+f.Name, "svc", s.Name),
@@ -211,7 +209,7 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	}
 
 	for _, s := range wanted {
-		rec := serviceRecord(m, f, s, logDir, vars)
+		rec := serviceRecord(m, f, s, logDir)
 		cmd, err := tmpl.Render("service."+s.Name+".cmd", s.Cmd, vars)
 		if err != nil {
 			return err

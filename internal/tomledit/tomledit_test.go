@@ -113,7 +113,7 @@ name = "main"
 	defaultIdx := strings.Index(got, "[layout.default]")
 	currentIdx := strings.Index(got, "[layout.current]")
 	agentIdx := strings.Index(got, "[[agent]]")
-	if !(defaultIdx < currentIdx && currentIdx < agentIdx) {
+	if defaultIdx >= currentIdx || currentIdx >= agentIdx {
 		t.Errorf("table inserted in wrong position:\n%s", got)
 	}
 }

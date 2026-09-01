@@ -58,7 +58,7 @@ func Subscribe(ctx context.Context, fn func(Event)) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer conn.Close()
 

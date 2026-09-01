@@ -345,16 +345,18 @@ func completeProjects(prefix string) completion {
 	// project, command and arguments together — and replacing "the last word"
 	// with one when there is only one word so far replaces the entire input,
 	// exactly as if it had been retyped.
-	all = append(all, historyCandidates(prefix)...)
+	all = append(all, historyCandidates()...)
 	return finish(prefix, all, completion{Prefix: prefix})
 }
 
-// historyCandidates offers previously typed launcher lines, most recent first.
+// historyCandidates offers previously typed launcher lines, most recent
+// first. Filtering by what has been typed so far happens in finish, along
+// with every other candidate here — see the comment at the call site.
 //
 // Capped well below what Recent could return: this is a shortcut for the
 // handful of things typed recently, not a second history browser competing
 // with the project list for space in an 8-row popup.
-func historyCandidates(prefix string) []candidate {
+func historyCandidates() []candidate {
 	const shown = 5
 	entries, err := launcherhistory.Recent(shown)
 	if err != nil {

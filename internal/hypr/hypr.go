@@ -49,7 +49,7 @@ func Available(ctx context.Context) error {
 		return fmt.Errorf("%w: HYPRLAND_INSTANCE_SIGNATURE is not set", ErrUnavailable)
 	}
 	if err := exec.CommandContext(ctx, "hyprctl", "version").Run(); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return nil
 }
