@@ -111,13 +111,8 @@ func openFeature(ctx context.Context, verb string, args []string, create bool) e
 	// state file must not look like a free name, or `new` would allocate a
 	// fresh slot over the top of a feature that still has units running.
 	_, loadErr := state.Load(m.Name, name)
-	switch {
-	case loadErr != nil && !errors.Is(loadErr, state.ErrNotFound):
-		return loadErr
-	case create && loadErr == nil:
-		return fmt.Errorf("feature %q already exists; run `canaveral %s` to bring it up to date", name, name)
-	case !create && loadErr != nil:
-		return unknownFeature(m.Name, name)
+	if err := checkFeatureExistence(loadErr, create, m.Name, name); err != nil {
+		return err
 	}
 
 	opt := feature.Options{
@@ -140,22 +135,45 @@ func openFeature(ctx context.Context, verb string, args []string, create bool) e
 	printFeatureSummary(f)
 
 	if *focus && !*noWindows {
-		if err := hypr.Available(ctx); err == nil {
-			// The workspace may have been deliberately built on a monitor
-			// other than the one the user is on (see reconcileLayoutWindows),
-			// so it has to be pulled back to whichever monitor is actually
-			// focused right now before switching to it — otherwise
-			// --focus would silently make it appear on a screen the user
-			// is not even looking at.
-			if mon, err := hypr.ActiveMonitor(ctx); err == nil {
-				_ = hypr.MoveWorkspaceToMonitor(ctx, f.HyprWorkspace(), mon.Name)
-			}
-			if err := hypr.Focus(ctx, f.HyprWorkspace()); err != nil {
-				r.Warn("%v", err)
-			}
-		}
+		focusFeatureWorkspace(ctx, f, r)
 	}
 	return nil
+}
+
+// checkFeatureExistence distinguishes "no such feature" from a corrupt
+// state file and, depending on create, from a feature that already exists.
+// A corrupt state file must never look like a free name, or `new` would
+// allocate a fresh slot over the top of a feature that still has units
+// running.
+func checkFeatureExistence(loadErr error, create bool, projectName, name string) error {
+	switch {
+	case loadErr != nil && !errors.Is(loadErr, state.ErrNotFound):
+		return loadErr
+	case create && loadErr == nil:
+		return fmt.Errorf("feature %q already exists; run `canaveral %s` to bring it up to date", name, name)
+	case !create && loadErr != nil:
+		return unknownFeature(projectName, name)
+	}
+	return nil
+}
+
+// focusFeatureWorkspace switches to f's workspace, first pulling it back
+// onto whichever monitor is actually focused right now.
+//
+// The workspace may have been deliberately built on a monitor other than
+// the one the user is on (see reconcileLayoutWindows), so it has to be
+// relocated before switching to it — otherwise --focus would silently make
+// it appear on a screen the user is not even looking at.
+func focusFeatureWorkspace(ctx context.Context, f *state.Feature, r reporter) {
+	if err := hypr.Available(ctx); err != nil {
+		return
+	}
+	if mon, err := hypr.ActiveMonitor(ctx); err == nil {
+		_ = hypr.MoveWorkspaceToMonitor(ctx, f.HyprWorkspace(), mon.Name)
+	}
+	if err := hypr.Focus(ctx, f.HyprWorkspace()); err != nil {
+		r.Warn("%v", err)
+	}
 }
 
 // unknownFeature explains a name that is neither a command nor a feature.
