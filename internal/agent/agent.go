@@ -55,12 +55,44 @@ func DiscoverURL(ctx context.Context, logPath string, timeout time.Duration, ali
 // Resolving in the parent (rather than relying on the unit's PATH) turns a
 // missing toolchain into an immediate, clear error instead of a unit that
 // starts and dies.
+//
+// LookPath alone is not enough: canaveral is often started from a Hyprland
+// keybind or a quickshell launcher, which inherit the session's PATH rather
+// than a login shell's. That PATH is missing whatever an rc file would have
+// added — mise/asdf shims, ~/.local/bin, npm's global bin — which is exactly
+// where opencode tends to live. The same trap is documented for canaveral's
+// own binary in share/quickshell/LauncherWindow.qml. A login shell resolves
+// PATH the way an interactive terminal would, so it is tried as a fallback
+// before giving up.
 func Resolve() (string, error) {
-	bin, err := exec.LookPath("opencode")
-	if err != nil {
-		return "", fmt.Errorf("opencode not found in PATH: %w", err)
+	if bin, err := exec.LookPath("opencode"); err == nil {
+		return filepath.Abs(bin)
 	}
-	return filepath.Abs(bin)
+	if bin, err := resolveViaLoginShell("opencode"); err == nil {
+		return bin, nil
+	}
+	return "", fmt.Errorf("opencode not found in PATH (checked a login shell too)")
+}
+
+// resolveViaLoginShell asks $SHELL, run as a login shell, where name lives.
+// Login shells source the profile files that set up a real PATH, unlike the
+// bare PATH a window manager or systemd user session hands new processes.
+func resolveViaLoginShell(name string) (string, error) {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, shell, "-lc", "command -v "+shellQuote(name)).Output()
+	if err != nil {
+		return "", fmt.Errorf("%s via %s -lc: %w", name, shell, err)
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return "", fmt.Errorf("%s not found via %s -lc", name, shell)
+	}
+	return filepath.Abs(p)
 }
 
 // ServeCmd builds the shell command that starts a headless opencode server.

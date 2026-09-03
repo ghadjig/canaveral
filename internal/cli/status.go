@@ -786,9 +786,9 @@ func runAttach(ctx context.Context, args []string) error {
 		return fmt.Errorf("agent %q is not running (run `canaveral reset %s`)", a.Name, f.Name)
 	}
 
-	bin, err := exec.LookPath("opencode")
+	bin, err := agent.Resolve()
 	if err != nil {
-		return fmt.Errorf("opencode not found in PATH: %w", err)
+		return err
 	}
 	argv := []string{"opencode", "attach", a.URL, "--dir", a.Dir}
 	if *cont {

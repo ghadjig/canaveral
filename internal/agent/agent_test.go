@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -920,5 +923,78 @@ func TestProbeSincePromptZeroWithNoUserMessage(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
 	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.SincePrompt != 0 {
 		t.Errorf("SincePrompt = %v, want 0", h.SincePrompt)
+	}
+}
+
+// TestResolveFallsBackToLoginShellPATH reproduces the Hyprland/quickshell
+// case: the process's own PATH lacks opencode, but a login shell's PATH
+// (set up by a profile file, the way an interactive terminal would see it)
+// finds it.
+func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not found in PATH, cannot exercise the login-shell fallback")
+	}
+
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	emptyDir := filepath.Join(tmp, "empty")
+	homeDir := filepath.Join(tmp, "home")
+	for _, d := range []string{binDir, emptyDir, homeDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := filepath.Join(binDir, "opencode")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho fake\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := "export PATH=\"$PATH:" + binDir + "\"\n"
+	if err := os.WriteFile(filepath.Join(homeDir, ".bash_profile"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A process's own PATH does not see the fake opencode: only a login
+	// shell, via HOME/.bash_profile, does.
+	t.Setenv("PATH", emptyDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("SHELL", bashPath)
+
+	got, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want success via the login-shell fallback", err)
+	}
+	want, err := filepath.Abs(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Resolve() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveReportsErrorWhenNotFoundAnywhere ensures the fallback does not
+// swallow a genuine "not installed" error.
+func TestResolveReportsErrorWhenNotFoundAnywhere(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH, cannot exercise the login-shell fallback")
+	}
+
+	tmp := t.TempDir()
+	emptyDir := filepath.Join(tmp, "empty")
+	homeDir := filepath.Join(tmp, "home")
+	for _, d := range []string{emptyDir, homeDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("PATH", emptyDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("SHELL", "bash")
+
+	if _, err := Resolve(); err == nil {
+		t.Fatal("Resolve() error = nil, want an error when opencode is nowhere to be found")
 	}
 }
