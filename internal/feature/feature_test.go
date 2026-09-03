@@ -300,19 +300,24 @@ func TestEnvForRejectsAgentReference(t *testing.T) {
 
 // TestDBSuffixForNamespacedFeature covers a suffix that has to survive being
 // pasted into a database name. Feature names keep "/" as a namespace
-// separator, and only "-" used to be replaced, so "onboarding/ask-for-name"
-// yielded "norules_test_onboarding/ask_for_name" — which Postgres rejects
-// unless quoted, and which Rails does not quote. Namespaced features simply
-// could not use suffix isolation.
+// separator, and only "-" used to be replaced, so "profile/working-hours"
+// yielded "norules_test_profile/working_hours".
+//
+// That did not fail loudly, which is how it survived: MySQL accepts the name
+// and percent-encodes the slash on disk (@002f), so the databases really do
+// get created and only downstream handling of the name breaks.
 func TestDBSuffixForNamespacedFeature(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	m.Database.Isolation = manifest.DBSuffix
 	cases := map[string]string{
 		"small-fixes":             "_small_fixes",
+		"profile/working-hours":   "_profile_working_hours",
 		"onboarding/ask-for-name": "_onboarding_ask_for_name",
 		"feat/api/v2":             "_feat_api_v2",
 		"plain":                   "_plain",
 	}
 	for in, want := range cases {
-		if got := dbSuffixFor(in); got != want {
+		if got := dbSuffixFor(m, in); got != want {
 			t.Errorf("dbSuffixFor(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -322,8 +327,10 @@ func TestDBSuffixForNamespacedFeature(t *testing.T) {
 // list of examples: whatever the feature is called, the suffix must be
 // appendable to an unquoted SQL identifier.
 func TestDBSuffixForIsIdentifierSafe(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	m.Database.Isolation = manifest.DBSuffix
 	for _, name := range []string{"a/b", "a-b", "a.b", "Ä/ö", "x/y/z"} {
-		got := dbSuffixFor(name)
+		got := dbSuffixFor(m, name)
 		if !strings.HasPrefix(got, "_") {
 			t.Errorf("dbSuffixFor(%q) = %q, want a leading underscore", name, got)
 		}
@@ -334,5 +341,102 @@ func TestDBSuffixForIsIdentifierSafe(t *testing.T) {
 				t.Errorf("dbSuffixFor(%q) = %q contains %q, not identifier-safe", name, got, r)
 			}
 		}
+	}
+}
+
+// TestDBSuffixForSharedIsEmpty keeps the shared case decided in one place, so
+// no caller has to remember to check the isolation mode itself.
+func TestDBSuffixForSharedIsEmpty(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	m.Database.Isolation = manifest.DBShared
+	if got := dbSuffixFor(m, "profile/working-hours"); got != "" {
+		t.Errorf("dbSuffixFor under shared isolation = %q, want empty", got)
+	}
+}
+
+// TestEnsureRecordRecomputesDBSuffix is the half of the namespaced-suffix fix
+// that correcting dbSuffixFor alone does not deliver.
+//
+// The suffix is written into the feature's state file when it is created, and
+// nothing used to recompute it — so a feature created before the fix kept
+// "_profile/working_hours" for the rest of its life no matter how many times
+// it was reopened, and the databases it had already created under that name
+// stayed in use. Ports were always recomputed from the manifest for exactly
+// this reason; the suffix is the same kind of derived value and now follows.
+func TestEnsureRecordRecomputesDBSuffix(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// This test runs inside a canaveral worktree, so these are set in the
+	// ambient environment and would otherwise leak in.
+	t.Setenv("CANAVERAL_ROOT", "")
+	t.Setenv("CANAVERAL_FEATURE", "")
+
+	const name = "profile/working-hours"
+	m := &manifest.Manifest{Name: "norules", Root: t.TempDir()}
+	m.Database.Isolation = manifest.DBSuffix
+
+	// A record as an older canaveral would have written it: slash and all.
+	stale := &state.Feature{
+		Project: "norules", Name: name, Slot: 3,
+		Worktree: "/wt/pwh", Branch: name,
+		DBSuffix: "_profile/working_hours",
+	}
+	if err := state.Save(stale); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	f, created, err := ensureRecord(context.Background(), m, name)
+	if err != nil {
+		t.Fatalf("ensureRecord: %v", err)
+	}
+	if created {
+		t.Fatal("existing feature reported as created")
+	}
+	if want := "_profile_working_hours"; f.DBSuffix != want {
+		t.Errorf("DBSuffix = %q, want %q", f.DBSuffix, want)
+	}
+	// The slot is identity, not a derived value, and must survive untouched.
+	if f.Slot != 3 {
+		t.Errorf("Slot = %d, want 3 — reopening must not move a feature's ports", f.Slot)
+	}
+}
+
+// TestEnsureRecordFollowsIsolationChange covers the quieter failure of the
+// same bug. norules switched [database] isolation from "shared" to "suffix"
+// after its features already existed; without recomputing, each of them kept
+// the empty suffix it was created with and went on sharing the one database —
+// the exact collision the switch was made to prevent, now invisible.
+func TestEnsureRecordFollowsIsolationChange(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	t.Setenv("CANAVERAL_FEATURE", "")
+
+	const name = "small-fixes"
+	shared := &state.Feature{
+		Project: "norules", Name: name, Slot: 0,
+		Worktree: "/wt/sf", Branch: name, DBSuffix: "",
+	}
+	if err := state.Save(shared); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := &manifest.Manifest{Name: "norules", Root: t.TempDir()}
+	m.Database.Isolation = manifest.DBSuffix
+	f, _, err := ensureRecord(context.Background(), m, name)
+	if err != nil {
+		t.Fatalf("ensureRecord: %v", err)
+	}
+	if want := "_small_fixes"; f.DBSuffix != want {
+		t.Errorf("switching to suffix isolation left DBSuffix = %q, want %q", f.DBSuffix, want)
+	}
+
+	// And back again: switching to shared must stop isolating, not strand the
+	// feature on a database the manifest no longer describes.
+	m.Database.Isolation = manifest.DBShared
+	f, _, err = ensureRecord(context.Background(), m, name)
+	if err != nil {
+		t.Fatalf("ensureRecord: %v", err)
+	}
+	if f.DBSuffix != "" {
+		t.Errorf("switching to shared left DBSuffix = %q, want empty", f.DBSuffix)
 	}
 }

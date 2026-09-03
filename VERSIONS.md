@@ -12,6 +12,42 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- A feature's database suffix now follows the manifest instead of being frozen
+  when the feature was created. It is written into the feature's state file on
+  creation and nothing recomputed it, so two things stayed wrong however many
+  times you reopened a feature:
+
+  - A feature created before v0.6.0 kept a suffix with a `/` in it. v0.6.0
+    fixed how the suffix is *derived*, but not the stored value, so
+    `profile/working-hours` went on using `_profile/working_hours`.
+  - A project that switched `[database] isolation` from `shared` to `suffix`
+    left every already-existing feature on the empty suffix it was created
+    with, still sharing the one database — the exact collision the switch was
+    made to prevent, and silent, because nothing reports which database a
+    feature ended up on.
+
+  Ports were always recomputed from the manifest for this reason; the suffix
+  is the same kind of derived value and now behaves the same way. The slot
+  still never moves, so ports do not shift under a running feature.
+
+  Reopen an affected feature (`canaveral reset <feature>`, or just open it) to
+  pick up the corrected suffix. Databases created under the old name are not
+  migrated or dropped — they are the test databases, so the cheapest thing is
+  to let the suite recreate them and drop the old ones by hand.
+
+  Worth knowing why this was not noticed sooner: a slash in the name does not
+  fail on MySQL. It accepts it and percent-encodes it on disk, so
+  `norules_test_profile/working_hours` is really created, as the directory
+  `norules_test_profile@002fworking_hours`. What breaks is everything that
+  later treats the name as text or a path — `mysqldump`, a backup script, an
+  S3 key named after the database gaining an extra directory separator.
+  Postgres is the stricter one and rejects the name unless it is quoted, which
+  Rails does not do.
+
 ## v0.6.0 — 2026-09-03
 
 ### Changed

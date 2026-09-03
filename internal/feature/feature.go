@@ -255,9 +255,13 @@ func projectRoot(ctx context.Context, m *manifest.Manifest) string {
 // ensureRecord loads the feature or allocates a new slot, branch and ports.
 func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*state.Feature, bool, error) {
 	if f, err := state.Load(m.Name, name); err == nil {
-		// Ports follow the manifest so newly declared services get one, but the
-		// slot never moves.
+		// Ports and the database suffix follow the manifest, but the slot never
+		// moves. Both are derived values: recomputing them is what lets a
+		// newly declared service get a port, and what lets a project switch
+		// [database] isolation without every feature that already exists
+		// silently keeping the old answer.
 		f.Ports = portsFor(m, f.Slot)
+		f.DBSuffix = dbSuffixFor(m, name)
 		f.Root = projectRoot(ctx, m)
 		return f, false, nil
 	}
@@ -285,9 +289,7 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 		Ports:     portsFor(m, slot),
 		CreatedAt: time.Now(),
 	}
-	if m.Database.Isolation == manifest.DBSuffix {
-		f.DBSuffix = dbSuffixFor(name)
-	}
+	f.DBSuffix = dbSuffixFor(m, name)
 	branch, err := worktree.RenderBranch(m.Branch, worktree.BranchVars{
 		Workspace: m.Name, Feature: name, Agent: name,
 	})
@@ -310,18 +312,31 @@ func portsFor(m *manifest.Manifest, slot int) map[string]int {
 	return out
 }
 
-// dbSuffixFor derives a feature's database suffix from its name.
+// dbSuffixFor derives a feature's database suffix from the manifest and the
+// feature's name, or "" when the project shares one database.
 //
 // The result is appended to a database name by the application's own config,
 // so it has to be usable as an unquoted SQL identifier: leading underscore,
 // then letters, digits and underscores only. A slugged feature name is
 // already lowercase alphanumerics plus "-" and "/", so replacing those two is
 // enough — but both must be replaced. Only "-" was, which meant a namespaced
-// feature like "onboarding/ask-for-name" produced the suffix
-// "_onboarding/ask_for_name" and a database name containing a slash, which
-// Postgres rejects unless quoted. Namespaced features could not use suffix
-// isolation at all.
-func dbSuffixFor(name string) string {
+// feature like "profile/working-hours" produced "_profile/working_hours" and
+// a database name containing a slash.
+//
+// That did not fail loudly, which is why it survived. Postgres rejects such a
+// name unless quoted, and Rails does not quote it — but MySQL accepts it and
+// percent-encodes the slash on disk, so the databases really are created, as
+// "norules_test_profile@002fworking_hours". The name then breaks anything that
+// handles it as a path or as text: mysqldump output, a backup script, an S3
+// key named after the database suddenly gaining a directory separator.
+//
+// Takes the manifest rather than a bool so the shared case is decided in one
+// place. Callers recompute this on every load, so a project that switches
+// isolation moves its existing features with it.
+func dbSuffixFor(m *manifest.Manifest, name string) string {
+	if m.Database.Isolation != manifest.DBSuffix {
+		return ""
+	}
 	return "_" + strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
