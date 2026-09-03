@@ -926,14 +926,62 @@ func TestProbeSincePromptZeroWithNoUserMessage(t *testing.T) {
 	}
 }
 
-// TestResolveFallsBackToLoginShellPATH reproduces the Hyprland/quickshell
-// case: the process's own PATH lacks opencode, but a login shell's PATH
-// (set up by a profile file, the way an interactive terminal would see it)
-// finds it.
+// TestResolveFallsBackToInteractiveShellPATH reproduces the Hyprland/
+// quickshell case: the process's own PATH lacks opencode, but an
+// interactive (non-login) shell's PATH — set up by ~/.bashrc, the file
+// bash only reads this way, and where opencode's own installer adds
+// itself — finds it.
+func TestResolveFallsBackToInteractiveShellPATH(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
+	}
+
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	emptyDir := filepath.Join(tmp, "empty")
+	homeDir := filepath.Join(tmp, "home")
+	for _, d := range []string{binDir, emptyDir, homeDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := filepath.Join(binDir, "opencode")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho fake\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc := "export PATH=\"$PATH:" + binDir + "\"\n"
+	if err := os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte(rc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A process's own PATH does not see the fake opencode, nor does a login
+	// shell (no .bash_profile to read it from): only an interactive
+	// non-login shell, via HOME/.bashrc, does.
+	t.Setenv("PATH", emptyDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("SHELL", bashPath)
+
+	got, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want success via the shell fallback", err)
+	}
+	want, err := filepath.Abs(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Resolve() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveFallsBackToLoginShellPATH covers the opposite layout: PATH set
+// from a login shell's profile file rather than an interactive shell's rc.
 func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skip("bash not found in PATH, cannot exercise the login-shell fallback")
+		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
 	}
 
 	tmp := t.TempDir()
@@ -978,7 +1026,7 @@ func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
 // swallow a genuine "not installed" error.
 func TestResolveReportsErrorWhenNotFoundAnywhere(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not found in PATH, cannot exercise the login-shell fallback")
+		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
 	}
 
 	tmp := t.TempDir()

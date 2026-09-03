@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -58,39 +59,52 @@ func DiscoverURL(ctx context.Context, logPath string, timeout time.Duration, ali
 //
 // LookPath alone is not enough: canaveral is often started from a Hyprland
 // keybind or a quickshell launcher, which inherit the session's PATH rather
-// than a login shell's. That PATH is missing whatever an rc file would have
-// added — mise/asdf shims, ~/.local/bin, npm's global bin — which is exactly
-// where opencode tends to live. The same trap is documented for canaveral's
-// own binary in share/quickshell/LauncherWindow.qml. A login shell resolves
-// PATH the way an interactive terminal would, so it is tried as a fallback
-// before giving up.
+// than a real terminal's. That PATH is missing whatever a shell startup file
+// would have added — mise/asdf shims, ~/.local/bin, npm's global bin — which
+// is exactly where opencode tends to live. The same trap is documented for
+// canaveral's own binary in share/quickshell/LauncherWindow.qml. $SHELL is
+// tried as a fallback before giving up, both as an interactive shell (where
+// PATH conventionally lives — bash only reads ~/.bashrc this way, which is
+// where its own installer's PATH line goes) and as a login shell (where it
+// lives if set from a profile file instead); different setups pick one or
+// the other, so both are tried.
 func Resolve() (string, error) {
 	if bin, err := exec.LookPath("opencode"); err == nil {
 		return filepath.Abs(bin)
 	}
-	if bin, err := resolveViaLoginShell("opencode"); err == nil {
-		return bin, nil
+	var errs []error
+	for _, flag := range []string{"-ic", "-lc"} {
+		bin, err := resolveViaShell(flag, "opencode")
+		if err == nil {
+			return bin, nil
+		}
+		errs = append(errs, err)
 	}
-	return "", fmt.Errorf("opencode not found in PATH (checked a login shell too)")
+	return "", fmt.Errorf("opencode not found in PATH: %w", errors.Join(errs...))
 }
 
-// resolveViaLoginShell asks $SHELL, run as a login shell, where name lives.
-// Login shells source the profile files that set up a real PATH, unlike the
-// bare PATH a window manager or systemd user session hands new processes.
-func resolveViaLoginShell(name string) (string, error) {
+// resolveViaShell asks $SHELL, invoked with flag (e.g. "-ic" for interactive,
+// "-lc" for login), where name lives. Both kinds of shell read different
+// startup files, so which one has the PATH you want depends on where it was
+// set; the caller tries both.
+func resolveViaShell(flag, name string) (string, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, shell, "-lc", "command -v "+shellQuote(name)).Output()
+	cmd := exec.CommandContext(ctx, shell, flag, "command -v "+shellQuote(name))
+	// -i shells source files that assume a terminal; none of that reads
+	// stdin, so leaving it at the default (/dev/null) is enough to avoid a
+	// hang, and stderr noise (job control warnings) is simply discarded.
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%s via %s -lc: %w", name, shell, err)
+		return "", fmt.Errorf("%s via %s %s: %w", name, shell, flag, err)
 	}
 	p := strings.TrimSpace(string(out))
 	if p == "" {
-		return "", fmt.Errorf("%s not found via %s -lc", name, shell)
+		return "", fmt.Errorf("%s not found via %s %s", name, shell, flag)
 	}
 	return filepath.Abs(p)
 }

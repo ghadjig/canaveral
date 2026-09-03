@@ -19,10 +19,12 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 - Resolving `opencode` (for starting agents, and for `canaveral attach`) no
   longer gives up the moment it is missing from the process's own `PATH`.
   Launched from a Hyprland keybind or the quickshell launcher, canaveral
-  inherits the session's bare `PATH`, not a login shell's, and so would
-  report `opencode not found in PATH` even when it is installed and on the
-  `PATH` your terminal sees. It now falls back to asking a login shell
-  (`$SHELL -lc "command -v opencode"`) before giving up.
+  inherits the session's bare `PATH`, not a terminal's, and so would report
+  `opencode not found in PATH` even when it is installed and on the `PATH`
+  your terminal sees. It now falls back to asking `$SHELL`, both as an
+  interactive shell (`-ic`, which is where bash's own rc file lives) and as a
+  login shell (`-lc`, for setups that use a profile file instead), before
+  giving up.
 
 ## v0.5.1 — 2026-09-01
 
