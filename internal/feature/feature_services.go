@@ -21,7 +21,10 @@ import (
 func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, prog *progress) error {
 
-	base := baseEnvFor(m, f, tc)
+	base, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return err
+	}
 	var records []state.Service
 
 	logDir, err := state.LogDir(f.Project, f.Name)
@@ -111,7 +114,7 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 		Description: fmt.Sprintf("canaveral %s/%s service %s", f.Project, f.Name, s.Name),
 		Dir:         rec.Dir,
 		Cmd:         rec.Cmd,
-		Env:         manifest.MergeEnv(base, m.Env, svcEnv),
+		Env:         manifest.MergeEnv(base, svcEnv),
 		LogPath:     rec.LogPath,
 	}); err != nil {
 		if s.Optional {
@@ -200,8 +203,11 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	if err != nil {
 		return err
 	}
-	base := baseEnvFor(m, f, tc)
 	vars := varsFor(ctx, m, f, false)
+	base, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return err
+	}
 
 	logDir, err := state.LogDir(f.Project, f.Name)
 	if err != nil {

@@ -254,8 +254,9 @@ default = [0.4, 0.2, 0.2, 0.2]
 
 ### Placeholders
 
-Available in service commands, env values, readiness probes, window commands and
-setup hooks:
+Available in service and window commands, readiness probes, setup hooks, and
+every `env` value — the project-wide `[env]` as well as a service's or agent's
+own:
 
 | Placeholder | Example |
 | --- | --- |
@@ -543,6 +544,185 @@ database: <%= "norules_development#{ENV['DB_SUFFIX']}" %>
 
 canaveral then exports `DB_SUFFIX=_small_fixes` and runs `database.setup` once
 when the worktree is created.
+
+### Isolating everything else
+
+Ports only separate features at the edge. Each gets its own web port and its own
+worktree, and then both connect to the same postgres and the same redis, so a
+spec run in one truncates tables and flushes keys out from under the other. The
+suffix above narrows that to the database and leaves the rest.
+
+The general fix is `[env]`, whose values are rendered per feature like any other
+manifest string. Point each shared service at a name or number derived from the
+feature:
+
+```toml
+[env]
+DATABASE_URL = "postgres://localhost:5432/norules_test{{.DBSuffix}}"
+REDIS_URL    = "redis://localhost:6379/{{.Slot}}"
+```
+
+Redis is worth spelling out because it looks like it needs a container and does
+not: a server holds sixteen numbered databases that cannot see each other, and
+`{{.Slot}}` is dense and reused, so features land on 0, 1, 2 and free the number
+again when removed. Sidekiq, ActionCable and `Rails.cache` each need their own
+URL set the same way if they are configured separately.
+
+This costs one `CREATE DATABASE` per feature. A container per feature costs a
+full schema load and seed on every `canaveral new`, a copy of the dataset on
+disk, and a docker daemon in the path of opening a feature — worth it only when
+names cannot express the difference: a branch that changes the *version* of a
+service, server-level config or extensions, or a suite that calls something
+server-wide like redis's `FLUSHALL` rather than `FLUSHDB`. Reach for
+[`precheck`](#the-manifest) for those, which runs on every open and can bring up
+whatever the feature needs.
+
+`[env]` reaches every process canaveral starts for a feature — services, agents,
+window terminals, `precheck`, the setup hooks and `canaveral exec`. That last
+one matters most here: a suite run by hand in a feature's terminal has to reach
+the same database its service does, or the isolation holds only until someone
+types `bin/rspec` themselves.
+
+`[env]` cannot reference `{{.Agent.main}}`. Agent URLs are known only after
+agents start, and services start before them, so the value would depend on which
+phase asked; canaveral refuses it at startup instead.
+
+### Configuring the application
+
+canaveral exports the isolation; the application has to read it. Nothing here is
+automatic — a manifest that sets `isolation = "suffix"` against an app whose
+`database.yml` ignores `DB_SUFFIX` has changed nothing at all, quietly.
+
+This is the whole contract. Every process canaveral starts for a feature —
+services, agents, window terminals, `precheck`, setup hooks, `canaveral exec` —
+sees these:
+
+| Variable | Value | Set when |
+| --- | --- | --- |
+| `CANAVERAL_PROJECT` | `norules` | always |
+| `CANAVERAL_FEATURE` | `small-fixes` | always |
+| `CANAVERAL_WORKTREE` | the feature's checkout | always |
+| `CANAVERAL_ROOT` | the main checkout | always |
+| `CANAVERAL_PORT_<NAME>` | `3001` | one per `[ports]` entry |
+| `DB_SUFFIX` | `_small_fixes` | only when `isolation = "suffix"` |
+
+`<NAME>` is the port name uppercased with `-` replaced by `_`, so `side-car`
+becomes `CANAVERAL_PORT_SIDE_CAR`. The name of the suffix variable is
+`[database] suffix_env` if you would rather call it something else.
+
+#### The database suffix
+
+`DB_SUFFIX` is a leading underscore followed by the feature name with every
+character that is not a letter or digit replaced by an underscore, so it can be
+pasted straight into an unquoted SQL identifier:
+
+| Feature | `DB_SUFFIX` |
+| --- | --- |
+| `small-fixes` | `_small_fixes` |
+| `onboarding/ask-for-name` | `_onboarding_ask_for_name` |
+| any feature, when `isolation = "shared"` | empty |
+
+That last row is the useful one: write the config once and it degrades to the
+project's ordinary database name under shared isolation, and outside canaveral
+entirely where the variable is simply unset. There is no second code path to
+maintain and nothing to strip out before deploying.
+
+```yaml
+# config/database.yml
+default: &default
+  adapter: postgresql
+  encoding: unicode
+
+development:
+  <<: *default
+  database: <%= "norules_development#{ENV['DB_SUFFIX']}" %>
+
+test:
+  <<: *default
+  database: <%= "norules_test#{ENV['DB_SUFFIX']}" %>
+```
+
+Both blocks matter. `development` is what the web service uses and `test` is what
+your specs use, and it is the `test` one that features collide over — a suite
+truncating tables is the usual way two features corrupt each other.
+
+#### Redis, cache and queues
+
+Redis has no suffix concept but does have sixteen numbered databases that cannot
+see each other, which is the same isolation by another name. Select one by slot:
+
+```toml
+[env]
+REDIS_URL      = "redis://localhost:6379/{{.Slot}}"
+SIDEKIQ_URL    = "redis://localhost:6379/{{.Slot}}"
+CABLE_URL      = "redis://localhost:6379/{{.Slot}}"
+```
+
+Anything the app configures separately needs its own variable — Sidekiq,
+ActionCable and `Rails.cache` do not share one just because they all talk to
+redis. Point them at the same numbered database or at different ones; what
+matters is only that another feature is not also using it.
+
+Two limits worth knowing. Sixteen is the default `databases` setting, so slots
+above 15 wrap into a collision — in practice slots are dense and reused, so this
+means more than sixteen simultaneous features. And `FLUSHALL` ignores the
+selected database and clears the server; a suite that calls it, rather than
+`FLUSHDB`, will still reach into every other feature.
+
+#### The dev runner
+
+Whatever starts the app — `bin/dev`, `foreman`, a `Procfile` — must take its
+ports from the environment rather than hardcoding them, or every feature will
+fight over `:3000` regardless of what the database is called:
+
+```toml
+[ports]
+web = 3000
+
+[[service]]
+name = "web"
+cmd  = "bin/rails server -p {{.Port.web}}"
+ready.http = "{{.URL.web}}/up"
+```
+
+Prefer one `[[service]]` per process over a single `bin/dev` that supervises
+several. canaveral gives each service its own unit, its own truncated log and its
+own readiness probe, so `canaveral restart web` bounces the web server alone and
+`canaveral logs jobs -f` follows the job runner alone. Wrapped in one process
+those all collapse to a single opaque unit.
+
+Creating the databases is `[database] setup`, which runs once when a worktree is
+created. `bin/rails db:prepare` reads the `database.yml` above, so it creates the
+suffixed databases without knowing canaveral exists. Use `precheck` for what must
+be true on *every* open instead — migrations matching the branch, a database
+server that is actually running:
+
+```toml
+[database]
+isolation = "suffix"
+setup     = "bin/rails db:prepare"
+
+precheck  = "bin/rails db:prepare"
+```
+
+#### Checking it worked
+
+Ask a feature what it sees, rather than assuming:
+
+```
+$ canaveral exec small-fixes env | grep -E 'CANAVERAL|DB_SUFFIX|REDIS'
+CANAVERAL_FEATURE=small-fixes
+CANAVERAL_PORT_WEB=3001
+DB_SUFFIX=_small_fixes
+REDIS_URL=redis://localhost:6379/1
+
+$ canaveral exec small-fixes bin/rails runner 'puts ActiveRecord::Base.connection.current_database'
+norules_development_small_fixes
+```
+
+`exec` deliberately runs under the same environment the services get, so if the
+second command prints the shared database name, so does the running app — and
+the fix is in `database.yml`, not in the manifest.
 
 ## Telemetry
 

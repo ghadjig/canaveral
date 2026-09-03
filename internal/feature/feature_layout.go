@@ -39,7 +39,10 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		return err
 	}
 	open := hypr.ByClass(clients)
-	base := baseEnvFor(m, f, tc)
+	base, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return err
+	}
 
 	var records []state.Window
 	pendingByName := map[string]pendingSpawn{}
@@ -158,7 +161,7 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		Terminal:   m.Terminal,
 		Cmd:        cmd,
 		Hold:       w.Hold,
-		Env:        manifest.MergeEnv(base, m.Env),
+		Env:        base,
 	}
 	return rec, &pendingSpawn{name: w.Name, spec: spec}, nil
 }

@@ -286,7 +286,7 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 		CreatedAt: time.Now(),
 	}
 	if m.Database.Isolation == manifest.DBSuffix {
-		f.DBSuffix = "_" + strings.ReplaceAll(name, "-", "_")
+		f.DBSuffix = dbSuffixFor(name)
 	}
 	branch, err := worktree.RenderBranch(m.Branch, worktree.BranchVars{
 		Workspace: m.Name, Feature: name, Agent: name,
@@ -308,6 +308,27 @@ func portsFor(m *manifest.Manifest, slot int) map[string]int {
 		out[name] = base + slot
 	}
 	return out
+}
+
+// dbSuffixFor derives a feature's database suffix from its name.
+//
+// The result is appended to a database name by the application's own config,
+// so it has to be usable as an unquoted SQL identifier: leading underscore,
+// then letters, digits and underscores only. A slugged feature name is
+// already lowercase alphanumerics plus "-" and "/", so replacing those two is
+// enough — but both must be replaced. Only "-" was, which meant a namespaced
+// feature like "onboarding/ask-for-name" produced the suffix
+// "_onboarding/ask_for_name" and a database name containing a slash, which
+// Postgres rejects unless quoted. Namespaced features could not use suffix
+// isolation at all.
+func dbSuffixFor(name string) string {
+	return "_" + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		}
+		return '_'
+	}, name)
 }
 
 func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh bool) tmpl.Vars {
@@ -367,6 +388,37 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 	return manifest.MergeEnv(tc, own)
 }
 
+// envFor is baseEnvFor plus the manifest's [env], with its templates
+// rendered for this feature.
+//
+// Rendering [env] is what lets a project state its isolation once, at the top
+// of the manifest, instead of repeating it in every service:
+//
+//	[env]
+//	DATABASE_URL = "postgres://localhost/app_test{{.DBSuffix}}"
+//	REDIS_URL    = "redis://localhost:6379/{{.Slot}}"
+//
+// Every process canaveral starts for a feature is built from here — services,
+// agents, window terminals, precheck, the setup hooks and `canaveral exec` —
+// and that is the point. A spec run typed into a feature's own terminal has
+// to reach the same database the service does, or the isolation only holds
+// for some of the ways the code gets run, which is worse than not having it:
+// it holds right up until the moment someone runs the suite by hand.
+//
+// [env] cannot reference {{.Agent...}}. Agent URLs are only known once agents
+// have started, and services start before them, so such a value would resolve
+// differently depending on which phase asked. missingkey=error makes that a
+// startup failure rather than a silent inconsistency.
+func envFor(m *manifest.Manifest, f *state.Feature, tc map[string]string, vars tmpl.Vars) (map[string]string, error) {
+	rendered, err := tmpl.RenderMap("env", m.Env, vars)
+	if err != nil {
+		return nil, err
+	}
+	// [env] last: a project that wants to override one of canaveral's own
+	// variables — a port, the database suffix variable — is entitled to.
+	return manifest.MergeEnv(baseEnvFor(m, f, tc), rendered), nil
+}
+
 // serviceDir keeps sub-directory layouts intact inside the worktree.
 func serviceDir(f *state.Feature, m *manifest.Manifest, dir string) string {
 	full := manifest.ResolveDir(m.Root, dir)
@@ -413,15 +465,20 @@ func tailIndent(path string, n int) string {
 
 // EnvFor returns the environment a command run inside a feature's worktree
 // should see: the project's resolved toolchain, canaveral's own variables
-// (ports, worktree, project root) and the manifest's [env].
+// (ports, worktree, project root) and the manifest's rendered [env].
 //
 // Exported so `canaveral exec` runs commands under exactly the same
 // environment the feature's own services and agents get, rather than
-// whatever the calling shell happens to have.
+// whatever the calling shell happens to have. That equivalence is what makes
+// `canaveral exec <feature> bin/rspec` hit the feature's own database rather
+// than the project's shared one.
 func EnvFor(ctx context.Context, m *manifest.Manifest, f *state.Feature) (map[string]string, error) {
 	tc, err := toolchain.Env(ctx, m.ToolchainMode(), f.Worktree)
 	if err != nil {
 		return nil, err
 	}
-	return manifest.MergeEnv(baseEnvFor(m, f, tc), m.Env), nil
+	// fresh=false: agent URLs are not needed to render [env] — referencing
+	// one there is an error anyway — and asking for them would mean an HTTP
+	// round trip to every agent just to set up a shell command.
+	return envFor(m, f, tc, varsFor(ctx, m, f, false))
 }

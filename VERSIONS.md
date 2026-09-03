@@ -12,9 +12,60 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.6.0 — 2026-09-03
+
+### Changed
+
+- **`[env]` values are now templates, and an unrecognised placeholder stops a
+  feature from opening.** They were passed through verbatim before, so a value
+  containing `{{` reached the process exactly as written. It is now rendered
+  like every other manifest string, under `missingkey=error` — so a manifest
+  that opened fine on v0.5.1 can now fail at startup instead of coming up
+  misconfigured. That is the intended trade: `DATABASE_URL` silently pointing
+  at the shared database is worse than a feature that refuses to open and says
+  why.
+
+  Only the project-wide `[env]` changes. Per-service and per-agent `env`
+  blocks have always been rendered, and are unaffected.
+
+  To pass a literal `{{` through — a placeholder meant for some other tool —
+  escape it as `{{"{{"}}`.
+
+  `[env]` also may not reference `{{.Agent.main}}`. Agent URLs are only known
+  once agents have started, and services start before them, so the same value
+  would resolve two different ways depending on which phase asked.
 
 ### Fixed
+
+- The manifest's project-wide `[env]` now has its templates rendered, like
+  every other manifest string and like the per-service and per-agent `env`
+  blocks always have. It was previously passed through verbatim at all seven
+  places that build a feature's environment, so `DATABASE_URL =
+  "postgres://localhost/app_test{{.DBSuffix}}"` reached the application as
+  those literal characters. The README had documented `[env]` as templated
+  the whole time.
+
+  This is what lets a project isolate more than its database. Ports separate
+  features at the edge, and `[database] isolation = "suffix"` separates the
+  database, but everything else — redis, the cache, the job queue — stayed
+  shared, so two features running specs at once flushed each other's keys.
+  Deriving each from the feature covers them all:
+
+      [env]
+      DATABASE_URL = "postgres://localhost:5432/app_test{{.DBSuffix}}"
+      REDIS_URL    = "redis://localhost:6379/{{.Slot}}"
+
+  `[env]` reaches services, agents, window terminals, `precheck`, the setup
+  hooks and `canaveral exec` alike, so a suite run by hand in a feature's
+  terminal lands on the same database its service uses.
+
+- A namespaced feature's `DB_SUFFIX` is now a usable SQL identifier. Feature
+  names keep `/` as a namespace separator but only `-` was being replaced, so
+  `onboarding/ask-for-name` produced the suffix `_onboarding/ask_for_name` and
+  a database name containing a slash — which Postgres rejects unless quoted,
+  and which Rails does not quote. Namespaced features could not use suffix
+  isolation at all. Every character that is not a letter or digit is now
+  replaced. Unnamespaced features are unaffected.
 
 - A feature's own PATH — the one used to resolve `opencode` for starting
   agents and `canaveral attach`, and the one exported to windows spawned via
