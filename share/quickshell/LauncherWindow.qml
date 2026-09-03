@@ -37,6 +37,17 @@ PanelWindow {
 
     property var result: null
     property int selected: 0
+    // Whether `selected` reflects a deliberate choice — arrow keys, or the
+    // mouse hovering a row — rather than merely the default 0 that every
+    // fresh completion result resets to.
+    //
+    // This is what separates "complete the word I am typing" from "act on the
+    // row I picked". Without it the two are indistinguishable, and guarding
+    // one necessarily breaks the other: blocking auto-completion of an empty
+    // word stops Tab looping forever on a repeated argument, but also makes
+    // history — which is only ever offered while the line is empty —
+    // unreachable by keyboard.
+    property bool selectedExplicit: false
 
     // Resolved once rather than assumed: Hyprland keybinds inherit the
     // session's PATH, which does not always include ~/.local/bin, and this
@@ -239,6 +250,7 @@ PanelWindow {
                     root.result = null;
                 }
                 root.selected = 0;
+                root.selectedExplicit = false;
             }
         }
         onExited: if (root.completionQueued)
@@ -267,15 +279,15 @@ PanelWindow {
     function activate() {
         const c = currentCandidate;
         const w = lastWord();
-        // Only a word the user actually started typing can be disambiguated
-        // this way. An empty trailing word means there is nothing to
-        // complete — most often a space `accept()` itself just appended
-        // after finishing the previous argument — and treating its
-        // candidate (offered because some commands take a list, like
-        // `reset [feature...]`) as something to silently accept would eat
-        // an Enter that was meant to run an already-complete line, appending
-        // an argument nobody asked for.
-        if (w !== "") {
+        // Same rule as Tab: a candidate may take this keystroke when there is
+        // a word being typed, or when a row was deliberately picked with the
+        // arrows or the mouse. Otherwise Enter runs the line as it stands.
+        //
+        // Without the second half, history is unreachable: it is only ever
+        // offered while the line is still empty, so there is no word to
+        // complete and Enter would fall straight through to run() — which
+        // does nothing, since a bare project name is not a runnable command.
+        if (w !== "" || selectedExplicit) {
             if (c && c.value !== w) {
                 accept(c);
                 return;
@@ -438,18 +450,15 @@ PanelWindow {
                             // when it is unambiguous — the completion key,
                             // never the run key.
                             //
-                            // Guarded the same way Enter is: only a word the
-                            // user actually started typing can be completed
-                            // this way. An empty word means nothing was
-                            // typed, and for a command that takes a list
-                            // (`reset [feature...]`) there is always exactly
-                            // one candidate to offer for "the next one" when
-                            // a project has exactly one feature — so without
-                            // this, completing the first argument leaves a
-                            // trailing space, Tab "completes" that empty slot
-                            // to the sole candidate, which itself completes
-                            // to a single feature, and round it goes forever.
-                            if (root.lastWord() !== "") {
+                            // Acts on a candidate only when there is a word
+                            // being typed, or when a row was deliberately
+                            // picked. Neither holds right after `accept()`
+                            // appends its trailing space, which is what used
+                            // to make Tab loop forever on a command taking a
+                            // list (`reset [feature...]`): the empty next
+                            // argument always has exactly one candidate to
+                            // offer when the project has exactly one feature.
+                            if (root.lastWord() !== "" || root.selectedExplicit) {
                                 if (root.candidates.length === 1)
                                     root.accept(root.candidates[0]);
                                 else if (root.result && root.result.common !== root.lastWord())
@@ -460,13 +469,17 @@ PanelWindow {
                             event.accepted = true;
                             break;
                         case Qt.Key_Down:
-                            if (root.candidates.length)
+                            if (root.candidates.length) {
                                 root.selected = (root.selected + 1) % root.candidates.length;
+                                root.selectedExplicit = true;
+                            }
                             event.accepted = true;
                             break;
                         case Qt.Key_Up:
-                            if (root.candidates.length)
+                            if (root.candidates.length) {
                                 root.selected = (root.selected + root.candidates.length - 1) % root.candidates.length;
+                                root.selectedExplicit = true;
+                            }
                             event.accepted = true;
                             break;
                         case Qt.Key_Return:
@@ -527,7 +540,10 @@ PanelWindow {
                         MouseArea {
                             anchors.fill: parent
                             hoverEnabled: true
-                            onEntered: root.selected = index
+                            onEntered: {
+                                root.selected = index;
+                                root.selectedExplicit = true;
+                            }
                             onClicked: root.accept(modelData)
                         }
 

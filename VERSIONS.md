@@ -64,9 +64,15 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   exactly one feature (or one namespace), there is always exactly one
   candidate to offer for "the next one," so Tab kept completing it forever,
   and Enter would silently accept it instead of running an already-correct
-  line. Both keys now only let a candidate act on a word the user actually
-  started typing; an empty trailing word goes straight to running (or the
-  destructive-confirmation prompt) instead.
+  line.
+
+  Tab and Enter now act on a candidate only when there is a word actually
+  being typed, or when a row was deliberately picked with the arrow keys or
+  the mouse — neither of which holds for the empty argument left behind by a
+  completion. Tracking that second condition matters on its own: recent
+  commands are only ever offered while the line is still empty, so a rule
+  based on the typed word alone would leave them selectable but impossible
+  to act on.
 
 - `canaveral rm`/`merge` no longer risks killing itself partway through
   tearing a feature down. Every service and agent unit runs under
