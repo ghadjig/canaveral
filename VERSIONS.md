@@ -12,7 +12,28 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.6.0 — 2026-09-03
+
+### Changed
+
+- **`[env]` values are now templates, and an unrecognised placeholder stops a
+  feature from opening.** They were passed through verbatim before, so a value
+  containing `{{` reached the process exactly as written. It is now rendered
+  like every other manifest string, under `missingkey=error` — so a manifest
+  that opened fine on v0.5.1 can now fail at startup instead of coming up
+  misconfigured. That is the intended trade: `DATABASE_URL` silently pointing
+  at the shared database is worse than a feature that refuses to open and says
+  why.
+
+  Only the project-wide `[env]` changes. Per-service and per-agent `env`
+  blocks have always been rendered, and are unaffected.
+
+  To pass a literal `{{` through — a placeholder meant for some other tool —
+  escape it as `{{"{{"}}`.
+
+  `[env]` also may not reference `{{.Agent.main}}`. Agent URLs are only known
+  once agents have started, and services start before them, so the same value
+  would resolve two different ways depending on which phase asked.
 
 ### Fixed
 
@@ -37,10 +58,6 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   `[env]` reaches services, agents, window terminals, `precheck`, the setup
   hooks and `canaveral exec` alike, so a suite run by hand in a feature's
   terminal lands on the same database its service uses.
-
-  A value that cannot be rendered is now a startup error rather than an empty
-  string, which also means `[env]` may not reference `{{.Agent.main}}`: agent
-  URLs are only known after agents start, and services start before them.
 
 - A namespaced feature's `DB_SUFFIX` is now a usable SQL identifier. Feature
   names keep `/` as a namespace separator but only `-` was being replaced, so

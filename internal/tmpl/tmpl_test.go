@@ -69,6 +69,34 @@ func TestRenderBadTemplateErrors(t *testing.T) {
 	}
 }
 
+// TestRenderLiteralBraces pins the only way to get a literal "{{" past the
+// renderer, which VERSIONS.md tells people to use when [env] carries a
+// placeholder meant for some other tool.
+//
+// It works because missingkey=error is consulted in exactly one place — when
+// a field name is resolved against a map — and a string constant never gets
+// there. That is a property of text/template rather than of this package, so
+// it is pinned here: nothing else would notice if a Go release changed it,
+// and the failure mode is a feature that refuses to open.
+func TestRenderLiteralBraces(t *testing.T) {
+	cases := map[string]string{
+		`{{"{{"}}`:                   "{{",
+		`{{"{{"}}.Port.web{{"}}"}}`:  "{{.Port.web}}",
+		`prefix {{"{{"}}x{{"}}"}}`:   "prefix {{x}}",
+		`{{"{{"}} and {{.Port.web}}`: "{{ and 3001",
+	}
+	for in, want := range cases {
+		got, err := Render("env.SOME_TEMPLATE", in, vars())
+		if err != nil {
+			t.Errorf("Render(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("Render(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRenderMap(t *testing.T) {
 	got, err := RenderMap("service.web.env", map[string]string{
 		"PORT":     "{{.Port.web}}",
