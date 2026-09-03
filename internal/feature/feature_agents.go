@@ -125,7 +125,10 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	if err != nil {
 		return err
 	}
-	base := baseEnvFor(m, f, tc)
+	base, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return err
+	}
 	logDir, err := state.LogDir(f.Project, f.Name)
 	if err != nil {
 		return err
@@ -194,7 +197,7 @@ func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a m
 	if err != nil {
 		return rec, err
 	}
-	env := manifest.MergeEnv(base, m.Env, agentEnv)
+	env := manifest.MergeEnv(base, agentEnv)
 	if a.Model != "" {
 		env["OPENCODE_MODEL"] = a.Model
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/tmpl"
 )
 
 func TestSlug(t *testing.T) {
@@ -206,3 +207,132 @@ func (quietReporter) Step(string, ...any) {}
 func (quietReporter) OK(string, ...any)   {}
 func (quietReporter) Info(string, ...any) {}
 func (quietReporter) Warn(string, ...any) {}
+
+// TestEnvForRendersProjectEnv is the point of rendering [env] at all: a
+// project states its per-feature isolation once, at the top of the manifest,
+// and every process the feature runs inherits it. Before this, [env] was
+// merged in verbatim at seven call sites and "{{.DBSuffix}}" reached the
+// application as those literal nine characters.
+func TestEnvForRendersProjectEnv(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "norules",
+		Env: map[string]string{
+			"DATABASE_URL": "postgres://localhost:5432/norules_test{{.DBSuffix}}",
+			"REDIS_URL":    "redis://localhost:6379/{{.Slot}}",
+			"STATIC":       "no templates here",
+		},
+	}
+	f := &state.Feature{
+		Project: "norules", Name: "small-fixes", Slot: 2,
+		Worktree: "/wt/sf", Root: "/p", DBSuffix: "_small_fixes",
+	}
+	env, err := envFor(m, f, nil, tmpl.Vars{Slot: f.Slot, DBSuffix: f.DBSuffix})
+	if err != nil {
+		t.Fatalf("envFor: %v", err)
+	}
+
+	if want := "postgres://localhost:5432/norules_test_small_fixes"; env["DATABASE_URL"] != want {
+		t.Errorf("DATABASE_URL = %q, want %q", env["DATABASE_URL"], want)
+	}
+	// The whole reason a redis database number works: two features on the
+	// same server never share one, so a FLUSHDB in one suite cannot reach
+	// the other.
+	if want := "redis://localhost:6379/2"; env["REDIS_URL"] != want {
+		t.Errorf("REDIS_URL = %q, want %q", env["REDIS_URL"], want)
+	}
+	if env["STATIC"] != "no templates here" {
+		t.Errorf("STATIC = %q", env["STATIC"])
+	}
+	// canaveral's own variables must survive alongside it.
+	if env["CANAVERAL_FEATURE"] != "small-fixes" {
+		t.Errorf("CANAVERAL_FEATURE = %q", env["CANAVERAL_FEATURE"])
+	}
+}
+
+// TestEnvForProjectEnvOverridesOwn keeps [env] the last word. A project that
+// needs to override a canaveral-set variable is entitled to; silently
+// ignoring what the manifest says would be worse than either outcome.
+func TestEnvForProjectEnvOverridesOwn(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "norules",
+		Env:  map[string]string{"CANAVERAL_PORT_WEB": "9999"},
+	}
+	f := &state.Feature{Project: "norules", Name: "f", Ports: map[string]int{"web": 3001}}
+	env, err := envFor(m, f, nil, tmpl.Vars{})
+	if err != nil {
+		t.Fatalf("envFor: %v", err)
+	}
+	if env["CANAVERAL_PORT_WEB"] != "9999" {
+		t.Errorf("CANAVERAL_PORT_WEB = %q, want the manifest's 9999", env["CANAVERAL_PORT_WEB"])
+	}
+}
+
+// TestEnvForRejectsUnknownKey covers missingkey=error reaching [env] too. A
+// typo that rendered empty would produce "postgres://localhost/norules_test"
+// — the *shared* database — which is precisely the collision the suffix
+// exists to prevent, arrived at silently.
+func TestEnvForRejectsUnknownKey(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "norules",
+		Env:  map[string]string{"DATABASE_URL": "postgres://localhost/db{{.Port.wbe}}"},
+	}
+	f := &state.Feature{Project: "norules", Name: "f", Ports: map[string]int{"web": 3001}}
+	if _, err := envFor(m, f, nil, tmpl.Vars{Port: map[string]int{"web": 3001}}); err == nil {
+		t.Fatal("a misspelled port name in [env] must be an error, not an empty string")
+	}
+}
+
+// TestEnvForRejectsAgentReference pins the documented restriction. Agent URLs
+// are known only after agents start, and services start before them, so an
+// [env] that referenced one would resolve differently depending on which
+// phase asked — the kind of inconsistency that shows up as one window
+// talking to the wrong server hours later.
+func TestEnvForRejectsAgentReference(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "norules",
+		Env:  map[string]string{"AGENT": "{{.Agent.main}}"},
+	}
+	f := &state.Feature{Project: "norules", Name: "f"}
+	if _, err := envFor(m, f, nil, tmpl.Vars{Agent: map[string]tmpl.AgentRef{}}); err == nil {
+		t.Fatal("[env] must not be able to reference an agent URL")
+	}
+}
+
+// TestDBSuffixForNamespacedFeature covers a suffix that has to survive being
+// pasted into a database name. Feature names keep "/" as a namespace
+// separator, and only "-" used to be replaced, so "onboarding/ask-for-name"
+// yielded "norules_test_onboarding/ask_for_name" — which Postgres rejects
+// unless quoted, and which Rails does not quote. Namespaced features simply
+// could not use suffix isolation.
+func TestDBSuffixForNamespacedFeature(t *testing.T) {
+	cases := map[string]string{
+		"small-fixes":             "_small_fixes",
+		"onboarding/ask-for-name": "_onboarding_ask_for_name",
+		"feat/api/v2":             "_feat_api_v2",
+		"plain":                   "_plain",
+	}
+	for in, want := range cases {
+		if got := dbSuffixFor(in); got != want {
+			t.Errorf("dbSuffixFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDBSuffixForIsIdentifierSafe states the actual contract rather than a
+// list of examples: whatever the feature is called, the suffix must be
+// appendable to an unquoted SQL identifier.
+func TestDBSuffixForIsIdentifierSafe(t *testing.T) {
+	for _, name := range []string{"a/b", "a-b", "a.b", "Ä/ö", "x/y/z"} {
+		got := dbSuffixFor(name)
+		if !strings.HasPrefix(got, "_") {
+			t.Errorf("dbSuffixFor(%q) = %q, want a leading underscore", name, got)
+		}
+		for _, r := range got {
+			ok := r == '_' ||
+				(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !ok {
+				t.Errorf("dbSuffixFor(%q) = %q contains %q, not identifier-safe", name, got, r)
+			}
+		}
+	}
+}

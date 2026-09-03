@@ -16,6 +16,40 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Fixed
 
+- The manifest's project-wide `[env]` now has its templates rendered, like
+  every other manifest string and like the per-service and per-agent `env`
+  blocks always have. It was previously passed through verbatim at all seven
+  places that build a feature's environment, so `DATABASE_URL =
+  "postgres://localhost/app_test{{.DBSuffix}}"` reached the application as
+  those literal characters. The README had documented `[env]` as templated
+  the whole time.
+
+  This is what lets a project isolate more than its database. Ports separate
+  features at the edge, and `[database] isolation = "suffix"` separates the
+  database, but everything else — redis, the cache, the job queue — stayed
+  shared, so two features running specs at once flushed each other's keys.
+  Deriving each from the feature covers them all:
+
+      [env]
+      DATABASE_URL = "postgres://localhost:5432/app_test{{.DBSuffix}}"
+      REDIS_URL    = "redis://localhost:6379/{{.Slot}}"
+
+  `[env]` reaches services, agents, window terminals, `precheck`, the setup
+  hooks and `canaveral exec` alike, so a suite run by hand in a feature's
+  terminal lands on the same database its service uses.
+
+  A value that cannot be rendered is now a startup error rather than an empty
+  string, which also means `[env]` may not reference `{{.Agent.main}}`: agent
+  URLs are only known after agents start, and services start before them.
+
+- A namespaced feature's `DB_SUFFIX` is now a usable SQL identifier. Feature
+  names keep `/` as a namespace separator but only `-` was being replaced, so
+  `onboarding/ask-for-name` produced the suffix `_onboarding/ask_for_name` and
+  a database name containing a slash — which Postgres rejects unless quoted,
+  and which Rails does not quote. Namespaced features could not use suffix
+  isolation at all. Every character that is not a letter or digit is now
+  replaced. Unnamespaced features are unaffected.
+
 - A feature's own PATH — the one used to resolve `opencode` for starting
   agents and `canaveral attach`, and the one exported to windows spawned via
   hyprctl and to systemd `--user` units — no longer silently inherits

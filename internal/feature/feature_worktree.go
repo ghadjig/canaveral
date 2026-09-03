@@ -51,7 +51,10 @@ func provisionWorktree(ctx context.Context, m *manifest.Manifest, f *state.Featu
 	if err != nil {
 		return nil, err
 	}
-	env := baseEnvFor(m, f, tc)
+	env, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return nil, err
+	}
 
 	setup, err := tmpl.Render("worktree.setup", m.Worktree.Setup, vars)
 	if err != nil {
@@ -65,7 +68,7 @@ func provisionWorktree(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		Copy:         f.Provisioned,
 		Setup:        setup,
 		SetupTimeout: m.Worktree.SetupTimeout.Duration,
-		Env:          manifest.MergeEnv(env, m.Env),
+		Env:          env,
 	}
 	if err := prov.Apply(ctx, m.Root, f.Worktree, r.Info); err != nil {
 		return nil, err
@@ -108,7 +111,7 @@ func runDatabaseSetup(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		r.Info("preparing databases")
 	}
 	return worktree.RunHook(ctx, "database setup", f.Worktree, dbSetup,
-		manifest.MergeEnv(env, m.Env), m.Database.SetupTimeout.Or(defaultSetupTimeout))
+		env, m.Database.SetupTimeout.Or(defaultSetupTimeout))
 }
 
 // defaultSetupTimeout bounds a create-time setup command that has no explicit
@@ -146,7 +149,10 @@ func runPrecheck(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	// tooling: the toolchain PATH is what makes `bin/rails` resolve at all,
 	// and the port and database-suffix variables are what make it act on this
 	// feature's resources rather than another's.
-	env := manifest.MergeEnv(baseEnvFor(m, f, tc), m.Env)
+	env, err := envFor(m, f, tc, vars)
+	if err != nil {
+		return err
+	}
 	if err := worktree.RunHook(ctx, "precheck", f.Worktree, cmd, env,
 		m.PrecheckTimeout.Or(defaultPrecheckTimeout)); err != nil {
 		return err
