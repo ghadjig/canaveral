@@ -106,20 +106,38 @@ func ShellPATH() string {
 }
 
 func computeShellPATH() string {
-	dirs := filepath.SplitList(os.Getenv("PATH"))
-	seen := make(map[string]bool, len(dirs))
-	for _, d := range dirs {
-		seen[d] = true
-	}
+	p := os.Getenv("PATH")
 	for _, flag := range []string{"-ic", "-lc"} {
-		for _, d := range filepath.SplitList(shellPATHVia(flag)) {
-			if d == "" || seen[d] {
+		p = MergePATH(p, shellPATHVia(flag))
+	}
+	return p
+}
+
+// MergePATH returns base with every directory of extra that base does not
+// already contain appended to it, dropping duplicates from either side.
+//
+// Append-only, never reordering: base is the authoritative list — a
+// toolchain's resolved PATH, say — and whatever it puts first must keep
+// winning, or a project pinning ruby 3.4.7 would start resolving some other
+// ruby the moment a wider PATH were folded in. extra only ever contributes
+// directories that were missing entirely.
+func MergePATH(base, extra string) string {
+	var dirs []string
+	seen := map[string]bool{}
+	add := func(list string, skipEmpty bool) {
+		for _, d := range filepath.SplitList(list) {
+			if seen[d] || (skipEmpty && d == "") {
 				continue
 			}
 			seen[d] = true
 			dirs = append(dirs, d)
 		}
 	}
+	// An empty entry in base means the current directory and is the
+	// caller's business to keep; one arriving from extra is almost always a
+	// stray separator, and appending "." to every unit's PATH is not.
+	add(base, false)
+	add(extra, true)
 	return strings.Join(dirs, string(filepath.ListSeparator))
 }
 

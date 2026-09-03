@@ -341,17 +341,22 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 		"CANAVERAL_WORKTREE": f.Worktree,
 		"CANAVERAL_ROOT":     f.Root,
 	}
-	if _, ok := tc["PATH"]; !ok {
-		// Nothing (e.g. mise) already resolved a PATH, so what would be used
-		// otherwise is canaveral's own PATH — the compositor session's, if
-		// launched from a Hyprland keybind or the quickshell launcher, which
-		// is missing whatever an rc file adds. This applies to every process
-		// canaveral spawns: systemd --user units (services, agents) and
-		// window terminals via hyprctl alike, neither of which run through a
-		// shell that would read that rc file on their own.
-		if p := agent.ShellPATH(); p != "" {
-			own["PATH"] = p
-		}
+	// Every process canaveral spawns — systemd --user units (services,
+	// agents) and window terminals via hyprctl alike — starts from
+	// canaveral's own PATH, since none of them runs through a shell that
+	// would read an rc file. Launched from a Hyprland keybind or the
+	// quickshell launcher, that is the compositor session's PATH, missing
+	// whatever an rc file adds (~/.opencode/bin, ~/.cargo/bin, npm's global
+	// bin).
+	//
+	// A toolchain PATH does not make this unnecessary, which is what the
+	// first version of this got wrong: `mise env` derives its PATH by
+	// prepending shims to the PATH *it* inherits, i.e. the same truncated
+	// one, so under mise the gap survived and only showed up as a window
+	// whose command was not on PATH vanishing the instant it spawned.
+	// Merging is append-only, so mise's shims keep their precedence.
+	if p := agent.ShellPATH(); p != "" {
+		own["PATH"] = agent.MergePATH(tc["PATH"], p)
 	}
 	if f.DBSuffix != "" && m.Database.SuffixEnv != "" {
 		own[m.Database.SuffixEnv] = f.DBSuffix

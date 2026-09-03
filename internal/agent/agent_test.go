@@ -1049,3 +1049,48 @@ func TestResolveReportsErrorWhenNotFoundAnywhere(t *testing.T) {
 		t.Fatal("Resolve() error = nil, want an error when opencode is nowhere to be found")
 	}
 }
+
+func TestMergePATHAppendsOnlyWhatIsMissing(t *testing.T) {
+	sep := string(filepath.ListSeparator)
+	base := "/shims" + sep + "/usr/bin"
+	extra := "/usr/bin" + sep + "/home/u/.opencode/bin" + sep + "" + sep + "/usr/bin"
+
+	got := MergePATH(base, extra)
+	want := "/shims" + sep + "/usr/bin" + sep + "/home/u/.opencode/bin"
+	if got != want {
+		t.Errorf("MergePATH(%q, %q) = %q, want %q", base, extra, got, want)
+	}
+}
+
+// base must keep its precedence: a toolchain pins tool versions by putting
+// its shims first, and reordering here would silently resolve a different
+// ruby or node than the project asked for.
+func TestMergePATHKeepsBaseFirst(t *testing.T) {
+	sep := string(filepath.ListSeparator)
+	got := MergePATH("/shims", "/usr/bin"+sep+"/shims")
+	if want := "/shims" + sep + "/usr/bin"; got != want {
+		t.Errorf("MergePATH = %q, want %q", got, want)
+	}
+}
+
+func TestMergePATHWithEmptySides(t *testing.T) {
+	if got := MergePATH("", "/usr/bin"); got != "/usr/bin" {
+		t.Errorf("MergePATH(\"\", %q) = %q, want %q", "/usr/bin", got, "/usr/bin")
+	}
+	if got := MergePATH("/usr/bin", ""); got != "/usr/bin" {
+		t.Errorf("MergePATH(%q, \"\") = %q, want %q", "/usr/bin", got, "/usr/bin")
+	}
+	if got := MergePATH("", ""); got != "" {
+		t.Errorf("MergePATH(\"\", \"\") = %q, want \"\"", got)
+	}
+}
+
+// ShellPATH starts from a PATH that a few rc files have often each appended
+// to, so base can arrive with duplicates of its own.
+func TestMergePATHDropsDuplicatesWithinBase(t *testing.T) {
+	sep := string(filepath.ListSeparator)
+	got := MergePATH("/a"+sep+"/b"+sep+"/a", "/b")
+	if want := "/a" + sep + "/b"; got != want {
+		t.Errorf("MergePATH = %q, want %q", got, want)
+	}
+}

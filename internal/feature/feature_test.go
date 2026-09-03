@@ -2,6 +2,9 @@ package feature
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bandito/canaveral/internal/agent"
@@ -98,8 +101,8 @@ func TestBaseEnvForExportsPortsAndSuffix(t *testing.T) {
 	}
 	env := baseEnvFor(m, f, map[string]string{"PATH": "/toolchain/bin"})
 
-	if env["PATH"] != "/toolchain/bin" {
-		t.Errorf("toolchain PATH should pass through, got %q", env["PATH"])
+	if !strings.HasPrefix(env["PATH"], "/toolchain/bin") {
+		t.Errorf("toolchain PATH should stay in front, got %q", env["PATH"])
 	}
 	if env["CANAVERAL_FEATURE"] != "small-fixes" {
 		t.Errorf("CANAVERAL_FEATURE = %q", env["CANAVERAL_FEATURE"])
@@ -138,6 +141,30 @@ func TestBaseEnvForFillsPATHWhenToolchainHasNone(t *testing.T) {
 	want := agent.ShellPATH()
 	if env["PATH"] != want {
 		t.Errorf("PATH = %q, want agent.ShellPATH() = %q", env["PATH"], want)
+	}
+}
+
+// TestBaseEnvForExtendsToolchainPATH covers the harder half of the same bug.
+// `mise env` builds its PATH by prepending shims to the PATH it inherits,
+// which is canaveral's own truncated one, so "the toolchain resolved a PATH"
+// never meant "the PATH is complete". Skipping the merge in that case left
+// every mise project's windows without opencode on PATH — they spawned and
+// died instantly, while windows running something from /usr/bin opened fine.
+func TestBaseEnvForExtendsToolchainPATH(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	f := &state.Feature{Project: "norules", Name: "f"}
+	// A shim directory plus one entry of the truncated PATH mise inherited.
+	tc := map[string]string{"PATH": "/shims" + string(filepath.ListSeparator) + "/usr/bin"}
+	env := baseEnvFor(m, f, tc)
+
+	got := filepath.SplitList(env["PATH"])
+	if len(got) < 2 || got[0] != "/shims" || got[1] != "/usr/bin" {
+		t.Fatalf("toolchain entries must keep their order and precedence, got %v", got)
+	}
+	for _, want := range filepath.SplitList(agent.ShellPATH()) {
+		if !slices.Contains(got, want) {
+			t.Errorf("PATH is missing %q from agent.ShellPATH(): %v", want, got)
+		}
 	}
 }
 

@@ -32,6 +32,18 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   lives) and as a login shell (`-lc`, for setups that use a profile file
   instead), and using the result everywhere a feature's environment is built.
 
+- That PATH is now also applied to projects using a toolchain (`toolchain =
+  "auto"` with a `mise.toml`, say), which the fix above missed. `mise env`
+  builds its PATH by prepending shims to the PATH *it* inherits — canaveral's
+  own, truncated one — so a resolved toolchain PATH was never evidence that
+  the PATH was complete, yet it caused the rc-file PATH to be skipped
+  entirely. The symptom was oddly specific: on such a project every window
+  opened except the agent one, because `opencode` was the only window command
+  not already reachable from the compositor session's PATH, so its terminal
+  died the instant it spawned. The two PATHs are now merged append-only, so a
+  toolchain's shims keep their precedence and only genuinely missing
+  directories are added.
+
 ## v0.5.1 — 2026-09-01
 
 ### Fixed
