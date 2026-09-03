@@ -2,6 +2,7 @@ package hypr
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -228,5 +229,26 @@ func TestRehomeTargetNoneAvailable(t *testing.T) {
 	ws := []Workspace{{ID: 3, Name: "3", Monitor: "DP-3"}}
 	if got := RehomeTarget(ws, "eDP-1", "norules:dying"); got != 0 {
 		t.Errorf("RehomeTarget = %d, want 0 so the caller picks a fresh one", got)
+	}
+}
+
+func TestCmdlineReadsTheRunningProcess(t *testing.T) {
+	got, ok := Cmdline(os.Getpid())
+	if !ok {
+		t.Fatal("Cmdline(self) = _, false; want the test binary's own command line")
+	}
+	if !strings.Contains(got, os.Args[0]) {
+		t.Errorf("Cmdline(self) = %q, want it to contain %q", got, os.Args[0])
+	}
+}
+
+// A pid that does not exist, and the pid 0 that hypr.Client carries when the
+// compositor did not report one, must both be "cannot tell" rather than an
+// empty command line a caller could mistake for an answer.
+func TestCmdlineReportsWhenItCannotTell(t *testing.T) {
+	for _, pid := range []int{0, -1, 1 << 30} {
+		if got, ok := Cmdline(pid); ok {
+			t.Errorf("Cmdline(%d) = %q, true; want _, false", pid, got)
+		}
 	}
 }

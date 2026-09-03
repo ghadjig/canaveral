@@ -3,8 +3,10 @@ package feature
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
@@ -114,29 +116,26 @@ func TestSplitRatioChainEmptyOrder(t *testing.T) {
 
 func TestIsLayoutFreshFalseWhenLayoutDisabled(t *testing.T) {
 	m := &manifest.Manifest{}
-	f := &state.Feature{Project: "p", Name: "f"}
-	if isLayoutFresh(m, f, nil) {
+	if isLayoutFresh(m, nil) {
 		t.Error("a manifest with no [layout] must never be considered fresh")
 	}
 }
 
-func TestIsLayoutFreshTrueWhenNothingIsOpenYet(t *testing.T) {
+func TestIsLayoutFreshTrueWhenEveryWindowIsBeingSpawned(t *testing.T) {
 	m := &manifest.Manifest{}
 	m.Layout.Order = []string{"chrome", "terminal"}
-	f := &state.Feature{Project: "p", Name: "f"}
-	if !isLayoutFresh(m, f, map[string]hypr.Client{}) {
-		t.Error("layout should be fresh when none of its windows are open")
+	pending := map[string]pendingSpawn{"chrome": {}, "terminal": {}}
+	if !isLayoutFresh(m, pending) {
+		t.Error("layout should be fresh when all of its windows are being spawned")
 	}
 }
 
-func TestIsLayoutFreshFalseWhenOneWindowAlreadyOpen(t *testing.T) {
+func TestIsLayoutFreshFalseWhenOneWindowIsAlreadyUp(t *testing.T) {
 	m := &manifest.Manifest{}
 	m.Layout.Order = []string{"chrome", "terminal"}
-	f := &state.Feature{Project: "p", Name: "f"}
-	open := map[string]hypr.Client{
-		hypr.Class("p", "f", "chrome"): {},
-	}
-	if isLayoutFresh(m, f, open) {
+	// chrome is already open, so only terminal is pending.
+	pending := map[string]pendingSpawn{"terminal": {}}
+	if isLayoutFresh(m, pending) {
 		t.Error("a partially-open layout must not be treated as fresh")
 	}
 }
@@ -198,5 +197,95 @@ func TestBuildWindowSpecUsesADeclaredSubdir(t *testing.T) {
 	}
 	if rec.Dir != filepath.Join(f.Worktree, "api") {
 		t.Errorf("rec.Dir = %q, want %q", rec.Dir, filepath.Join(f.Worktree, "api"))
+	}
+}
+
+// A window's own PID is the ground truth for what it is running; a test can
+// stand in for one by pointing at a process it knows the command line of.
+func clientRunning(t *testing.T, cmdline string) hypr.Client {
+	t.Helper()
+	c := exec.Command("sh", "-c", "sleep 600")
+	// sh ignores arguments after the script, so this one exists purely to
+	// put the simulated command into the process's own /proc entry.
+	c.Args = append(c.Args, cmdline)
+	if err := c.Start(); err != nil {
+		t.Fatalf("start stand-in process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = c.Process.Kill()
+		_, _ = c.Process.Wait()
+	})
+	// Start returns as soon as execve is under way, and /proc reports an
+	// empty command line until the kernel has finished mapping the new
+	// argument vector in.
+	for range 200 {
+		if _, ok := hypr.Cmdline(c.Process.Pid); ok {
+			return hypr.Client{PID: c.Process.Pid}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("stand-in process %d never reported a command line", c.Process.Pid)
+	return hypr.Client{}
+}
+
+func agents(url string) []state.Agent {
+	return []state.Agent{{Name: "main", Tool: "opencode", URL: url}}
+}
+
+// An agent restarts onto a new port (agent.ServeCmd uses --port 0), so the
+// window still attached to the old one is talking to a closed socket. Before
+// this was detected the window was adopted on its class alone and left in
+// place, failing on the first keystroke with "Creating a session failed".
+func TestIsStaleWhenTheAgentURLMoved(t *testing.T) {
+	c := clientRunning(t, "opencode attach http://127.0.0.1:38259 --dir /wt")
+	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	if !isStale(c, cmd, agents("http://127.0.0.1:38231")) {
+		t.Error("a window attached to the previous agent URL must be stale")
+	}
+}
+
+func TestIsStaleFalseWhenTheAgentDidNotMove(t *testing.T) {
+	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	c := clientRunning(t, cmd)
+	if isStale(c, cmd, agents("http://127.0.0.1:38231")) {
+		t.Error("an unchanged agent URL must leave its window alone")
+	}
+}
+
+// Fork arguments are only ever added when a feature is created, so a window
+// old enough to be adopted cannot have them in the command rendered for it
+// now. Comparing whole command lines would read that as drift and close a
+// perfectly good window; comparing only the URL does not.
+func TestIsStaleIgnoresAForkArgumentTheWindowWasSpawnedWith(t *testing.T) {
+	url := "http://127.0.0.1:38231"
+	c := clientRunning(t, "opencode attach "+url+" --dir /wt --session ses_abc")
+	if isStale(c, "opencode attach "+url+" --dir /wt", agents(url)) {
+		t.Error("a window differing only by its fork argument must be left alone")
+	}
+}
+
+// Only the agent moved, so replacing chrome and the plain terminal alongside
+// it would close windows the user is using for no reason at all.
+func TestIsStaleFalseForAWindowThatIgnoresAgents(t *testing.T) {
+	c := clientRunning(t, "chromium --class=canaveral-p-f-chrome")
+	cmd := "chromium --class=canaveral-p-f-chrome"
+	if isStale(c, cmd, agents("http://127.0.0.1:38231")) {
+		t.Error("a window that never mentions an agent must survive an agent restart")
+	}
+}
+
+// A window whose process cannot be read tells us nothing, and guessing wrong
+// here costs the user a window they were using.
+func TestIsStaleFalseWhenThePIDIsUnknown(t *testing.T) {
+	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	if isStale(hypr.Client{}, cmd, agents("http://127.0.0.1:38231")) {
+		t.Error("an unreadable window must not be closed on a guess")
+	}
+}
+
+func TestIsStaleFalseWhenTheAgentHasNoURL(t *testing.T) {
+	c := clientRunning(t, "opencode attach http://127.0.0.1:38259 --dir /wt")
+	if isStale(c, "opencode attach  --dir /wt", []state.Agent{{Name: "main"}}) {
+		t.Error("an agent with no URL gives nothing to compare and must not close a window")
 	}
 }

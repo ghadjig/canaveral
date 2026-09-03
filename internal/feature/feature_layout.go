@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,7 +40,6 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	}
 	open := hypr.ByClass(clients)
 	base := baseEnvFor(m, f, tc)
-	layoutFresh := isLayoutFresh(m, f, open)
 
 	var records []state.Window
 	pendingByName := map[string]pendingSpawn{}
@@ -64,7 +64,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	spawnFreeWindows(ctx, m, pendingByName, res, r)
 
 	if m.Layout.Enabled() {
-		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, layoutFresh, res, r, originalWS); err != nil {
+		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, isLayoutFresh(m, pendingByName), res, r, originalWS); err != nil {
 			return fmt.Errorf("layout: %w", err)
 		}
 	}
@@ -73,8 +73,8 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	return nil
 }
 
-// isLayoutFresh reports whether every window in [layout] is missing from
-// the currently open windows.
+// isLayoutFresh reports whether every window in [layout] is about to be
+// spawned, rather than some of them already being up.
 //
 // The split-ratio chain that gives [layout] its exact column widths only
 // makes sense when every one of its windows is being created together:
@@ -84,12 +84,15 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 // windows already exist — a `reset` after closing just one of them, say —
 // the missing one is still spawned, just via dwindle's ordinary placement
 // instead of a re-derived chain.
-func isLayoutFresh(m *manifest.Manifest, f *state.Feature, open map[string]hypr.Client) bool {
+//
+// Asked of the pending set rather than the open one so that a window
+// buildWindowSpec closed as stale counts as being created here, which it is.
+func isLayoutFresh(m *manifest.Manifest, pending map[string]pendingSpawn) bool {
 	if !m.Layout.Enabled() {
 		return false
 	}
 	for _, name := range m.Layout.Order {
-		if _, alive := open[hypr.Class(f.Project, f.Name, name)]; alive {
+		if _, spawning := pending[name]; !spawning {
 			return false
 		}
 	}
@@ -99,8 +102,9 @@ func isLayoutFresh(m *manifest.Manifest, f *state.Feature, open map[string]hypr.
 // buildWindowSpec resolves a single declared window's spawn spec (rendering
 // its command template, seeding a browser profile if configured) and the
 // state record to persist for it. pending is nil when the window is already
-// open — detection is purely by the class canaveral assigns; matching
-// anything looser risks adopting one of the user's own windows.
+// open and still current — detection is purely by the class canaveral
+// assigns; matching anything looser risks adopting one of the user's own
+// windows.
 func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
 	vars tmpl.Vars, base map[string]string, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
 
@@ -125,8 +129,13 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
 	}
 
-	if _, alive := open[class]; alive {
-		return rec, nil, nil
+	if c, alive := open[class]; alive {
+		if !isStale(c, cmd, f.Agents) {
+			return rec, nil, nil
+		}
+		if !replaceStale(ctx, c, w.Name, r) {
+			return rec, nil, nil
+		}
 	}
 
 	if w.ProfileSource != "" {
@@ -152,6 +161,71 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		Env:        manifest.MergeEnv(base, m.Env),
 	}
 	return rec, &pendingSpawn{name: w.Name, spec: spec}, nil
+}
+
+// isStale reports whether an already-open window is still attached to an
+// agent that has since moved.
+//
+// Agents are started with `--port 0` (see agent.ServeCmd), so an agent that
+// restarts for any reason — a crash, `restart`, or simply being stopped
+// between two opens — comes back on a different port. The window still
+// running `opencode attach` against the old one is talking to a closed
+// socket: the TUI paints, then the first keystroke fails with "Creating a
+// session failed". Nothing caught this, because a window was adopted purely
+// on its class.
+//
+// The window's actual command line is the ground truth, deliberately in
+// preference to the command recorded for it in state: that record is what
+// canaveral believes it spawned, and it was itself overwritten on every
+// adopt, so it would happily agree with a window it does not describe. Only
+// the URL is compared, so a window is never disturbed for any other reason —
+// not a fork argument, which is added only when a feature is created and so
+// cannot appear in a window old enough to be adopted, and not an edited
+// manifest, where closing a window someone is working in would be a rude way
+// to apply a change.
+func isStale(c hypr.Client, cmd string, agents []state.Agent) bool {
+	actual, ok := hypr.Cmdline(c.PID)
+	if !ok {
+		// No way to tell, so leave it alone: a spurious close costs the user
+		// a window, a spurious adopt costs a reconcile that says so.
+		return false
+	}
+	for _, a := range agents {
+		if a.URL == "" {
+			continue
+		}
+		// The URL appearing in cmd is what makes this window one that
+		// depends on the agent at all; chrome and a plain shell do not.
+		if strings.Contains(cmd, a.URL) && !strings.Contains(actual, a.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceStale closes a stale window so its replacement can be spawned,
+// reporting whether the caller should go on to spawn one.
+func replaceStale(ctx context.Context, c hypr.Client, name string, r Reporter) bool {
+	// Closing the window this process is running in would kill the process
+	// mid-reconcile, so an agent that opens its own feature keeps the window
+	// it is typing in — stale or not, that is the lesser evil.
+	if hypr.IsSelf(c) {
+		r.Warn("window %s is stale but hosts this process; close and reopen it by hand", name)
+		return false
+	}
+	if err := hypr.Close(ctx, c.Address); err != nil {
+		r.Warn("window %s is stale but could not be closed: %v", name, err)
+		return false
+	}
+	// Spawning before the old window is gone would leave two of the same
+	// class briefly, and waitForClass would then be free to pick the dying
+	// one and chain the layout onto an address about to disappear.
+	if err := waitForClassGone(ctx, c.InitialClass, 5*time.Second); err != nil {
+		r.Warn("window %s: %v", name, err)
+		return false
+	}
+	r.Info("window %s was attached to a stale agent; replacing it", name)
+	return true
 }
 
 // spawnFreeWindows spawns every pending window not managed by [layout]
@@ -351,6 +425,29 @@ func waitForClass(ctx context.Context, class string, timeout time.Duration) (str
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// waitForClassGone polls until no window of the given class is left, the
+// counterpart to waitForClass for a close that has been dispatched but not
+// yet acted on by the compositor.
+func waitForClassGone(ctx context.Context, class string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		clients, err := hypr.Clients(ctx)
+		if err == nil && !slices.ContainsFunc(clients, func(c hypr.Client) bool {
+			return c.InitialClass == class
+		}) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("window with class %q did not close within %s", class, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

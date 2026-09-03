@@ -44,6 +44,22 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   toolchain's shims keep their precedence and only genuinely missing
   directories are added.
 
+- An agent window left over from a previous agent is now replaced instead of
+  being adopted. Agents listen on `--port 0`, so one that restarts for any
+  reason — a crash, `restart`, or simply being stopped between two opens —
+  comes back on a different port, and the window still running `opencode
+  attach` against the old one was talking to a closed socket: the TUI painted
+  normally and then failed on the first keystroke with *Creating a session
+  failed*. Nothing caught it, because a window was adopted purely on its
+  class, and the record written for it was the command canaveral *would* have
+  spawned — so `status` reported the new URL and an `open` window for a
+  process attached to the old one. The check now reads what the window is
+  actually running from its own process rather than trusting that record, so
+  it also repairs a window that already drifted. Only the agent URL is
+  compared: windows that do not depend on an agent are never disturbed, and a
+  window hosting the process doing the reconcile is left alone with a warning
+  rather than closed out from under it.
+
 ## v0.5.1 — 2026-09-01
 
 ### Fixed

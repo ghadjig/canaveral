@@ -534,6 +534,29 @@ func parentPID(pid int) (int, error) {
 	return ppid, nil
 }
 
+// Cmdline returns the full command line of pid, arguments joined by spaces.
+//
+// This is the only reliable answer to "what is that window actually
+// running?". A window's recorded command is what canaveral believes it
+// spawned, which is not the same thing once anything has drifted, and the
+// point of asking is precisely to catch drift.
+func Cmdline(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(data) == 0 {
+		// Empty rather than missing means a kernel thread, a process that
+		// has exited, or one caught mid-exec: it exists but says nothing.
+		// Reporting that as an answer would let a caller conclude the
+		// process is running something it is not.
+		return "", false
+	}
+	// Arguments are NUL-separated, with a trailing NUL.
+	args := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	return strings.Join(args, " "), true
+}
+
 var classSafe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
 // ClassPrefix is the shared prefix of every window class for a feature.
