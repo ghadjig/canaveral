@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/probe"
@@ -339,6 +340,18 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 		"CANAVERAL_FEATURE":  f.Name,
 		"CANAVERAL_WORKTREE": f.Worktree,
 		"CANAVERAL_ROOT":     f.Root,
+	}
+	if _, ok := tc["PATH"]; !ok {
+		// Nothing (e.g. mise) already resolved a PATH, so what would be used
+		// otherwise is canaveral's own PATH — the compositor session's, if
+		// launched from a Hyprland keybind or the quickshell launcher, which
+		// is missing whatever an rc file adds. This applies to every process
+		// canaveral spawns: systemd --user units (services, agents) and
+		// window terminals via hyprctl alike, neither of which run through a
+		// shell that would read that rc file on their own.
+		if p := agent.ShellPATH(); p != "" {
+			own["PATH"] = p
+		}
 	}
 	if f.DBSuffix != "" && m.Database.SuffixEnv != "" {
 		own[m.Database.SuffixEnv] = f.DBSuffix

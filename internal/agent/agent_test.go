@@ -932,6 +932,7 @@ func TestProbeSincePromptZeroWithNoUserMessage(t *testing.T) {
 // bash only reads this way, and where opencode's own installer adds
 // itself — finds it.
 func TestResolveFallsBackToInteractiveShellPATH(t *testing.T) {
+	resetShellPATHCacheForTest()
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
@@ -979,6 +980,7 @@ func TestResolveFallsBackToInteractiveShellPATH(t *testing.T) {
 // TestResolveFallsBackToLoginShellPATH covers the opposite layout: PATH set
 // from a login shell's profile file rather than an interactive shell's rc.
 func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
+	resetShellPATHCacheForTest()
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
@@ -1025,6 +1027,7 @@ func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
 // TestResolveReportsErrorWhenNotFoundAnywhere ensures the fallback does not
 // swallow a genuine "not installed" error.
 func TestResolveReportsErrorWhenNotFoundAnywhere(t *testing.T) {
+	resetShellPATHCacheForTest()
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not found in PATH, cannot exercise the shell fallback")
 	}

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -62,51 +63,111 @@ func DiscoverURL(ctx context.Context, logPath string, timeout time.Duration, ali
 // than a real terminal's. That PATH is missing whatever a shell startup file
 // would have added — mise/asdf shims, ~/.local/bin, npm's global bin — which
 // is exactly where opencode tends to live. The same trap is documented for
-// canaveral's own binary in share/quickshell/LauncherWindow.qml. $SHELL is
-// tried as a fallback before giving up, both as an interactive shell (where
-// PATH conventionally lives — bash only reads ~/.bashrc this way, which is
-// where its own installer's PATH line goes) and as a login shell (where it
-// lives if set from a profile file instead); different setups pick one or
-// the other, so both are tried.
+// canaveral's own binary in share/quickshell/LauncherWindow.qml. ShellPATH
+// resolves the fuller PATH a real terminal would see, and is tried as a
+// fallback before giving up.
 func Resolve() (string, error) {
 	if bin, err := exec.LookPath("opencode"); err == nil {
 		return filepath.Abs(bin)
 	}
-	var errs []error
-	for _, flag := range []string{"-ic", "-lc"} {
-		bin, err := resolveViaShell(flag, "opencode")
-		if err == nil {
-			return bin, nil
-		}
-		errs = append(errs, err)
+	if bin, ok := lookPathIn("opencode", ShellPATH()); ok {
+		return filepath.Abs(bin)
 	}
-	return "", fmt.Errorf("opencode not found in PATH: %w", errors.Join(errs...))
+	return "", errors.New("opencode not found in PATH (checked a login/interactive shell's PATH too)")
 }
 
-// resolveViaShell asks $SHELL, invoked with flag (e.g. "-ic" for interactive,
-// "-lc" for login), where name lives. Both kinds of shell read different
-// startup files, so which one has the PATH you want depends on where it was
-// set; the caller tries both.
-func resolveViaShell(flag, name string) (string, error) {
+// shellPATH caches ShellPATH's result: every caller within a process wants
+// the same answer, and computing it spawns a couple of shells, which is not
+// free enough to redo for every window, service and agent a single `open`
+// reconciles.
+var shellPATH struct {
+	once  sync.Once
+	value string
+}
+
+// ShellPATH returns PATH the way a real terminal would see it: the current
+// process's PATH, extended with whatever an interactive or a login $SHELL
+// adds via its startup files.
+//
+// Needed generally, not just for opencode: canaveral itself, the systemd
+// --user units it starts (see internal/unit's inheritEnv) and the window
+// terminals it spawns via hyprctl all begin with whatever PATH launched
+// canaveral — a Hyprland keybind or the quickshell launcher hand over the
+// compositor session's PATH, not a login shell's, and that is missing
+// whatever an rc file would have added. Different setups put that PATH in
+// different files — bash only reads ~/.bashrc for an interactive shell,
+// unless a profile file explicitly sources it, so both kinds are tried and
+// merged rather than picking one.
+func ShellPATH() string {
+	shellPATH.once.Do(func() {
+		shellPATH.value = computeShellPATH()
+	})
+	return shellPATH.value
+}
+
+func computeShellPATH() string {
+	dirs := filepath.SplitList(os.Getenv("PATH"))
+	seen := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		seen[d] = true
+	}
+	for _, flag := range []string{"-ic", "-lc"} {
+		for _, d := range filepath.SplitList(shellPATHVia(flag)) {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	return strings.Join(dirs, string(filepath.ListSeparator))
+}
+
+// shellPATHVia runs $SHELL with flag (e.g. "-ic" for interactive, "-lc" for
+// login) and prints its PATH, or "" if the shell can't be run or times out.
+func shellPATHVia(flag string) string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, shell, flag, "command -v "+shellQuote(name))
 	// -i shells source files that assume a terminal; none of that reads
 	// stdin, so leaving it at the default (/dev/null) is enough to avoid a
 	// hang, and stderr noise (job control warnings) is simply discarded.
-	out, err := cmd.Output()
+	out, err := exec.CommandContext(ctx, shell, flag, `printf '%s' "$PATH"`).Output()
 	if err != nil {
-		return "", fmt.Errorf("%s via %s %s: %w", name, shell, flag, err)
+		return ""
 	}
-	p := strings.TrimSpace(string(out))
-	if p == "" {
-		return "", fmt.Errorf("%s not found via %s %s", name, shell, flag)
+	return strings.TrimSpace(string(out))
+}
+
+// lookPathIn searches path (a PATH-style list) for an executable file named
+// name, the way exec.LookPath does but against an explicit list rather than
+// the process's own os.Getenv("PATH").
+func lookPathIn(name, path string) (string, bool) {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		return p, true
 	}
-	return filepath.Abs(p)
+	return "", false
+}
+
+// resetShellPATHCacheForTest clears ShellPATH's cache. Only meant to be
+// called between tests that set up different PATH/HOME/SHELL fixtures —
+// production code always wants the first, cached answer.
+func resetShellPATHCacheForTest() {
+	shellPATH = struct {
+		once  sync.Once
+		value string
+	}{}
 }
 
 // ServeCmd builds the shell command that starts a headless opencode server.

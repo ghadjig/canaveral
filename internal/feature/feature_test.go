@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 )
@@ -121,6 +122,22 @@ func TestBaseEnvForSharedDatabaseSetsNoSuffix(t *testing.T) {
 	env := baseEnvFor(m, f, nil)
 	if _, ok := env["DB_SUFFIX"]; ok {
 		t.Error("shared database must not export DB_SUFFIX")
+	}
+}
+
+// TestBaseEnvForFillsPATHWhenToolchainHasNone covers the window/service PATH
+// bug: without a toolchain-resolved PATH, a spawned window or unit would
+// otherwise see nothing explicit at all and fall back to whatever PATH
+// launched canaveral (a Hyprland keybind's, missing rc-file additions like
+// opencode's own install directory). baseEnvFor must fill that gap with
+// agent.ShellPATH() instead of leaving it unset.
+func TestBaseEnvForFillsPATHWhenToolchainHasNone(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	f := &state.Feature{Project: "norules", Name: "f"}
+	env := baseEnvFor(m, f, nil)
+	want := agent.ShellPATH()
+	if env["PATH"] != want {
+		t.Errorf("PATH = %q, want agent.ShellPATH() = %q", env["PATH"], want)
 	}
 }
 

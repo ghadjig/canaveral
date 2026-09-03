@@ -16,15 +16,21 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ### Fixed
 
-- Resolving `opencode` (for starting agents, and for `canaveral attach`) no
-  longer gives up the moment it is missing from the process's own `PATH`.
-  Launched from a Hyprland keybind or the quickshell launcher, canaveral
-  inherits the session's bare `PATH`, not a terminal's, and so would report
-  `opencode not found in PATH` even when it is installed and on the `PATH`
-  your terminal sees. It now falls back to asking `$SHELL`, both as an
-  interactive shell (`-ic`, which is where bash's own rc file lives) and as a
-  login shell (`-lc`, for setups that use a profile file instead), before
-  giving up.
+- A feature's own PATH — the one used to resolve `opencode` for starting
+  agents and `canaveral attach`, and the one exported to windows spawned via
+  hyprctl and to systemd `--user` units — no longer silently inherits
+  whatever restricted `PATH` launched canaveral itself. Launched from a
+  Hyprland keybind or the quickshell launcher, that PATH is the compositor
+  session's, not a terminal's, and is missing whatever an rc file would have
+  added (mise/asdf shims, `~/.local/bin`, opencode's own install directory).
+  This showed up two ways: `opencode not found in PATH` even when it was
+  installed and on the `PATH` your terminal sees, and, once that was
+  half-fixed, a window running `opencode attach` failing to appear at all
+  (`window with class "..." did not appear within 5s`) because the window
+  itself still only had the restricted PATH. Both are now resolved by asking
+  `$SHELL`, both as an interactive shell (`-ic`, where bash's own rc file
+  lives) and as a login shell (`-lc`, for setups that use a profile file
+  instead), and using the result everywhere a feature's environment is built.
 
 ## v0.5.1 — 2026-09-01
 
