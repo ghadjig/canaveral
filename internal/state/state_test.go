@@ -10,13 +10,19 @@ import (
 
 func newFeature(project, name string, slot int) *Feature {
 	return &Feature{
-		Project:   project,
-		Name:      name,
-		Root:      "/w/" + project,
-		Slot:      slot,
-		Branch:    name,
-		Worktree:  "/wt/" + project + "/" + name,
-		Ports:     map[string]int{"web": 3000 + slot},
+		Project:  project,
+		Name:     name,
+		Root:     "/w/" + project,
+		Slot:     slot,
+		Branch:   name,
+		Worktree: "/wt/" + project + "/" + name,
+		Ports:    map[string]int{"web": 3000 + slot},
+		// One window, so this is an ordinary feature rather than a headless
+		// one. Slot allocation turns on exactly this: a feature with no
+		// windows is a background worker and never takes a number, so a
+		// fixture without one would silently opt every test out of the
+		// behaviour it means to exercise.
+		Windows:   []Window{{Name: "term", Class: "canaveral-" + project + "-" + name}},
 		CreatedAt: time.Now().Truncate(time.Second),
 	}
 }
@@ -406,6 +412,103 @@ func TestEnsureWSlotsIsStableAcrossProjects(t *testing.T) {
 			t.Errorf("after reuse %s has slot %d, want %d", f.Name, f.WSlot, want)
 		}
 	}
+}
+
+func TestEnsureWSlotsSkipsHeadlessFeatures(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	base := time.Now().Add(-time.Hour)
+	mk := func(name string, age time.Duration, headless bool) {
+		f := newFeature("norules", name, 0)
+		f.CreatedAt = base.Add(age)
+		if headless {
+			f.Windows = nil
+		}
+		if err := Save(f); err != nil {
+			t.Fatalf("Save %s: %v", name, err)
+		}
+	}
+	// The worker is created FIRST, so if headless features took part in
+	// allocation at all it would hold slot 1 and push both real features up.
+	mk("worker", 0, true)
+	mk("real-one", time.Minute, false)
+	mk("real-two", 2*time.Minute, false)
+
+	got, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	want := map[string]int{"worker": 0, "real-one": 1, "real-two": 2}
+	for _, f := range got {
+		if f.WSlot != want[f.Name] {
+			t.Errorf("%s has slot %d, want %d", f.Name, f.WSlot, want[f.Name])
+		}
+	}
+	// Headless sorts last, so a widget rendering this list in order does not
+	// lead with an unnumbered row.
+	if got[len(got)-1].Name != "worker" {
+		t.Errorf("headless feature should sort last, got order %v", names(got))
+	}
+}
+
+func TestEnsureWSlotsReleasesSlotWhenFeatureBecomesHeadless(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := newFeature("norules", "was-real", 0)
+	if err := Save(f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureWSlots(); err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	got, err := Load("norules", "was-real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WSlot != 1 {
+		t.Fatalf("setup: want slot 1, got %d", got.WSlot)
+	}
+
+	// Rebuilt without windows. The number it was holding has to come back,
+	// and come back ON DISK — an in-memory zero would be re-read as a live
+	// claim by the next process to load the file.
+	got.Windows = nil
+	if err := Save(got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureWSlots(); err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	reloaded, err := Load("norules", "was-real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.WSlot != 0 {
+		t.Errorf("slot not released on disk: got %d, want 0", reloaded.WSlot)
+	}
+
+	// And the freed number is available to the next real feature.
+	next := newFeature("norules", "fresh", 0)
+	if err := Save(next); err != nil {
+		t.Fatal(err)
+	}
+	all, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	for _, f := range all {
+		if f.Name == "fresh" && f.WSlot != 1 {
+			t.Errorf("freed slot not reused: fresh got %d, want 1", f.WSlot)
+		}
+	}
+}
+
+func names(fs []*Feature) []string {
+	out := make([]string, len(fs))
+	for i, f := range fs {
+		out[i] = f.Name
+	}
+	return out
 }
 
 func TestEnsureWSlotsReassignsDuplicates(t *testing.T) {

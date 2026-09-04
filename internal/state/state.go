@@ -110,6 +110,17 @@ func (f *Feature) HyprWorkspace() string { return f.Project + ":" + f.Name }
 // Key uniquely identifies the feature across projects.
 func (f *Feature) Key() string { return f.Project + "/" + f.Name }
 
+// Headless reports whether the feature has no windows of its own — created
+// with --no-windows, or from a manifest that declares none. Such a feature is
+// a background worker: an agent and its services, with nothing on screen.
+//
+// Windows is written only by reconcileWindows, which --no-windows skips
+// entirely, and it records the DECLARED windows rather than the open ones.
+// Closing a feature's windows therefore does not make it headless, which is
+// what makes this stable enough to allocate slots from: `canaveral status`
+// counts how many of these are currently open as a separate question.
+func (f *Feature) Headless() bool { return len(f.Windows) == 0 }
+
 // Dir returns the canaveral state directory, creating it if needed.
 func Dir() (string, error) {
 	base := os.Getenv("XDG_STATE_HOME")
@@ -409,6 +420,11 @@ func AllocateSlot(project, feature string) (int, error) {
 // Unassigned features are ordered by creation time before allocating, so a
 // batch migrated together gets numbers in the order they were made rather than
 // in whatever order the filesystem walk returned.
+//
+// Headless features are deliberately left at slot 0 and never consume a
+// number. A slot exists to be jumped to, and there is nothing to jump to: the
+// number would be a keybind onto an empty workspace, and every real feature
+// after it would be pushed one further from the key it used to answer to.
 func EnsureWSlots() ([]*Feature, error) {
 	all, err := LoadAll()
 	if err != nil {
@@ -417,6 +433,19 @@ func EnsureWSlots() ([]*Feature, error) {
 	used := map[int]bool{}
 	var missing []*Feature
 	for _, f := range all {
+		if f.Headless() {
+			// Persist the release, not just the in-memory zero: a feature
+			// that had windows and was later rebuilt without them is holding
+			// a number that nothing can reach, and it stays held until the
+			// state file itself says otherwise.
+			if f.WSlot != 0 {
+				f.WSlot = 0
+				if err := Save(f); err != nil {
+					return nil, fmt.Errorf("release widget slot of %s: %w", f.Key(), err)
+				}
+			}
+			continue
+		}
 		if f.WSlot > 0 && !used[f.WSlot] {
 			used[f.WSlot] = true
 			continue
@@ -441,7 +470,15 @@ func EnsureWSlots() ([]*Feature, error) {
 			return nil, fmt.Errorf("assign widget slot to %s: %w", f.Key(), err)
 		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].WSlot < all[j].WSlot })
+	// Slot 0 now means "headless", not "not numbered yet", so those sort to
+	// the end instead of ahead of slot 1.
+	sort.Slice(all, func(i, j int) bool {
+		a, b := all[i].WSlot, all[j].WSlot
+		if (a == 0) != (b == 0) {
+			return b == 0
+		}
+		return a < b
+	})
 	return all, nil
 }
 

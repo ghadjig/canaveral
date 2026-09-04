@@ -14,6 +14,24 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Added
+
+- `canaveral watch` now emits `headless` on each feature: true for a feature
+  with no windows of its own, i.e. one created with `--no-windows`. A status
+  bar can use it to list background workers separately from the features you
+  can actually look at.
+
+### Changed
+
+- Headless features no longer consume a widget slot. `ws_slot` exists to be
+  jumped to and a worker has nothing to jump to, so it would have been a
+  keybind onto an empty workspace while pushing every real feature one number
+  further from the key it used to answer to. Such a feature now reports
+  `ws_slot` 0, and a number it was already holding is released on the next
+  `EnsureWSlots`. Features that already have a number keep it, exactly as when
+  a feature is removed — the freed number goes to the next feature created, so
+  nothing you have muscle memory for moves.
+
 ### Fixed
 
 - A feature's database suffix now follows the manifest instead of being frozen

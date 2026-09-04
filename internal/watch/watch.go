@@ -186,8 +186,14 @@ type Feature struct {
 	// same number the jump keybinds use, instead of deriving a position from
 	// whichever workspaces happen to exist right now — which reshuffles as
 	// features come and go.
-	WSlot  int    `json:"ws_slot,omitempty"`
-	Status Status `json:"status"`
+	WSlot int `json:"ws_slot,omitempty"`
+	// Headless marks a feature with no windows of its own — created with
+	// --no-windows, an agent working in the background. Emitted so a status
+	// bar can list these apart from the features you can actually look at:
+	// they carry the same agent and git detail, but no slot number, because
+	// there is no workspace worth jumping to. Always paired with ws_slot 0.
+	Headless bool   `json:"headless,omitempty"`
+	Status   Status `json:"status"`
 	// Since is when this feature entered its current Status. A consumer is
 	// expected to render the elapsed time itself and tick locally, which is
 	// why snapshots are emitted on change rather than on a timer.
@@ -278,6 +284,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		Branch:    f.Branch,
 		Workspace: f.HyprWorkspace(),
 		WSlot:     f.WSlot,
+		Headless:  f.Headless(),
 		CreatedAt: f.CreatedAt,
 	}
 
