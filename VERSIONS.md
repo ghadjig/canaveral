@@ -14,6 +14,27 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+### Removed
+
+- `canaveral hyprwatch` and `[layout.current]` are gone. Every time you dragged
+  a window and then left its workspace, canaveral wrote the resulting column
+  fractions back into the project's `canaveral.toml` and preferred them over
+  `[layout.default]` from then on. That meant a manifest — a tracked file —
+  quietly changed under you as a side effect of ordinary window use, and the
+  values it grew were never quite the ones you set. `[layout.default]` is now
+  the single place a layout is configured, and every feature of a project
+  starts from it. Resize freely; the change lasts as long as the windows do.
+
+  To migrate, delete the `[layout.current]` section from your
+  `canaveral.toml` — a leftover one is now an unknown key and will be
+  rejected on load. If you liked the widths it had drifted to, scale them to
+  sum to 1.0 and put them in `[layout.default]` instead.
+
+  `scripts/install.sh` disables and deletes a `canaveral-hyprwatch.service`
+  left behind by an older install, so nothing keeps running against a command
+  that no longer exists. The `internal/hyprevents` and `internal/tomledit`
+  packages went with it; both existed only to serve this.
+
 ### Added
 
 - `canaveral watch` now emits `headless` on each feature: true for a feature

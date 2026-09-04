@@ -111,26 +111,25 @@ const (
 // Every command in commands() must appear here; TestCompletionCoversEveryCommand
 // enforces that, so a new command cannot silently complete nothing.
 var commandArgs = map[string][]argKind{
-	"init":      {argNone},
-	"new":       {argNewFeature, argNone},
-	"open":      {argFeature, argNone},
-	"reset":     {argFeature},
-	"restart":   {argFeatureOrService, argService},
-	"ls":        {argNone},
-	"status":    {argFeature, argNone},
-	"rm":        {argFeature},
-	"prune":     {argNone},
-	"rebase":    {argFeature, argNone},
-	"merge":     {argFeature, argNone},
-	"attach":    {argFeature, argAgent, argNone},
-	"logs":      {argFeature, argLogTarget, argNone},
-	"path":      {argFeature, argNone},
-	"exec":      {argFeature, argNone},
-	"projects":  {argNone},
-	"complete":  {argNone},
-	"hyprwatch": {argNone},
-	"ws-slot":   {argNone},
-	"watch":     {argNone},
+	"init":     {argNone},
+	"new":      {argNewFeature, argNone},
+	"open":     {argFeature, argNone},
+	"reset":    {argFeature},
+	"restart":  {argFeatureOrService, argService},
+	"ls":       {argNone},
+	"status":   {argFeature, argNone},
+	"rm":       {argFeature},
+	"prune":    {argNone},
+	"rebase":   {argFeature, argNone},
+	"merge":    {argFeature, argNone},
+	"attach":   {argFeature, argAgent, argNone},
+	"logs":     {argFeature, argLogTarget, argNone},
+	"path":     {argFeature, argNone},
+	"exec":     {argFeature, argNone},
+	"projects": {argNone},
+	"complete": {argNone},
+	"ws-slot":  {argNone},
+	"watch":    {argNone},
 }
 
 // commandFlags lists each command's flags for completion.
@@ -158,10 +157,9 @@ var commandFlags = map[string]map[string]string{
 	"watch":    {"--all": "every project", "--debounce": "coalescing window", "--rescan": "rescan interval", "--safety": "safety-net interval", "--git": "git refresh interval"},
 	"ws-slot":  {"--json": "print as JSON"},
 
-	"hyprwatch": {"--install": "write a systemd user unit", "--verbose": "log every event"},
-	"restart":   {},
-	"path":      {},
-	"exec":      {},
+	"restart": {},
+	"path":    {},
+	"exec":    {},
 }
 
 func runComplete(ctx context.Context, args []string) error {

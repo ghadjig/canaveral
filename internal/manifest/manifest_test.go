@@ -313,30 +313,6 @@ opencode = 0.4
 	}
 }
 
-func TestLayoutFractionsPrefersCompleteCurrent(t *testing.T) {
-	l := Layout{
-		Order:   []string{"a", "b"},
-		Default: map[string]float64{"a": 0.5, "b": 0.5},
-		Current: map[string]float64{"a": 0.7, "b": 0.3},
-	}
-	got := l.Fractions()
-	if got["a"] != 0.7 {
-		t.Errorf("Fractions() should prefer a complete current: %v", got)
-	}
-}
-
-func TestLayoutFractionsFallsBackWhenCurrentIncomplete(t *testing.T) {
-	l := Layout{
-		Order:   []string{"a", "b"},
-		Default: map[string]float64{"a": 0.5, "b": 0.5},
-		Current: map[string]float64{"a": 0.9}, // missing "b"
-	}
-	got := l.Fractions()
-	if got["a"] != 0.5 || got["b"] != 0.5 {
-		t.Errorf("Fractions() should fall back to default when current is incomplete: %v", got)
-	}
-}
-
 func TestLayoutRejects(t *testing.T) {
 	base := `
 [[window]]
@@ -353,7 +329,7 @@ run = ""
 		"default sums wrong":         base + "\n[layout]\norder=[\"chrome\",\"opencode\"]\n[layout.default]\nchrome=0.6\nopencode=0.6\n",
 		"default required":           base + "\n[layout]\norder=[\"chrome\",\"opencode\"]\n",
 		"fraction out of range":      base + "\n[layout]\norder=[\"chrome\",\"opencode\"]\n[layout.default]\nchrome=1.5\nopencode=-0.5\n",
-		"current without order":      base + "\n[layout]\n[layout.current]\nchrome=1.0\n",
+		"default without order":      base + "\n[layout]\n[layout.default]\nchrome=1.0\n",
 	}
 	for label, body := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -376,10 +352,10 @@ func TestLayoutDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestLayoutCurrentSumNotEnforced(t *testing.T) {
-	// current reflects live, observed window geometry, which naturally drifts
-	// from a perfect partition when only one floating window is resized by
-	// hand. Only default (hand-authored) must sum to 1.0.
+func TestLayoutRejectsUnknownKeys(t *testing.T) {
+	// [layout.current] was once written back automatically after a resize.
+	// It is gone, and a manifest still carrying one should say so loudly
+	// rather than silently ignoring geometry the user expects to be used.
 	dir := write(t, t.TempDir(), `
 [[window]]
 name = "chrome"
@@ -397,31 +373,8 @@ opencode = 0.5
 chrome = 0.62
 opencode = 0.4
 `)
-	if _, err := Load(dir); err != nil {
-		t.Fatalf("Load should accept a current that does not sum to 1.0: %v", err)
-	}
-}
-
-func TestLayoutCurrentStillRejectsOutOfRangeFraction(t *testing.T) {
-	dir := write(t, t.TempDir(), `
-[[window]]
-name = "chrome"
-exec = "google-chrome --class={{.Class}}"
-[[window]]
-name = "opencode"
-run = ""
-
-[layout]
-order = ["chrome", "opencode"]
-[layout.default]
-chrome = 0.5
-opencode = 0.5
-[layout.current]
-chrome = 1.4
-opencode = 0.4
-`)
 	if _, err := Load(dir); err == nil {
-		t.Fatal("Load should still reject an out-of-range current fraction")
+		t.Fatal("Load should reject a leftover [layout.current]")
 	}
 }
 

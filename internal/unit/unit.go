@@ -333,7 +333,8 @@ func FeaturePrefixes(workspace string) []string {
 }
 
 // IsFeatureUnit reports whether a unit name is a feature's service or agent,
-// as opposed to one of canaveral's own long-lived units like hyprwatch.
+// as opposed to any other canaveral-prefixed unit, which must never be
+// reaped as an orphan.
 func IsFeatureUnit(name string) bool {
 	rest, ok := strings.CutPrefix(name, Prefix+"-")
 	if !ok {

@@ -155,6 +155,17 @@ func featureFromEnv() *state.Feature {
 	return f
 }
 
+// splitWorkspaceName splits canaveral's "project:feature" workspace naming
+// convention. Anything else (a plain numbered workspace, a special
+// workspace) is not one of ours.
+func splitWorkspaceName(ws string) (project, feature string, ok bool) {
+	project, feature, ok = strings.Cut(ws, ":")
+	if !ok || project == "" || feature == "" {
+		return "", "", false
+	}
+	return project, feature, true
+}
+
 // featureFromWorkspace reads the feature whose Hyprland workspace is focused.
 func featureFromWorkspace(ctx context.Context) *state.Feature {
 	if hypr.Available(ctx) != nil {

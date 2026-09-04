@@ -469,10 +469,9 @@ func waitForClassGone(ctx context.Context, class string, timeout time.Duration) 
 // was confirmed empirically: it is not documented, and "ratio 1.0" is an even
 // 50/50 split, not "the focused window gets 100%" as the name might suggest.
 //
-// Fractions do not need to sum to 1.0 — true of [layout.current], which
-// reflects whatever a user actually resized one window to, not a recomputed
-// partition of the rest — because each step only ever looks at the sum of
-// the fractions from that point on, which naturally renormalizes as it goes.
+// Fractions are not required to sum to exactly 1.0 — validation allows a
+// small tolerance, and each step only ever looks at the sum of the fractions
+// from that point on, which naturally renormalizes as it goes.
 func splitRatioChain(order []string, fractions map[string]float64) []float64 {
 	if len(order) == 0 {
 		return nil
@@ -490,8 +489,8 @@ func splitRatioChain(order []string, fractions map[string]float64) []float64 {
 			ratio = 2 * f / remaining
 		}
 		// Dwindle's ratio range is roughly (0, 2); clamp defensively so a
-		// pathological input (for example a current value hand-edited to
-		// something silly) cannot send a nonsense value to hyprctl.
+		// pathological input (for example a hand-edited fraction) cannot
+		// send a nonsense value to hyprctl.
 		if ratio < 0.1 {
 			ratio = 0.1
 		}
