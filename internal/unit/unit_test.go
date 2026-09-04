@@ -100,7 +100,7 @@ func TestIsFeatureUnitExcludesCanaveralsOwn(t *testing.T) {
 	cases := map[string]bool{
 		"canaveral-norules-startus-svc-web":    true,
 		"canaveral-norules-startus-agent-main": true,
-		"canaveral-hyprwatch":                  false,
+		"canaveral-helper":                     false,
 		"unrelated-svc-web":                    false,
 		"canaveral-norules-startus":            false,
 	}
@@ -167,7 +167,7 @@ func TestFeaturePrefixesDoNotClaimSiblings(t *testing.T) {
 
 func TestOrphansSkipsClaimedAndNonFeatureUnits(t *testing.T) {
 	live := []string{
-		"canaveral-hyprwatch",
+		"canaveral-helper",
 		"canaveral-demo-alive-svc-web",
 		"canaveral-demo-alive-agent-main",
 		"canaveral-demo-dead-svc-web",
@@ -179,7 +179,7 @@ func TestOrphansSkipsClaimedAndNonFeatureUnits(t *testing.T) {
 }
 
 func TestOrphansWithNoKnownFeaturesReapsEveryFeatureUnit(t *testing.T) {
-	live := []string{"canaveral-hyprwatch", "canaveral-p-f-svc-web"}
+	live := []string{"canaveral-helper", "canaveral-p-f-svc-web"}
 	got := Orphans(live, nil)
 	if len(got) != 1 || got[0] != "canaveral-p-f-svc-web" {
 		t.Errorf("Orphans = %v, want the feature unit only", got)

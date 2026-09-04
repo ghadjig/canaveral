@@ -11,7 +11,7 @@ transient systemd `--user` units, driven from one Go binary.
   that change nothing observable. A changelog written later is a changelog
   written wrong.
 - **Run `go test ./...` before committing.** `go test -race ./...` too when you
-  touch anything concurrent — the watch, probe, agent and hyprevents packages
+  touch anything concurrent — the watch, probe and agent packages
   all have goroutines in play.
 - **A test that reads the environment will lie to you here.** You are running
   inside a feature worktree, so `CANAVERAL_ROOT`, `CANAVERAL_FEATURE` and the

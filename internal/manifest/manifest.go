@@ -77,11 +77,10 @@ type Manifest struct {
 // them to Hyprland's normal tiling.
 //
 // Each named window becomes its own full-height column, left to right in
-// Order, sized as a fraction of the monitor's usable width. Current is
-// updated automatically by `canaveral hyprwatch` when you leave a feature's
-// workspace after resizing its windows, so the arrangement you actually
-// ended up with is what the next feature starts from — Default is only the
-// starting point for the very first feature of a project.
+// Order, sized as a fraction of the monitor's usable width. The layout is
+// applied when a feature's windows are first spawned; resizing them
+// afterwards is yours to keep for that session and is not recorded, so
+// Default is what every feature of a project starts from.
 type Layout struct {
 	// Order lists window names left to right. Every entry must be a declared
 	// window name, and every declared window must appear exactly once.
@@ -89,10 +88,6 @@ type Layout struct {
 	// Default maps window name to fraction of monitor width. Must sum to 1.0
 	// (within floating point tolerance) and cover exactly the names in Order.
 	Default map[string]float64 `toml:"default"`
-	// Current holds the last actually-observed arrangement, in the same
-	// shape as Default. Left empty until canaveral first snapshots it; you
-	// would not normally hand-write this section.
-	Current map[string]float64 `toml:"current"`
 }
 
 // Enabled reports whether a layout is configured at all. An empty Layout
@@ -100,23 +95,8 @@ type Layout struct {
 // to Hyprland's normal tiling untouched.
 func (l Layout) Enabled() bool { return len(l.Order) > 0 }
 
-// Fractions returns Current if it is fully populated for every window in
-// Order, otherwise Default.
-func (l Layout) Fractions() map[string]float64 {
-	if len(l.Current) == len(l.Order) {
-		complete := true
-		for _, name := range l.Order {
-			if _, ok := l.Current[name]; !ok {
-				complete = false
-				break
-			}
-		}
-		if complete {
-			return l.Current
-		}
-	}
-	return l.Default
-}
+// Fractions returns the configured width fraction for each window in Order.
+func (l Layout) Fractions() map[string]float64 { return l.Default }
 
 // Database configures how features share the project's database server.
 type Database struct {
@@ -522,8 +502,8 @@ func (w Window) validate() error {
 
 func (l Layout) validate(declaredWindows map[string]bool) error {
 	if !l.Enabled() {
-		if len(l.Default) > 0 || len(l.Current) > 0 {
-			return fmt.Errorf("layout: default/current given without order")
+		if len(l.Default) > 0 {
+			return fmt.Errorf("layout: default given without order")
 		}
 		return nil
 	}
@@ -539,10 +519,7 @@ func (l Layout) validate(declaredWindows map[string]bool) error {
 		seen[name] = true
 	}
 
-	if err := l.validateDefaultFractions(seen); err != nil {
-		return err
-	}
-	return l.validateCurrentFractions(seen)
+	return l.validateDefaultFractions(seen)
 }
 
 // validateDefaultFractions validates [layout.default]: required when order
@@ -560,20 +537,6 @@ func (l Layout) validateDefaultFractions(seen map[string]bool) error {
 		return fmt.Errorf("layout.default: fractions sum to %.3f, want 1.0", sum)
 	}
 	return nil
-}
-
-// validateCurrentFractions validates [layout.current]: optional, and not
-// held to summing to 1 — it is a live snapshot of whatever the user actually
-// resized floating windows to, which naturally drifts from a perfect
-// partition (resizing one column does not proportionally shrink the
-// others), and rejecting the manifest over that would break the exact
-// feature this section exists for.
-func (l Layout) validateCurrentFractions(seen map[string]bool) error {
-	if len(l.Current) == 0 {
-		return nil
-	}
-	_, err := validateFractions("current", l.Current, seen, len(l.Order))
-	return err
 }
 
 // validateFractions checks that every name in fractions is in order, every

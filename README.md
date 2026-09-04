@@ -54,7 +54,6 @@ $ canaveral new small-fixes
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral projects` | List the projects canaveral knows about, and where they live |
 | `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
-| `canaveral hyprwatch [--install]` | Record layout ratios when you leave a workspace (see below) |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
@@ -248,8 +247,13 @@ exec = "google-chrome --app={{.URL.web}}/"
 match_class = "^Google-chrome$"
 
 [layout]
-order   = ["chrome", "opencode", "terminal", "serverlogs"]
-default = [0.4, 0.2, 0.2, 0.2]
+order = ["chrome", "opencode", "terminal", "serverlogs"]
+
+[layout.default]
+chrome     = 0.4
+opencode   = 0.2
+terminal   = 0.2
+serverlogs = 0.2
 ```
 
 ### Placeholders
@@ -927,22 +931,27 @@ Hyprland's default tiling would produce:
 
 ```toml
 [layout]
-order   = ["chrome", "opencode", "terminal", "serverlogs"]
-default = [0.4, 0.2, 0.2, 0.2]   # must sum to ~1.0
+order = ["chrome", "opencode", "terminal", "serverlogs"]
+
+[layout.default]                 # must sum to ~1.0
+chrome     = 0.4
+opencode   = 0.2
+terminal   = 0.2
+serverlogs = 0.2
 ```
 
-`order` fixes the left-to-right column order; `default` is each column's
-fraction of the workspace width, applied the first time all of a feature's
-layout windows are created together. canaveral achieves this with real dwindle
-tiling — `preselect` + `splitratio exact` per window, not floating windows
-pinned to computed pixel coordinates — so the columns behave like normal tiled
-windows afterwards (resizable, swappable, survive a monitor change).
+`order` fixes the left-to-right column order; `[layout.default]` is each
+column's fraction of the workspace width, applied the first time all of a
+feature's layout windows are created together. canaveral achieves this with
+real dwindle tiling — `preselect` + `splitratio exact` per window, not floating
+windows pinned to computed pixel coordinates — so the columns behave like
+normal tiled windows afterwards (resizable, swappable, survive a monitor
+change).
 
-Dragging a window resizes the layout normally; `hyprwatch` (below) notices you
-left the workspace and snapshots the resulting fractions into
-`[layout.current]` in `canaveral.toml`, so the next `reset` restores what you
-last had rather than the manifest's `default`. `current` is written by
-canaveral, not something you're expected to hand-edit.
+Dragging a window resizes the layout normally, and that resize is yours for as
+long as the windows live. It is not recorded: `[layout.default]` is the one
+place the widths are configured, and every feature of a project starts from it.
+Want a different split? Edit the manifest.
 
 The ratio chain only reapplies when *every* layout window is missing (a fresh
 build). If only one window died and `reset` recreates just that one, it's
@@ -997,18 +1006,6 @@ elsewhere. `canaveral ws-slot N --json` prints `{"text": "...", "class":
 "active|inactive|hidden"}` for bars that want one widget per slot and style it
 by class.
 
-## Remembering a layout you dragged
-
-```
-canaveral hyprwatch --install   # writes and enables a systemd --user unit
-```
-
-`canaveral hyprwatch` subscribes to Hyprland's event socket and, the moment you
-leave a feature's workspace, records the current column ratios into
-`[layout.current]` (see "Windows" above). It sits idle at 0% CPU between events.
-Without it, a `reset` restores the manifest's `[layout.default]` rather than the
-widths you last dragged.
-
 ## Requirements
 
 systemd user manager, git, `opencode`, and Hyprland for the window layer. Without
@@ -1029,16 +1026,14 @@ to install the existing `./bin/canaveral`, `--dry-run` to rehearse.
 ### What a reinstall actually does
 
 Replacing the binary is not just a copy, because running units hold the old
-executable open and one unit file hard-codes its path. `install.sh` goes through
-these steps in order:
+executable open. `install.sh` goes through these steps in order:
 
 1. **Preflight.** Requires a Go toolchain, on `PATH` or via `mise`. Missing
    `git`, `systemctl`, `opencode`, `hyprctl` or `mise` only warn.
 2. **Build** with the version stamped in (see below), and read the new version
    back out of `./bin/canaveral`.
-3. **Stop every `canaveral-*` systemd user unit** — feature agents, feature
-   services, and `canaveral-hyprwatch.service`. Whether hyprwatch was active is
-   remembered for step 6. With `--keep-features`, only hyprwatch is stopped.
+3. **Stop every `canaveral-*` systemd user unit** — feature agents and feature
+   services. With `--keep-features`, nothing is stopped.
 4. **Except its own unit.** Installing from inside a canaveral agent is normal,
    and stopping that unit would kill the script mid-copy, so the unit found in
    `/proc/self/cgroup` is skipped and reported.
@@ -1047,11 +1042,9 @@ these steps in order:
    still-open old inode cannot cause `ETXTBSY`. Then verify — if the installed
    binary does not report the version just built, the script fails here, before
    anything is started again.
-6. **Reinstall `canaveral-hyprwatch.service`** if it was running, by invoking
-   `canaveral hyprwatch --install` from the newly installed binary. This is a
-   reinstall rather than a restart on purpose: the unit's `ExecStart` contains
-   the symlink-resolved absolute path of whichever binary installed it, so a
-   plain `systemctl restart` would keep running the old build.
+6. **Retire `canaveral-hyprwatch.service`** if an older install left one
+   behind. It recorded dragged layout ratios back into `canaveral.toml`, a
+   feature that no longer exists, so the unit is disabled and its file removed.
 
 ### Restarting features
 

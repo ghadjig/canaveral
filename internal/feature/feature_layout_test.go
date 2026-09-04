@@ -68,11 +68,11 @@ func TestSplitRatioChainEvenSplitIsNeutral(t *testing.T) {
 }
 
 func TestSplitRatioChainHandlesImperfectSum(t *testing.T) {
-	// [layout.current] reflects a live, hand-resized window and rarely sums
-	// to exactly 1.0 (only one column was resized; the others kept their old
-	// size). Each step only looks at the remaining sum from that point on,
-	// so this must not error or divide by zero, and should still produce a
-	// sensible (clamped, finite) ratio.
+	// Validation allows [layout.default] to sum to 1.0 only within a
+	// tolerance, so a slightly-off partition must still work. Each step only
+	// looks at the remaining sum from that point on, so this must not error
+	// or divide by zero, and should still produce a sensible (clamped,
+	// finite) ratio.
 	order := []string{"chrome", "opencode", "terminal", "serverlogs"}
 	fractions := map[string]float64{
 		"chrome": 0.34, "opencode": 0.2, "terminal": 0.2, "serverlogs": 0.2, // sums to 0.94
@@ -89,8 +89,8 @@ func TestSplitRatioChainHandlesImperfectSum(t *testing.T) {
 }
 
 func TestSplitRatioChainClampsExtremeInput(t *testing.T) {
-	// A hand-edited or corrupted current value must not be forwarded to
-	// hyprctl as a nonsense ratio.
+	// A hand-edited or corrupted fraction must not be forwarded to hyprctl
+	// as a nonsense ratio.
 	got := splitRatioChain([]string{"a", "b"}, map[string]float64{"a": 100, "b": 0.001})
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))

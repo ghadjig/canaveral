@@ -2,7 +2,7 @@
 # Build canaveral and install it onto PATH, cycling the systemd --user units
 # that hold the old executable open.
 #
-#   scripts/install.sh                 build, stop canaveral units, install, restart hyprwatch
+#   scripts/install.sh                 build, stop canaveral units, install
 #   scripts/install.sh --keep-features leave feature agents/services running
 #   scripts/install.sh --prefix DIR    install somewhere other than ~/.local/bin
 #   scripts/install.sh --no-build      install whatever is already in ./bin
@@ -103,24 +103,16 @@ units() {
 		awk '{print $1}'
 }
 
-hyprwatch_was_active=0
 stopped=()
 
-if have systemctl; then
+if have systemctl && ! ((keep_features)); then
 	mine=$(self_unit || true)
 	if [[ -n $mine ]]; then
 		warn "running under $mine; leaving it alone so this script survives"
 	fi
 
-	if systemctl --user is-active --quiet canaveral-hyprwatch.service; then
-		hyprwatch_was_active=1
-	fi
-
 	while read -r unit; do
 		if [[ -z $unit ]] || [[ -n $mine && $unit == "$mine" ]]; then
-			continue
-		fi
-		if ((keep_features)) && [[ $unit != canaveral-hyprwatch.service ]]; then
 			continue
 		fi
 		if ((dry_run)); then
@@ -133,15 +125,31 @@ if have systemctl; then
 	done < <(units)
 fi
 
+# canaveral-hyprwatch.service recorded dragged layout ratios back into
+# canaveral.toml. That feature is gone, so retire the unit anyone who
+# installed an older build still has enabled.
+retire_hyprwatch() {
+	have systemctl || return 0
+	local unit=canaveral-hyprwatch.service
+	local path=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit
+	[[ -e $path ]] || return 0
+	if ((dry_run)); then
+		say "would remove the retired $unit"
+		return 0
+	fi
+	say "removing the retired $unit"
+	systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+	rm -f "$path"
+	systemctl --user daemon-reload >/dev/null 2>&1 || true
+}
+retire_hyprwatch
+
 # ---------------------------------------------------------------- install
 
 dest=$prefix/canaveral
 
 if ((dry_run)); then
 	say "would install $built -> $dest"
-	if ((hyprwatch_was_active)); then
-		say "would rerun '$dest hyprwatch --install'"
-	fi
 	say "would verify $dest reports: $version"
 	exit 0
 fi
@@ -171,12 +179,7 @@ say "$installed"
 
 # ---------------------------------------------------------------- restart
 
-if ((hyprwatch_was_active)); then
-	# hyprwatch bakes the resolved binary path into its unit file, so rewrite
-	# it against the freshly installed location rather than just restarting.
-	say "reinstalling canaveral-hyprwatch.service"
-	"$dest" hyprwatch --install || warn "hyprwatch reinstall failed; run '$dest hyprwatch --install' by hand"
-elif have systemctl; then
+if have systemctl; then
 	systemctl --user daemon-reload >/dev/null 2>&1 || true
 fi
 
@@ -185,12 +188,6 @@ case ":$PATH:" in
 *) warn "$prefix is not on PATH; add it to your shell profile" ;;
 esac
 
-if ((${#stopped[@]})) && ! ((keep_features)); then
-	feature_units=()
-	for u in "${stopped[@]}"; do
-		[[ $u == canaveral-hyprwatch.service ]] || feature_units+=("$u")
-	done
-	if ((${#feature_units[@]})); then
-		warn "stopped ${#feature_units[@]} feature unit(s); bring them back with 'canaveral reset <feature>'"
-	fi
+if ((${#stopped[@]})); then
+	warn "stopped ${#stopped[@]} feature unit(s); bring them back with 'canaveral reset <feature>'"
 fi
