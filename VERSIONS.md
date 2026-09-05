@@ -12,6 +12,65 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.7.1 — 2026-09-05
+
+### Added
+
+- A service can now report ports it chose for itself, via `discover` in
+  `canaveral.toml`. Ports normally come from `[ports]` and a feature's slot,
+  which is enough when the service is told what to bind. It is not enough when
+  the service decides for itself and only says so afterwards — a dev server
+  given `:0`, a tunnel handed a random public port, a remote-development
+  wrapper that derives its port forwards from a hash of the branch name.
+  Declaring the port canaveral wishes it would use does not make it true.
+
+  Each entry is a regular expression matched against the service's own log,
+  with one capture group holding the port:
+
+  ```toml
+  [[service]]
+  name = "devspace"
+  cmd  = "bin/devspace dev-branch"
+  discover.port.web     = 'Port mappings: (\d+):3000'
+  discover.port.webpack = 'Port mappings:.*, (\d+):3808'
+  discover.timeout      = "60s"
+  ready.http            = "{{.URL.web}}/up"
+  ```
+
+  Discovery runs after the service starts and before its readiness probe, so a
+  probe may name a port discovered from that same service. Discovered ports
+  join `{{.Port}}` and `{{.URL}}` and are exported as `CANAVERAL_PORT_*`, so
+  later services, agents, windows and `canaveral exec` all address the port
+  actually bound without knowing which kind it was.
+
+  `discover.cmd` is the alternative for anything a regular expression cannot
+  express: a command run in the service's directory printing `name=port`
+  lines, retried until it exits zero having reported at least one port.
+
+  Patterns are checked when the manifest loads — they must compile, must have
+  exactly one capture group, and must not name a port that `[ports]` already
+  allocates. A port is either allocated or discovered, never both.
+
+  Discovered ports are persisted separately from allocated ones, because
+  `[ports]` values are recomputed from the manifest on every load and a
+  discovered value has no formula to be recomputed from. Reopening a feature
+  whose service is still running therefore keeps the real port instead of
+  handing out a slot-derived one nothing is listening on. A restart forgets
+  them first, since the service may well bind somewhere else this time.
+
+### Changed
+
+- A service's `ready` probe is now rendered after the service starts rather
+  than before, so `ready.http` can name a port discovered from that service.
+  A template error there now surfaces with the unit already running; the unit
+  is stopped when that happens, as it already was for a failed probe.
+
+### Fixed
+
+- `canaveral init` wrote a manifest that would not load. Its chrome window's
+  `exec` omitted `{{.Class}}`, which window validation requires, so the very
+  next command failed on the file canaveral had just written itself.
+
 ## v0.7.0 — 2026-09-05
 
 ### Added

@@ -440,3 +440,78 @@ func TestEnsureRecordFollowsIsolationChange(t *testing.T) {
 		t.Errorf("switching to shared left DBSuffix = %q, want empty", f.DBSuffix)
 	}
 }
+
+// Ports are recomputed from the manifest on every load so a newly declared
+// service gets one. A discovered port has no formula to be recomputed from,
+// so it has to be reapplied afterwards — otherwise reopening a feature whose
+// service is still running hands out the slot-derived port nothing is
+// listening on, and every URL built from it points at the wrong place.
+func TestEnsureRecordKeepsDiscoveredPorts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// This test runs inside a canaveral worktree, so these are set in the
+	// ambient environment and would otherwise leak in.
+	t.Setenv("CANAVERAL_ROOT", "")
+	t.Setenv("CANAVERAL_FEATURE", "")
+
+	const name = "small-fixes"
+	m := &manifest.Manifest{
+		Name: "norules", Root: t.TempDir(),
+		Ports: map[string]int{"admin": 4000},
+	}
+
+	existing := &state.Feature{
+		Project: "norules", Name: name, Slot: 2,
+		Worktree: "/wt/sf", Branch: name,
+		Ports:      map[string]int{"admin": 4002, "web": 3050},
+		Discovered: map[string]int{"web": 3050},
+	}
+	if err := state.Save(existing); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	f, created, err := ensureRecord(context.Background(), m, name)
+	if err != nil {
+		t.Fatalf("ensureRecord: %v", err)
+	}
+	if created {
+		t.Fatal("existing feature reported as created")
+	}
+	if f.Ports["web"] != 3050 {
+		t.Errorf("Ports[web] = %d, want 3050 — the discovered port must survive", f.Ports["web"])
+	}
+	// The allocated one still follows the manifest and the slot.
+	if f.Ports["admin"] != 4002 {
+		t.Errorf("Ports[admin] = %d, want 4002", f.Ports["admin"])
+	}
+}
+
+// varsFor is what turns a discovered port into {{.Port.web}} and
+// {{.URL.web}}, which is the whole reason to discover it: the manifest names
+// the port the same way whichever kind it is.
+func TestVarsForCarriesDiscoveredPorts(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	f := &state.Feature{Project: "norules", Name: "f", Slot: 0}
+	f.SetDiscovered(map[string]int{"web": 3050})
+
+	vars := varsFor(context.Background(), m, f, false, nil)
+	if vars.Port["web"] != 3050 {
+		t.Errorf("Port.web = %d, want 3050", vars.Port["web"])
+	}
+	if want := "http://localhost:3050"; vars.URL["web"] != want {
+		t.Errorf("URL.web = %q, want %q", vars.URL["web"], want)
+	}
+}
+
+// Every process canaveral starts gets CANAVERAL_PORT_*, and a discovered port
+// has to be in there too — an agent running the test suite by hand must reach
+// the same place the service bound.
+func TestBaseEnvExportsDiscoveredPorts(t *testing.T) {
+	m := &manifest.Manifest{Name: "norules"}
+	f := &state.Feature{Project: "norules", Name: "f", Slot: 0}
+	f.SetDiscovered(map[string]int{"web": 3050})
+
+	env := baseEnvFor(m, f, nil)
+	if env["CANAVERAL_PORT_WEB"] != "3050" {
+		t.Errorf("CANAVERAL_PORT_WEB = %q, want \"3050\"", env["CANAVERAL_PORT_WEB"])
+	}
+}

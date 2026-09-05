@@ -441,7 +441,7 @@ run  = "canaveral logs {{.Feature}} web -f"
 
 [[window]]
 name = "chrome"
-exec = "google-chrome --new-window {{.URL.web}}"
+exec = "google-chrome --class={{.Class}} --new-window {{.URL.web}}"
 `
 
 func runInit(ctx context.Context, args []string) error {

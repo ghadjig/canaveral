@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -146,8 +147,62 @@ type Service struct {
 	Dir   string            `toml:"dir"`
 	Env   map[string]string `toml:"env"`
 	Ready Ready             `toml:"ready"`
+	// Discover reads back ports this service chose for itself, for the
+	// services that are not told which port to use.
+	Discover Discover `toml:"discover"`
 	// Optional services may fail without aborting the feature.
 	Optional bool `toml:"optional"`
+}
+
+// Discover describes how to learn the ports a service picked for itself.
+//
+// Ports normally come from [ports] and a feature's slot, which is enough when
+// the service is told what to bind. It is not enough when the service decides
+// for itself and only says so afterwards — a dev server given :0, a tunnel
+// handed a random public port, a wrapper that derives its port forwards from
+// a hash of the branch name. Declaring the port canaveral wishes it would use
+// does not make it true; reading back the one it actually used does.
+//
+// Discovery happens after the service starts and before its readiness probe,
+// so `ready.http` may refer to a port discovered from that same service.
+// Discovered ports join {{.Port}} and {{.URL}} and are exported as
+// CANAVERAL_PORT_*, so nothing downstream needs to know which kind it got.
+type Discover struct {
+	// Port maps a logical name to a regular expression matched against the
+	// service's log. Each must have exactly one capture group, holding the
+	// port. Prefer TOML literal strings so backslashes need no escaping:
+	//
+	//	discover.port.web = 'Port mappings: (\d+):3000'
+	Port map[string]string `toml:"port"`
+	// Cmd is an alternative source for anything a regular expression cannot
+	// express: a command run in the service's directory that prints
+	// `name=port` lines. It is retried until it exits zero having reported at
+	// least one port, so a script that cannot answer yet should fail rather
+	// than print nothing.
+	//
+	// Mutually exclusive with Port. Names it reports are not known until it
+	// runs, so unlike Port they cannot be checked against [ports] up front.
+	Cmd string `toml:"cmd"`
+	// Timeout bounds discovery. Defaults to a minute — what is being waited
+	// for is a line of output, not a booted application.
+	Timeout Duration `toml:"timeout"`
+}
+
+// Enabled reports whether the service declares any discovery at all.
+func (d Discover) Enabled() bool { return len(d.Port) > 0 || d.Cmd != "" }
+
+// Names lists the declared port names in sorted order, or nil under Cmd,
+// where the names are whatever the command turns out to print.
+func (d Discover) Names() []string {
+	if len(d.Port) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(d.Port))
+	for name := range d.Port {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Ready describes a readiness probe. At most one check kind may be set.
@@ -417,6 +472,45 @@ func (m *Manifest) normalizeServices() error {
 		}
 		if s.Ready.Status == 0 {
 			s.Ready.Status = 200
+		}
+		if err := m.validateDiscover(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateDiscover checks one service's [discover] block.
+//
+// The static checks are worth making because the alternative surfaces late
+// and misleadingly: a pattern that cannot compile, or captures nothing,
+// becomes a discovery timeout minutes into a boot rather than a parse error
+// before anything starts.
+func (m *Manifest) validateDiscover(s *Service) error {
+	d := s.Discover
+	if !d.Enabled() {
+		return nil
+	}
+	if d.Cmd != "" && len(d.Port) > 0 {
+		return fmt.Errorf("service %q: set either discover.cmd or discover.port, not both", s.Name)
+	}
+	for _, name := range d.Names() {
+		if !nameRe.MatchString(name) {
+			return fmt.Errorf("service %q: invalid discover.port name %q", s.Name, name)
+		}
+		// A name in both places has two answers and no rule for choosing
+		// between them that a reader could predict.
+		if _, ok := m.Ports[name]; ok {
+			return fmt.Errorf("service %q: discover.port.%s also declared in [ports]; "+
+				"a port is either allocated or discovered, not both", s.Name, name)
+		}
+		re, err := regexp.Compile(d.Port[name])
+		if err != nil {
+			return fmt.Errorf("service %q: discover.port.%s: %w", s.Name, name, err)
+		}
+		if n := re.NumSubexp(); n != 1 {
+			return fmt.Errorf("service %q: discover.port.%s must have exactly one capture "+
+				"group holding the port, found %d", s.Name, name, n)
 		}
 	}
 	return nil

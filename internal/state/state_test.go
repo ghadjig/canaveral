@@ -529,3 +529,105 @@ func TestEnsureWSlotsReassignsDuplicates(t *testing.T) {
 		t.Fatalf("duplicate slots survived: %d and %d", got[0].WSlot, got[1].WSlot)
 	}
 }
+
+func TestSetDiscoveredMergesIntoPorts(t *testing.T) {
+	f := &Feature{Ports: map[string]int{"admin": 4001}}
+	f.SetDiscovered(map[string]int{"web": 3050})
+
+	// One map for consumers, regardless of where each port came from.
+	if f.Ports["web"] != 3050 {
+		t.Errorf("Ports[web] = %d, want 3050", f.Ports["web"])
+	}
+	if f.Ports["admin"] != 4001 {
+		t.Errorf("Ports[admin] = %d, want 4001 — allocation must survive", f.Ports["admin"])
+	}
+	if f.Discovered["web"] != 3050 {
+		t.Errorf("Discovered[web] = %d, want 3050", f.Discovered["web"])
+	}
+	if _, ok := f.Discovered["admin"]; ok {
+		t.Error("an allocated port leaked into Discovered")
+	}
+}
+
+func TestSetDiscoveredOnNilMaps(t *testing.T) {
+	f := &Feature{}
+	f.SetDiscovered(map[string]int{"web": 3050})
+	if f.Ports["web"] != 3050 || f.Discovered["web"] != 3050 {
+		t.Errorf("Ports=%v Discovered=%v, want web=3050 in both", f.Ports, f.Discovered)
+	}
+}
+
+func TestSetDiscoveredEmptyIsNoop(t *testing.T) {
+	f := &Feature{}
+	f.SetDiscovered(nil)
+	if f.Discovered != nil {
+		t.Errorf("Discovered = %v, want nil", f.Discovered)
+	}
+}
+
+// The whole point of keeping Discovered separate: Ports is recomputed from
+// the manifest on every load, and a discovered value has no formula to be
+// recomputed from. Without the overlay, adopting an already-running service
+// would hand out the slot-derived port it is not listening on.
+func TestMergeDiscoveredSurvivesPortRecompute(t *testing.T) {
+	f := &Feature{
+		Ports:      map[string]int{"web": 3050},
+		Discovered: map[string]int{"web": 3050},
+	}
+
+	f.Ports = map[string]int{"web": 3001} // as portsFor would recompute it
+	f.MergeDiscovered()
+
+	if f.Ports["web"] != 3050 {
+		t.Errorf("Ports[web] = %d, want 3050 — the discovered port must win", f.Ports["web"])
+	}
+}
+
+func TestMergeDiscoveredWithNothingDiscovered(t *testing.T) {
+	f := &Feature{Ports: map[string]int{"web": 3001}}
+	f.MergeDiscovered()
+	if f.Ports["web"] != 3001 {
+		t.Errorf("Ports[web] = %d, want 3001", f.Ports["web"])
+	}
+}
+
+func TestForgetDiscovered(t *testing.T) {
+	f := &Feature{
+		Ports:      map[string]int{"web": 3050, "admin": 4001},
+		Discovered: map[string]int{"web": 3050},
+	}
+	f.ForgetDiscovered([]string{"web"})
+
+	// A restart may bind a different port; the old value must not survive to
+	// be handed out if discovery then fails.
+	if _, ok := f.Ports["web"]; ok {
+		t.Errorf("Ports still holds web = %d", f.Ports["web"])
+	}
+	if _, ok := f.Discovered["web"]; ok {
+		t.Error("Discovered still holds web")
+	}
+	if f.Ports["admin"] != 4001 {
+		t.Errorf("Ports[admin] = %d, want 4001 — untouched", f.Ports["admin"])
+	}
+}
+
+func TestForgetDiscoveredOnEmptyFeature(t *testing.T) {
+	f := &Feature{}
+	f.ForgetDiscovered([]string{"web"}) // must not panic on nil maps
+}
+
+func TestDiscoveredSurvivesSaveLoad(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	f := &Feature{Project: "p", Name: "f", Slot: 1}
+	f.SetDiscovered(map[string]int{"web": 3050})
+	if err := Save(f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load("p", "f")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Discovered["web"] != 3050 {
+		t.Errorf("Discovered[web] = %d, want 3050", got.Discovered["web"])
+	}
+}

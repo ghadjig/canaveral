@@ -3,9 +3,13 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -78,5 +82,20 @@ func TestOpenFeatureRejectsAReservedName(t *testing.T) {
 	err := openFeature(context.Background(), "new", []string{"status"}, true)
 	if err == nil || !strings.Contains(err.Error(), "canaveral command") {
 		t.Errorf("err = %v, want a reserved-name error", err)
+	}
+}
+
+// The starter manifest has to survive being loaded back. It did not: the
+// chrome window's exec command omitted {{.Class}}, which manifest validation
+// requires, so `canaveral init` followed by any other command failed on the
+// file canaveral had just written itself.
+func TestStarterTemplateLoads(t *testing.T) {
+	dir := t.TempDir()
+	body := fmt.Sprintf(starterTemplate, "demo", `"node_modules"`, `".env"`, "")
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Load(dir); err != nil {
+		t.Fatalf("starter manifest does not load: %v", err)
 	}
 }

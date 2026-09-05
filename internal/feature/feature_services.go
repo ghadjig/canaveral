@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/bandito/canaveral/internal/discover"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/probe"
 	"github.com/bandito/canaveral/internal/state"
@@ -64,6 +66,15 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		res.StartedSvc = append(res.StartedSvc, s.Name)
 		records = append(records, rec)
 
+		// A service that discovered its own ports changes what every later
+		// one renders against, so rebuild before the next iteration.
+		if s.Discover.Enabled() {
+			vars = varsFor(ctx, m, f, false, nil)
+			if base, err = envFor(m, f, tc, vars); err != nil {
+				return err
+			}
+		}
+
 		// Persist per service rather than once at the end. A later service
 		// failing used to discard the record of every healthy one before it,
 		// which left `rm` with nothing to stop and the ports held forever.
@@ -89,7 +100,8 @@ func serviceRecord(m *manifest.Manifest, f *state.Feature, s manifest.Service, l
 	}
 }
 
-// startService launches one service and waits for its ready probe.
+// startService launches one service, resolves any ports it chose for itself,
+// and waits for its ready probe.
 //
 // Reports false, nil when an optional service failed: the caller must not
 // record it as running, but it is not an error either. A required service's
@@ -102,10 +114,11 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	if err != nil {
 		return false, err
 	}
-	ready, err := renderReady(s.Name, s.Ready, vars)
-	if err != nil {
-		return false, err
-	}
+
+	// This service may have discovered different ports last time it ran, and
+	// is about to bind whatever it likes again. Drop the old answers before
+	// the new ones can be confused with them.
+	f.ForgetDiscovered(s.Discover.Names())
 
 	unit.Reset(ctx, rec.Unit)
 	r.Step("service %s  %s", s.Name, rec.Cmd)
@@ -124,14 +137,30 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 		return false, err
 	}
 
+	// Between start and the readiness probe, deliberately: a service that
+	// picks its own port has to be running before it can say which, and the
+	// probe is usually the first thing that needs to know.
+	if s.Discover.Enabled() {
+		if err := discoverPorts(ctx, m, f, s, rec, r); err != nil {
+			return stopAndReport(ctx, s, rec, r, err)
+		}
+		vars = varsFor(ctx, m, f, false, nil)
+	}
+
+	// Rendered after start rather than before, so `ready.http` can name a port
+	// this very service just discovered. The cost is that a bad template here
+	// surfaces with the unit already running, hence the stop.
+	ready, err := renderReady(s.Name, s.Ready, vars)
+	if err != nil {
+		return stopAndReport(ctx, s, rec, r, err)
+	}
+
 	if k := ready.Kind(); k != "" {
 		// Say so before blocking. ready.timeout is routinely a minute or two
 		// for anything as slow to boot as a Rails server, and a terminal that
 		// goes silent for that long is indistinguishable from a hang.
 		r.Info("waiting for %s readiness probe, up to %s", k, ready.Timeout.Or(probe.DefaultTimeout))
 		if err := probe.Wait(ctx, ready, rec.Dir, rec.LogPath, aliveCheck(ctx, rec.Unit, rec.LogPath)); err != nil {
-			_ = unit.Stop(ctx, rec.Unit)
-			unit.Reset(ctx, rec.Unit)
 			// A dead process already reports its log through aliveCheck. A
 			// timeout is the other case: still running, still not ready, and
 			// its own output is then the only thing that says why — a Rails
@@ -140,17 +169,63 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 			if errors.Is(err, probe.ErrTimeout) {
 				err = fmt.Errorf("%w\n%s", err, tailIndent(rec.LogPath, 15))
 			}
-			if s.Optional {
-				r.Warn("optional service %s: %v", s.Name, err)
-				return false, nil
-			}
-			return false, fmt.Errorf("service %q: %w", s.Name, err)
+			return stopAndReport(ctx, s, rec, r, fmt.Errorf("service %q: %w", s.Name, err))
 		}
 		r.OK("service %s ready", s.Name)
 	} else {
 		r.OK("service %s started", s.Name)
 	}
 	return true, nil
+}
+
+// discoverPorts resolves the ports a service chose for itself and records
+// them on the feature, so everything started afterwards — later services,
+// agents, windows, `canaveral exec` — addresses the port it actually bound.
+func discoverPorts(ctx context.Context, m *manifest.Manifest, f *state.Feature,
+	s manifest.Service, rec state.Service, r Reporter) error {
+
+	d := s.Discover
+	r.Info("discovering ports for %s, up to %s", s.Name, d.Timeout.Or(discover.DefaultTimeout))
+	found, err := discover.Ports(ctx, d, rec.LogPath, rec.Dir, aliveCheck(ctx, rec.Unit, rec.LogPath))
+	if err != nil {
+		// Same reasoning as the readiness probe: on a timeout the service's
+		// own output is the only thing that can say why it never announced
+		// a port, and a pattern written against output that has since
+		// changed looks identical from here to one that is merely early.
+		if errors.Is(err, discover.ErrTimeout) {
+			err = fmt.Errorf("%w\n%s", err, tailIndent(rec.LogPath, 15))
+		}
+		return fmt.Errorf("service %q: %w", s.Name, err)
+	}
+	f.SetDiscovered(found)
+	for _, name := range sortedPortNames(found) {
+		r.OK("discovered port %s = %d", name, found[name])
+	}
+	return nil
+}
+
+func sortedPortNames(ports map[string]int) []string {
+	out := make([]string, 0, len(ports))
+	for name := range ports {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// stopAndReport tears down a service that started but could not be brought
+// the rest of the way, downgrading the failure to a warning when it was
+// optional.
+func stopAndReport(ctx context.Context, s manifest.Service, rec state.Service,
+	r Reporter, err error) (bool, error) {
+
+	_ = unit.Stop(ctx, rec.Unit)
+	unit.Reset(ctx, rec.Unit)
+	if s.Optional {
+		r.Warn("optional service %s: %v", s.Name, err)
+		return false, nil
+	}
+	return false, err
 }
 
 func renderReady(name string, ready manifest.Ready, vars tmpl.Vars) (manifest.Ready, error) {
@@ -234,6 +309,15 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 			return err
 		}
 		f.Services = upsertService(f.Services, rec, started)
+
+		// Discovery may have moved this service's ports, which the next one
+		// in the list renders against.
+		if s.Discover.Enabled() {
+			vars = varsFor(ctx, m, f, false, nil)
+			if base, err = envFor(m, f, tc, vars); err != nil {
+				return err
+			}
+		}
 	}
 	return state.Save(f)
 }

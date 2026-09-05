@@ -48,6 +48,19 @@ func TestLoadRejects(t *testing.T) {
 		"exec without class":   "[[window]]\nname=\"w\"\nexec=\"chrome\"\n",
 		"run with profile":     "[[window]]\nname=\"w\"\nrun=\"\"\nprofile_source=\"~/.config/x\"\n",
 		"profile without seed": "[[window]]\nname=\"w\"\nexec=\"c --class={{.Class}}\"\nprofile_source=\"~/.config/x\"\n",
+
+		"discover cmd and port together": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.cmd=\"./ports\"\ndiscover.port.web='(\\d+)'\n",
+		"discover pattern will not compile": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.port.web='port (\\d+'\n",
+		"discover pattern without capture group": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.port.web='listening'\n",
+		"discover pattern with two capture groups": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.port.web='(\\w+) (\\d+)'\n",
+		"discover port also in [ports]": "[ports]\nweb = 3000\n[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.port.web='port (\\d+)'\n",
+		"discover port with invalid name": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"discover.port.'has space'='port (\\d+)'\n",
 	}
 	for label, body := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -56,6 +69,75 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("Load(%q) succeeded, want error", body)
 			}
 		})
+	}
+}
+
+func TestDiscoverAccepted(t *testing.T) {
+	dir := write(t, t.TempDir(), `
+[ports]
+admin = 4000
+
+[[service]]
+name = "devspace"
+cmd  = "bin/devspace dev-branch"
+discover.port.web     = 'Port mappings: (\d+):3000'
+discover.port.webpack = 'Port mappings:.*, (\d+):3808'
+discover.timeout      = "90s"
+ready.http = "{{.URL.web}}/up"
+`)
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := m.Services[0].Discover
+	if !d.Enabled() {
+		t.Fatal("Enabled() = false, want true")
+	}
+	if got := d.Timeout.Or(time.Minute); got != 90*time.Second {
+		t.Errorf("Timeout = %s, want 90s", got)
+	}
+	want := []string{"web", "webpack"}
+	got := d.Names()
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Names()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDiscoverCmdHasNoDeclaredNames(t *testing.T) {
+	// Under discover.cmd the names are whatever it prints, so there is
+	// nothing to check against [ports] up front — and nothing to report.
+	dir := write(t, t.TempDir(), `
+[[service]]
+name = "web"
+cmd  = "run"
+discover.cmd = "./ports"
+`)
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := m.Services[0].Discover
+	if !d.Enabled() {
+		t.Error("Enabled() = false, want true")
+	}
+	if n := d.Names(); n != nil {
+		t.Errorf("Names() = %v, want nil", n)
+	}
+}
+
+func TestDiscoverAbsentIsDisabled(t *testing.T) {
+	dir := write(t, t.TempDir(), "[[service]]\nname=\"web\"\ncmd=\"run\"\n")
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.Services[0].Discover.Enabled() {
+		t.Error("Enabled() = true for a service with no discover block")
 	}
 }
 
