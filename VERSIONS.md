@@ -65,6 +65,12 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   A template error there now surfaces with the unit already running; the unit
   is stopped when that happens, as it already was for a failed probe.
 
+### Fixed
+
+- `canaveral init` wrote a manifest that would not load. Its chrome window's
+  `exec` omitted `{{.Class}}`, which window validation requires, so the very
+  next command failed on the file canaveral had just written itself.
+
 ## v0.7.0 — 2026-09-05
 
 ### Added
