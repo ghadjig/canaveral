@@ -222,6 +222,10 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 			res.abort(ctx, r)
 			return nil, err
 		}
+		// A service may have discovered its own ports, which agents and their
+		// environment must see. Cheap when nothing did: varsFor only reads the
+		// record, and f.Agents is still empty so it makes no requests.
+		vars = varsFor(ctx, m, f, created, opt.Resume)
 	}
 	if !opt.NoAgents {
 		if err := reconcileAgents(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
@@ -270,6 +274,10 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 		// [database] isolation without every feature that already exists
 		// silently keeping the old answer.
 		f.Ports = portsFor(m, f.Slot)
+		// Discovered ports have no formula to be recomputed from, so they are
+		// reapplied over the result. Without this, adopting an already-running
+		// service would hand out the slot-derived port it is not listening on.
+		f.MergeDiscovered()
 		f.DBSuffix = dbSuffixFor(m, name)
 		f.Root = projectRoot(ctx, m)
 		return f, false, nil

@@ -34,12 +34,19 @@ type Feature struct {
 	// projects both have a slot 0, but the widget shows every project at once
 	// and needs one number per feature. Zero means unassigned; EnsureWSlots
 	// fills those in.
-	WSlot     int            `json:"ws_slot,omitempty"`
-	Branch    string         `json:"branch"`
-	Worktree  string         `json:"worktree"`
-	DBSuffix  string         `json:"db_suffix,omitempty"`
-	Ports     map[string]int `json:"ports,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	WSlot    int            `json:"ws_slot,omitempty"`
+	Branch   string         `json:"branch"`
+	Worktree string         `json:"worktree"`
+	DBSuffix string         `json:"db_suffix,omitempty"`
+	Ports    map[string]int `json:"ports,omitempty"`
+	// Discovered holds ports read back from a service that chose its own,
+	// rather than derived from Slot. Kept apart from Ports because Ports is
+	// recomputed from the manifest on every load — which is what lets a newly
+	// declared service get a port — and a discovered value has no formula to
+	// be recomputed from. It is merged over Ports when the feature is loaded,
+	// so callers see one map and need not care which kind they got.
+	Discovered map[string]int `json:"discovered_ports,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
 	// Phase is a transient lifecycle phase — PhaseBooting while a feature is
 	// being brought up, PhaseRemoving while it is torn down — and empty once
 	// it has settled.
@@ -106,6 +113,51 @@ type Window struct {
 
 // HyprWorkspace is the Hyprland workspace name for the feature.
 func (f *Feature) HyprWorkspace() string { return f.Project + ":" + f.Name }
+
+// SetDiscovered records ports read back from a service and merges them into
+// Ports, so every consumer sees a single map regardless of where a port came
+// from. Discovered values win: the service has already bound the port, and a
+// declared value that disagrees is simply wrong.
+func (f *Feature) SetDiscovered(ports map[string]int) {
+	if len(ports) == 0 {
+		return
+	}
+	if f.Discovered == nil {
+		f.Discovered = make(map[string]int, len(ports))
+	}
+	if f.Ports == nil {
+		f.Ports = make(map[string]int, len(ports))
+	}
+	for name, p := range ports {
+		f.Discovered[name] = p
+		f.Ports[name] = p
+	}
+}
+
+// MergeDiscovered overlays previously discovered ports onto Ports. Called
+// after Ports has been recomputed from the manifest, which would otherwise
+// drop them.
+func (f *Feature) MergeDiscovered() {
+	if len(f.Discovered) == 0 {
+		return
+	}
+	if f.Ports == nil {
+		f.Ports = make(map[string]int, len(f.Discovered))
+	}
+	for name, p := range f.Discovered {
+		f.Ports[name] = p
+	}
+}
+
+// ForgetDiscovered drops the named discovered ports, for a service about to
+// be restarted: it may well bind a different port this time, and the old
+// value must not survive to be handed out if discovery then fails.
+func (f *Feature) ForgetDiscovered(names []string) {
+	for _, n := range names {
+		delete(f.Discovered, n)
+		delete(f.Ports, n)
+	}
+}
 
 // Key uniquely identifies the feature across projects.
 func (f *Feature) Key() string { return f.Project + "/" + f.Name }
