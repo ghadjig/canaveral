@@ -13,20 +13,46 @@ import (
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
 )
 
-// resolveFeature loads a feature of the current project by name.
+// resolveFeature loads a workspace of that name: a feature of the current
+// project, or an open space.
+//
+// The project is asked first, so an explicit verb always means the project's
+// own — the same rule `canaveral open` and `canaveral rm` follow, and the
+// reason `canaveral space` exists as the form that always means the space.
+// A space is reached when the project has no such feature, or when there is
+// no project to ask, which is the usual case: spaces exist precisely because
+// there is nowhere to be standing.
 func resolveFeature(name string) (*state.Feature, error) {
+	name = feature.Slug(name)
 	m, err := loadManifest()
 	if err != nil {
+		if f, ok := spaceRecord(name); ok {
+			return f, nil
+		}
 		return nil, err
 	}
-	f, err := state.Load(m.Name, feature.Slug(name))
+	f, err := state.Load(m.Name, name)
 	if err != nil {
+		if sf, ok := spaceRecord(name); ok {
+			return sf, nil
+		}
 		return nil, err
 	}
 	return f, nil
+}
+
+// manifestFor returns the manifest a workspace was built from: the project's
+// for a feature, and the space's own definition for a space, which lives in
+// canaveral's config directory rather than in any checkout.
+func manifestFor(f *state.Feature) (*manifest.Manifest, error) {
+	if f.Space {
+		return space.Load(f.Name)
+	}
+	return loadManifest()
 }
 
 // featureFromArgs resolves the feature a command should act on from its
@@ -155,15 +181,26 @@ func featureFromEnv() *state.Feature {
 	return f
 }
 
-// splitWorkspaceName splits canaveral's "project:feature" workspace naming
-// convention. Anything else (a plain numbered workspace, a special
-// workspace) is not one of ours.
+// splitWorkspaceName splits canaveral's workspace naming convention into the
+// project and feature a state record is keyed by.
+//
+// A feature's workspace is "project:feature". A space's is its bare name,
+// because it has no project, and its record is keyed by that name twice over
+// — see state.Feature.HyprWorkspace and internal/space. Anything else (a
+// plain numbered workspace, a special workspace) is not one of ours, but a
+// bare word could be either a space or somebody else's named workspace, so
+// the caller settles it by looking the record up.
 func splitWorkspaceName(ws string) (project, feature string, ok bool) {
-	project, feature, ok = strings.Cut(ws, ":")
-	if !ok || project == "" || feature == "" {
+	if project, feature, ok = strings.Cut(ws, ":"); ok {
+		if project == "" || feature == "" {
+			return "", "", false
+		}
+		return project, feature, true
+	}
+	if ws == "" {
 		return "", "", false
 	}
-	return project, feature, true
+	return ws, ws, true
 }
 
 // featureFromWorkspace reads the feature whose Hyprland workspace is focused.
@@ -252,11 +289,11 @@ func runExec(ctx context.Context, args []string) error {
 		return fmt.Errorf("specify a command to run in %s", name)
 	}
 
-	m, err := loadManifest()
+	f, err := resolveFeature(name)
 	if err != nil {
 		return err
 	}
-	f, err := state.Load(m.Name, feature.Slug(name))
+	m, err := manifestFor(f)
 	if err != nil {
 		return err
 	}

@@ -559,18 +559,24 @@ func Cmdline(pid int) (string, bool) {
 
 var classSafe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
-// ClassPrefix is the shared prefix of every window class for a feature.
-func ClassPrefix(project, feature string) string {
-	return fmt.Sprintf("canaveral-%s-%s-", clean(project), clean(feature))
+// ClassPrefix is the shared prefix of every window class for a workspace.
+//
+// scope is state.Feature.Key(): "project/feature" for a feature and the bare
+// name for a space, which has no project to be prefixed by. Since clean turns
+// "/" into "-" either way, a feature's classes are spelled exactly as they
+// were when this took the two halves separately — an already-open window is
+// still recognised as its own across the change.
+func ClassPrefix(scope string) string {
+	return fmt.Sprintf("canaveral-%s-", clean(scope))
 }
 
 func clean(s string) string {
 	return strings.Trim(classSafe.ReplaceAllString(s, "-"), "-")
 }
 
-// Class builds the window class for a feature's window.
-func Class(project, feature, window string) string {
-	return ClassPrefix(project, feature) + clean(window)
+// Class builds the window class for one of a workspace's windows.
+func Class(scope, window string) string {
+	return ClassPrefix(scope) + clean(window)
 }
 
 // Workspace is one entry of `hyprctl workspaces`.

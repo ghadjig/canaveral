@@ -60,16 +60,16 @@ func TestCheckFeatureExistenceUnknownFeatureOffersToCreateIt(t *testing.T) {
 }
 
 func TestOpenFeatureRequiresAFeatureName(t *testing.T) {
-	if err := openFeature(context.Background(), "new", nil, true); err == nil {
+	if err := openFeature(context.Background(), "new", nil, true, false); err == nil {
 		t.Error("openFeature(create) with no args should require a name")
 	}
-	if err := openFeature(context.Background(), "open", nil, false); err == nil {
+	if err := openFeature(context.Background(), "open", nil, false, false); err == nil {
 		t.Error("openFeature(reconcile) with no args should require a name")
 	}
 }
 
 func TestOpenFeatureRejectsMultipleNames(t *testing.T) {
-	err := openFeature(context.Background(), "new", []string{"a", "b"}, true)
+	err := openFeature(context.Background(), "new", []string{"a", "b"}, true, false)
 	if err == nil || !strings.Contains(err.Error(), "expected one feature name") {
 		t.Errorf("err = %v, want a one-name-expected error", err)
 	}
@@ -80,7 +80,7 @@ func TestOpenFeatureRejectsAReservedName(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Chdir(completeProject(t, "open-reserved"))
 
-	err := openFeature(context.Background(), "new", []string{"status"}, true)
+	err := openFeature(context.Background(), "new", []string{"status"}, true, false)
 	if err == nil || !strings.Contains(err.Error(), "canaveral command") {
 		t.Errorf("err = %v, want a reserved-name error", err)
 	}

@@ -326,3 +326,68 @@ func TestRemoveDoesNotRecordSessionForUnnamespacedFeature(t *testing.T) {
 		t.Error("Remove recorded a session for a feature with no namespace")
 	}
 }
+
+// TestRemoveNeverTouchesASpacesDirectory is the most important test in this
+// package.
+//
+// A space records its working directory in the same field a feature records
+// its checkout in — your home directory, by default. Everything else in
+// teardown is safe for a space by construction: stopping units and closing
+// windows never had anything to do with git. Removing the worktree is not,
+// and the only thing standing between a space and `git worktree remove ~` is
+// that removeWorktreeAndBranch asks f.Space before it asks f.Worktree.
+//
+// The fixture deliberately gives the space a real repository and a real
+// worktree of it — which a space built by ensureSpaceRecord never has, since
+// its Root is empty. That is the point. Today an empty Root is a second,
+// accidental line of defence, because git simply fails; the day someone fills
+// Root in so `canaveral exec` works, this is what stops that from also
+// deleting people's home directories. Remove the Space check and it fails.
+func TestRemoveNeverTouchesASpacesDirectory(t *testing.T) {
+	f := gitFeature(t, false)
+	dir := f.Worktree
+	// Make the recorded directory real and put something irreplaceable in it.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keepsake := filepath.Join(dir, "models.3mf")
+	if err := os.WriteFile(keepsake, []byte("not canaveral's to delete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Space = true
+	f.Project, f.Name = "3d-printing", "3d-printing"
+	if err := state.Save(f); err != nil {
+		t.Fatal(err)
+	}
+
+	// force and keepBranch off: exactly the settings under which a feature
+	// would have its worktree removed and its branch deleted. The branch here
+	// is unmerged, so a feature would not even get this far — it would be
+	// refused. A space has no branch to be unmerged.
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, err := os.Stat(keepsake); err != nil {
+		t.Fatalf("Remove deleted a file inside a space's directory: %v", err)
+	}
+	// The record is gone, which is the part that should happen.
+	if _, err := state.Load("3d-printing", "3d-printing"); err == nil {
+		t.Error("the state record survived Remove")
+	}
+}
+
+// A space has no branch, so the merge guard that protects unmerged work has
+// nothing to protect and must not refuse the teardown. Without the Space
+// check there, `canaveral rm` on a space would fail on a branch it never had.
+func TestRemoveDoesNotAskAboutMergingASpace(t *testing.T) {
+	f := gitFeature(t, false) // an unmerged branch: a feature would be refused
+	f.Space = true
+	if err := state.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove refused a space over a branch it does not have: %v", err)
+	}
+}

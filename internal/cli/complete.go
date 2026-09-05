@@ -13,6 +13,7 @@ import (
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/skills"
+	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -39,6 +40,11 @@ const (
 	// typo, and seeing "create X" before pressing Enter is the only warning
 	// anyone gets.
 	candNew = "new"
+	// candSpace is a workspace with no project behind it. A separate kind
+	// from candFeature because it is reachable from anywhere — it belongs to
+	// no project — and because it has no branch or worktree for a consumer
+	// to offer to show.
+	candSpace = "space"
 	// candHistory is a whole line typed before, offered so the second time
 	// costs a few keystrokes instead of all of them. It only ever appears
 	// alongside the project list, at the very start of the line — see
@@ -69,6 +75,11 @@ type completion struct {
 	// Project is the project the candidates were resolved against, empty when
 	// completing the project name itself.
 	Project string `json:"project,omitempty"`
+	// Space is set when the line's first word names a space rather than a
+	// project. The launcher builds a different argv for one: a space belongs
+	// to no project, so it takes no -C, and it is a runnable line on its own
+	// because the name *is* the command.
+	Space bool `json:"space,omitempty"`
 	// Command is what the line currently means: a command name, or "open" when
 	// a bare feature name is being used for dispatch.
 	Command string `json:"command,omitempty"`
@@ -116,6 +127,11 @@ const (
 	// ambiguous — restartTarget resolves it at run time and refuses when a name
 	// is both — so completion offers both rather than picking a side.
 	argFeatureOrService
+	// argSpaceVerb is `space`'s first argument: one of its own subcommands,
+	// or a space name, since `canaveral space 3d-printing` opens one.
+	argSpaceVerb
+	// argSpace is a defined space.
+	argSpace
 )
 
 // commandArgs describes each command's positional arguments by index. The last
@@ -142,6 +158,7 @@ var commandArgs = map[string][]argKind{
 	"logs":     {argFeature, argLogTarget, argNone},
 	"path":     {argFeature, argNone},
 	"exec":     {argFeature, argNone},
+	"space":    {argSpaceVerb, argSpace, argNone},
 	"projects": {argNone},
 	"complete": {argNone},
 	"ws-slot":  {argNone},
@@ -175,6 +192,9 @@ var commandFlags = map[string]map[string]string{
 	"watch":    {"--all": "every project", "--debounce": "coalescing window", "--rescan": "rescan interval", "--safety": "safety-net interval", "--git": "git refresh interval"},
 	"ws-slot":  {"--json": "print as JSON"},
 
+	// space's flags belong to its subcommands rather than to itself, and
+	// completion resolves one word at a time, so there are none here.
+	"space":   {},
 	"restart": {},
 	"path":    {},
 	"exec":    {},
@@ -276,7 +296,14 @@ func complete(words []string, launcher bool) completion {
 
 	if launcher {
 		if len(done) == 0 {
-			return completeProjects(prefix)
+			return completeLauncherStart(prefix)
+		}
+		// A space is checked before a project because it is the more specific
+		// answer: project names come from a registry anyone can add to, and a
+		// space that shares a name with one would otherwise be unreachable
+		// from the launcher entirely.
+		if space.Exists(spaceName(done[0])) {
+			return inSpace(spaceName(done[0]), done[1:], prefix)
 		}
 		return inProject(done[0], done[1:], prefix)
 	}
@@ -300,11 +327,90 @@ func complete(words []string, launcher bool) completion {
 
 	m, err := manifestHere()
 	if err != nil {
+		// Outside a project, the only things a first word can name are a
+		// command and a space — and both are worth offering, since a space is
+		// reachable from anywhere and this is the usual place to open one.
+		// Later words need a manifest to mean anything, so the error stands.
+		if len(done) == 0 {
+			var all []candidate
+			for _, c := range commands() {
+				all = append(all, candidate{Value: c.name, Kind: candCommand, Desc: c.summary})
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
+			return finish(prefix, append(all, spaceCandidates()...), spaceStart(prefix))
+		}
+		if len(done) == 1 && space.Exists(spaceName(done[0])) {
+			return inSpace(spaceName(done[0]), nil, prefix)
+		}
 		return completion{Prefix: prefix, Error: err.Error(), Candidates: []candidate{}}
 	}
 	c := completeArgs(m, done, prefix)
 	c.Project = m.Name
 	return c
+}
+
+// inSpace completes the rest of a launcher line whose first word is a space.
+//
+// A space name is a whole command on its own — bare dispatch opens it — so
+// what can follow is flags rather than a subcommand. `canaveral space close`
+// and its siblings are terminal verbs; a launcher line that opened a
+// workspace and then asked which verb it meant would have the grammar
+// backwards.
+func inSpace(name string, done []string, prefix string) completion {
+	base := completion{Prefix: prefix, Project: name, Space: true, Command: "open"}
+	if len(done) > 0 {
+		// Only flags follow, and they are offered from the first word on.
+		base.Prefix = prefix
+	}
+	var all []candidate
+	for flag, desc := range commandFlags["open"] {
+		if flag == "--base" {
+			continue // a space has no branch to start from
+		}
+		all = append(all, candidate{Value: flag, Kind: candFlag, Desc: desc})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
+	return finish(prefix, all, base)
+}
+
+// completeLauncherStart offers what a launcher line can begin with: a
+// project, or a space.
+//
+// Spaces sit alongside projects rather than under a verb because that is what
+// they are at this point in the line — a thing you are about to work in. The
+// difference is that a project needs a command after it and a space does not,
+// which the Space flag on the result tells the launcher.
+func completeLauncherStart(prefix string) completion {
+	// A registry that cannot be read must not hide the spaces, which do not
+	// use it.
+	all, _ := projectCandidates()
+	all = append(all, spaceCandidates()...)
+	// History lines come last, and are filtered exactly like everything else
+	// in finish: a line only survives once the user has typed something it
+	// does not start with, which is what makes it "pop up immediately, then
+	// vanish" rather than clutter the list forever. They only make sense
+	// here, at the very first word, because a history line is a whole command
+	// — project, command and arguments together — and replacing "the last
+	// word" with one when there is only one word so far replaces the entire
+	// input, exactly as if it had been retyped.
+	all = append(all, historyCandidates()...)
+	return finish(prefix, all, spaceStart(prefix))
+}
+
+// spaceStart marks a first word that already names a space exactly.
+//
+// The launcher needs this before a second word exists: a space name is a
+// whole runnable command by itself, and a line it cannot tell is runnable is
+// a line Enter does nothing to. Relying on the highlighted candidate instead
+// would break the moment a fuzzy match put something else under the cursor.
+func spaceStart(prefix string) completion {
+	base := completion{Prefix: prefix}
+	if prefix != "" && space.Exists(spaceName(prefix)) {
+		base.Space = true
+		base.Project = spaceName(prefix)
+		base.Command = "open"
+	}
+	return base
 }
 
 // inProject completes an argv against a named project.
@@ -339,9 +445,19 @@ func manifestHere() (*manifest.Manifest, error) {
 }
 
 func completeProjects(prefix string) completion {
-	projects, err := registry.MRU()
+	all, err := projectCandidates()
 	if err != nil {
 		return completion{Prefix: prefix, Error: err.Error(), Candidates: []candidate{}}
+	}
+	return finish(prefix, all, completion{Prefix: prefix})
+}
+
+// projectCandidates offers every registered project whose checkout is still
+// there.
+func projectCandidates() ([]candidate, error) {
+	projects, err := registry.MRU()
+	if err != nil {
+		return nil, err
 	}
 	var all []candidate
 	for _, p := range projects {
@@ -353,16 +469,7 @@ func completeProjects(prefix string) completion {
 		}
 		all = append(all, candidate{Value: p.Name, Kind: candProject, Desc: homeTilde(p.Root)})
 	}
-	// History lines come last, and are filtered exactly like everything else
-	// in finish: a line only survives once the user has typed something it
-	// does not start with, which is what makes it "pop up immediately, then
-	// vanish" rather than clutter the list forever. They only make sense here,
-	// at the very first word, because a history line is a whole command —
-	// project, command and arguments together — and replacing "the last word"
-	// with one when there is only one word so far replaces the entire input,
-	// exactly as if it had been retyped.
-	all = append(all, historyCandidates()...)
-	return finish(prefix, all, completion{Prefix: prefix})
+	return all, nil
 }
 
 // historyCandidates offers previously typed launcher lines, most recent
@@ -436,6 +543,14 @@ func completeArgs(m *manifest.Manifest, done []string, prefix string) completion
 		return finish(prefix, agentCandidates(m), base)
 	case argLogTarget:
 		return finish(prefix, serviceCandidates(m, true), base)
+	case argSpaceVerb:
+		var all []candidate
+		for _, c := range spaceSubcommands() {
+			all = append(all, candidate{Value: c.name, Kind: candCommand, Desc: c.summary})
+		}
+		return finish(prefix, append(all, spaceCandidates()...), base)
+	case argSpace:
+		return finish(prefix, spaceCandidates(), base)
 	default:
 		base.Candidates = []candidate{}
 		base.Common = prefix
@@ -460,7 +575,29 @@ func completeFirstWord(m *manifest.Manifest, prefix string) completion {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
 	all = append(all, featureCandidates(m, prefix, scopeRestorable)...)
+	// Spaces are offered here too, because bare dispatch opens one: they are
+	// reachable from anywhere, and anywhere includes a project's checkout.
+	all = append(all, spaceCandidates()...)
 	return finish(prefix, all, completion{Prefix: prefix, Command: "open"})
+}
+
+// spaceCandidates offers every defined space. No manifest is involved: a
+// space belongs to no project, which is the whole point of one, so these are
+// the same candidates wherever you happen to be standing.
+func spaceCandidates() []candidate {
+	names, err := space.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]candidate, 0, len(names))
+	for _, n := range names {
+		desc := "space"
+		if _, open := spaceRecord(n); open {
+			desc = "space, open"
+		}
+		out = append(out, candidate{Value: n, Kind: candSpace, Desc: desc})
+	}
+	return out
 }
 
 // featureScope says which of a project's features a given argument accepts.

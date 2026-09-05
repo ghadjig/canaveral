@@ -34,9 +34,22 @@ type Feature struct {
 	// projects both have a slot 0, but the widget shows every project at once
 	// and needs one number per feature. Zero means unassigned; EnsureWSlots
 	// fills those in.
-	WSlot    int            `json:"ws_slot,omitempty"`
-	Branch   string         `json:"branch"`
-	Worktree string         `json:"worktree"`
+	WSlot  int    `json:"ws_slot,omitempty"`
+	Branch string `json:"branch"`
+	// Worktree is the directory this workspace works in: the feature's
+	// checkout normally, and for a space (which has no checkout) whatever its
+	// `dir` names. Everything downstream — a service's working directory, an
+	// agent's session scope, CANAVERAL_WORKTREE, `canaveral path` — wants
+	// that one directory and does not care which it is.
+	//
+	// Only git cares, and git asks Space first: a space's directory is one
+	// you already keep, and removing it the way a worktree is removed would
+	// be a catastrophe rather than a cleanup.
+	Worktree string `json:"worktree"`
+	// Space marks a workspace with no project behind it — no repository, no
+	// worktree, no branch — defined in canaveral's config directory rather
+	// than in a checkout. See internal/space.
+	Space    bool           `json:"space,omitempty"`
 	DBSuffix string         `json:"db_suffix,omitempty"`
 	Ports    map[string]int `json:"ports,omitempty"`
 	// Discovered holds ports read back from a service that chose its own,
@@ -112,7 +125,16 @@ type Window struct {
 }
 
 // HyprWorkspace is the Hyprland workspace name for the feature.
-func (f *Feature) HyprWorkspace() string { return f.Project + ":" + f.Name }
+//
+// A space carries no project prefix because it has no project: its name is
+// the whole of its identity, and "3d-printing:3d-printing" would be a colon
+// separating a thing from itself.
+func (f *Feature) HyprWorkspace() string {
+	if f.Space {
+		return f.Name
+	}
+	return f.Project + ":" + f.Name
+}
 
 // SetDiscovered records ports read back from a service and merges them into
 // Ports, so every consumer sees a single map regardless of where a port came
@@ -159,8 +181,14 @@ func (f *Feature) ForgetDiscovered(names []string) {
 	}
 }
 
-// Key uniquely identifies the feature across projects.
-func (f *Feature) Key() string { return f.Project + "/" + f.Name }
+// Key uniquely identifies the feature across projects. A space is keyed by
+// its bare name, for the reason given on HyprWorkspace.
+func (f *Feature) Key() string {
+	if f.Space {
+		return f.Name
+	}
+	return f.Project + "/" + f.Name
+}
 
 // Headless reports whether the feature has no windows of its own — created
 // with --no-windows, or from a manifest that declares none. Such a feature is

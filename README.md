@@ -9,6 +9,10 @@ canaveral new add-tasks-per-role
 canaveral new onboarding/ask-for-name-at-first-step
 ```
 
+Not everything has a repository, and `canaveral space` covers the rest — a
+slicer and a browser on onshape.com, say, defined once in
+`~/.config/canaveral` and opened from anywhere by name. See [Spaces](#spaces).
+
 Each command creates a fully independent universe for that feature:
 its own git worktree and branch, its own ports, its own services and agent, and
 its own Hyprland workspace with the windows you declared — the coding agent, a
@@ -56,6 +60,7 @@ $ canaveral new small-fixes
 | `canaveral init` | Write a starter `canaveral.toml` |
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral projects` | List the projects canaveral knows about, and where they live |
+| `canaveral space <cmd>` | Define and open workspaces that have no project behind them |
 | `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -237,6 +242,121 @@ agent = "build"          # opencode's named persona; ignored by claude
 has no Claude Code equivalent — its subagents are files in `.claude/agents`,
 chosen per task by the model rather than fixed for a session — so it is
 dropped rather than approximated.
+
+## Spaces
+
+Not everything you sit down to do has a repository. 3D printing is a slicer
+and a browser on onshape.com; there is nothing to check out, no branch the
+work could land on, and no directory that would be the obvious place to keep
+a `canaveral.toml` even if you wanted one. The *workspace* is exactly as
+real, though, and setting it up by hand every time is exactly as tedious.
+
+A space is that workspace with the git half removed:
+
+```
+canaveral space new 3d-printing     # writes a starter definition, opens $EDITOR
+canaveral 3d-printing               # open it, from anywhere
+```
+
+Its definition lives in canaveral's config directory rather than in a
+checkout, because there is no checkout to put it in:
+
+```toml
+# ~/.config/canaveral/spaces/3d-printing.toml
+
+[[window]]
+name = "onshape"
+exec = "google-chrome --class={{.Class}} --new-window https://cad.onshape.com"
+
+[[window]]
+name = "slicer"
+run  = "prusa-slicer"
+
+[[window]]
+name = "terminal"
+run  = ""
+
+[layout]
+order = ["onshape", "slicer", "terminal"]
+[layout.default]
+onshape  = 0.5
+slicer   = 0.3
+terminal = 0.2
+```
+
+`[[window]]`, `[[service]]`, `[[agent]]`, `[ports]`, `[env]` and `[layout]`
+all mean exactly what they mean in a project manifest — it is the same
+parser, and everything downstream of it was always about windows, units and
+Hyprland rather than about git. So a space can run a local server, and it can
+have an agent in it, and `canaveral status`, `canaveral logs`, `canaveral
+restart` and `canaveral watch` all work on one.
+
+The four keys that only mean something with a repository behind them —
+`branch`, `[worktree]`, `[database]` and `precheck` — are refused rather than
+ignored, so a definition copied from a project fails loudly instead of
+silently dropping half of what it asked for.
+
+### Where a space works
+
+`dir` says where its windows, services and agents open, and defaults to your
+home directory:
+
+```toml
+dir = "~/models"
+```
+
+canaveral never creates it. A space that names a directory is naming one you
+already keep, which is what makes removing a space incapable of deleting
+anything.
+
+### Managing them
+
+| Command | Purpose |
+| --- | --- |
+| `canaveral space` | List the spaces you have defined |
+| `canaveral space new <name>` | Write a starter definition and open `$EDITOR`; `--no-edit` to skip |
+| `canaveral space edit <name>` | Open an existing definition in `$EDITOR` |
+| `canaveral space path <name>` | Print the definition's path, for scripts |
+| `canaveral space open <name>` | Open it, unambiguously |
+| `canaveral space close <name>` | Stop its units and close its windows, keeping the definition |
+| `canaveral space rm <name>` | Close it and delete the definition |
+
+`canaveral rm <name>` reaches a space too, and stops at closing it: canaveral
+made nothing on disk for a space, so there is nothing to delete, and the
+definition is something you wrote and it cannot rebuild. Deleting that is
+`canaveral space rm`, which asks first.
+
+### Names, and what happens when they clash
+
+A space is opened by name from anywhere, which puts it in the same namespace
+bare dispatch already uses for features. The rule:
+
+- **`canaveral <name>`** resolves either, and *refuses* when a name means
+  both — the same way `canaveral restart` refuses a name that is both a
+  service and a feature. Whichever it picked, the other would be unreachable
+  by the form you actually typed.
+- **Every explicit verb** (`open`, `rm`, `status`, `logs`, `attach`,
+  `restart`) asks the project first, and reaches a space only when the
+  project has no feature by that name — or when there is no project to ask,
+  which is the usual case.
+- **`canaveral space <verb> <name>`** always means the space.
+
+So `canaveral open x` and `canaveral space open x` are the two unambiguous
+halves, and the error you get on a clash names them both.
+
+### From the launcher
+
+The quickshell launcher lists spaces beside projects, and a space is a
+runnable line on its own: type enough of `3d-printing` to pick it out, press
+Enter, and it opens and focuses. A project still needs a command after it —
+a space *is* the command.
+
+Flags follow if you want them (`--no-windows`, `--focus` and friends), and
+that is all that can: the name was the verb.
+
+Space names are flat: no `/`, so they take no part in the [namespace](#namespaces)
+syntax below. There is nothing there for them — a namespace shares a skill
+between sibling worktrees, and a space has no worktree to share one from.
 
 ## Namespaces
 
@@ -1050,6 +1170,7 @@ permanently wrong.
 
 ```
 ~/.config/canaveral/config.toml       optional: which agent you use
+~/.config/canaveral/spaces/*.toml     workspaces with no project behind them
 ~/.local/state/canaveral/
   projects.json                       the project registry: name -> checkout, last used
   features/<project>/<feature>.json   slot, branch, ports, units, windows

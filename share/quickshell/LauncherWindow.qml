@@ -168,7 +168,8 @@ PanelWindow {
     //
     // Empty until there is something to run: a project on its own is not a
     // command, and `canaveral -C norules` with nothing after it would exit 0
-    // having printed usage to a terminal nobody is looking at.
+    // having printed usage to a terminal nobody is looking at. A space on its
+    // own is the exception, and the only one — see argv.
     // The command actually executed, which is argv() behind an `env -u` that
     // strips canaveral's own feature variables.
     //
@@ -193,6 +194,17 @@ PanelWindow {
 
     function argv() {
         const w = words().filter(x => x !== "");
+        // A space is a whole command on its own: it belongs to no project, so
+        // it takes no -C, and its name *is* the verb — `canaveral 3d-printing`
+        // opens it. That makes it the one runnable one-word line here, which
+        // is why the completer says so explicitly (completion.space) rather
+        // than leaving the launcher to infer it from the highlighted row.
+        if (result && result.space) {
+            const s = [root.bin].concat(w);
+            if (w.indexOf("--focus") < 0)
+                s.push("--focus");
+            return s;
+        }
         if (w.length < 2)
             return [];
         const rest = w.slice(1);
@@ -287,7 +299,12 @@ PanelWindow {
         // offered while the line is still empty, so there is no word to
         // complete and Enter would fall straight through to run() — which
         // does nothing, since a bare project name is not a runnable command.
-        if (w !== "" || selectedExplicit) {
+        //
+        // A fully typed space name is the exception: the line already says
+        // what it means, so Enter runs it rather than appending a space and
+        // waiting for a verb that is never coming.
+        const spaceReady = result && result.space && c && c.value === w;
+        if ((w !== "" || selectedExplicit) && !spaceReady) {
             if (c && c.value !== w) {
                 accept(c);
                 return;
@@ -493,7 +510,7 @@ PanelWindow {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: input.text === ""
-                        text: "project, then a command or a new feature name"
+                        text: "project, then a command or a new feature name — or a space"
                         font: input.font
                         color: Theme.faint
                     }
@@ -562,7 +579,7 @@ PanelWindow {
                                 // "new" is the only candidate that creates
                                 // something rather than naming something that
                                 // exists, so it is the only one coloured.
-                                color: modelData.kind === "new" ? Theme.accent : Theme.faint
+                                color: modelData.kind === "new" || modelData.kind === "space" ? Theme.accent : Theme.faint
                             }
 
                             Text {

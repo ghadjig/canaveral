@@ -12,6 +12,88 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- `canaveral space` defines workspaces that have no project behind them. Not
+  everything you sit down to do has a repository: 3D printing is a slicer and
+  a browser on onshape.com, with nothing to check out, no branch the work
+  could land on, and no directory that would obviously hold a
+  `canaveral.toml` even if you wanted one. The workspace is exactly as real,
+  and setting it up by hand every time was exactly as tedious.
+
+  ```
+  canaveral space new 3d-printing     # starter definition, opened in $EDITOR
+  canaveral 3d-printing               # open it, from anywhere
+  ```
+
+  The definition lives in `~/.config/canaveral/spaces/<name>.toml`, because
+  there is no checkout to put it in. `[[window]]`, `[[service]]`,
+  `[[agent]]`, `[ports]`, `[env]` and `[layout]` mean exactly what they mean
+  in a project manifest — it is the same parser, and everything downstream of
+  it was always about windows, units and Hyprland rather than about git. So a
+  space can run a local server, can have an agent in it, and answers to
+  `status`, `logs`, `restart`, `attach`, `path`, `exec` and `watch` like
+  anything else.
+
+  `branch`, `[worktree]`, `[database]` and `precheck` are refused rather than
+  ignored, so a definition copied from a project fails loudly instead of
+  silently dropping half of what it asked for. `dir` says where a space
+  works and defaults to your home directory; canaveral never creates it,
+  which is what makes removing a space incapable of deleting anything.
+
+  Managed with `canaveral space` — `ls` (the default), `new`, `edit`, `path`,
+  `open`, `close` and `rm`. `canaveral rm <space>` reaches one too and stops
+  at closing it: canaveral made nothing on disk for a space, and the
+  definition is something you wrote that it cannot rebuild, so deleting that
+  is `canaveral space rm`, which asks first.
+
+  Opening a space by bare name puts it in the same namespace features already
+  use, so the collision has a rule rather than a winner. `canaveral <name>`
+  resolves either and refuses when a name means both, the way `canaveral
+  restart` already refuses a name that is both a service and a feature; every
+  explicit verb asks the project first and reaches a space only when the
+  project has no such feature, or when there is no project to ask; and
+  `canaveral space <verb> <name>` always means the space. The error on a
+  clash names both escapes.
+
+  Space names are flat. Namespaces group sibling worktrees around a shared
+  skill, and a space has no worktree to share one from.
+
+- Spaces are reachable from the quickshell launcher, which is the way most of
+  them will actually be opened — a slicer and a browser is a hotkey, not a
+  terminal. They sit alongside projects in the first-word list.
+
+  The launcher's grammar was `<project> [command] [args...]`, mapping onto
+  `canaveral -C <project> <argv>`, and a space fits none of it: it belongs to
+  no project, so it takes no `-C`, and its name *is* the verb, so it is a
+  runnable line one word long — the only one. `canaveral complete` now says
+  so in band (`"space": true`) rather than leaving the launcher to infer it
+  from whichever row happens to be highlighted, which would break the moment
+  a fuzzy match put something else under the cursor. Enter on a fully typed
+  space name runs it instead of waiting for a verb that is never coming, and
+  `--focus` is appended for the same reason it is for `new`: from a hotkey,
+  going there is the entire intent.
+
+  Past the first word only flags follow, since the name was the verb.
+  `--base` is not among them; a space has no branch to start from.
+
+- Tab completion outside a project offers canaveral's own commands and the
+  spaces reachable from anywhere, instead of only the error about a missing
+  canaveral.toml. Outside a project those two are the whole of what a first
+  word can honestly mean.
+
+### Changed
+
+- A space's Hyprland workspace and its window classes carry no project
+  prefix, since it has no project: `3d-printing` rather than
+  `3d-printing:3d-printing`. Window classes are now derived from the
+  workspace key as one string instead of from a project and feature pair.
+  Features are unaffected down to the byte — the "/" in `project/feature`
+  sanitises to the same hyphen that used to join the halves — so a window
+  open across the upgrade is still recognised as its own.
+
 ## v0.8.0 — 2026-09-05
 
 ### Added
