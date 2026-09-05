@@ -70,9 +70,13 @@ have go || have mise || {
 }
 have git || warn "git not found; canaveral needs it at runtime"
 have systemctl || warn "systemctl not found; services and agents will not start"
-for opt in opencode hyprctl mise; do
+for opt in hyprctl mise; do
 	have "$opt" || warn "$opt not found; the features that use it will be skipped"
 done
+# Any one agent harness is enough; warning about the ones you deliberately
+# do not use would be noise. See internal/agent for the full list.
+have opencode || have claude ||
+	warn "no coding agent found (opencode, claude); features declaring one will not start"
 
 # ---------------------------------------------------------------- build
 

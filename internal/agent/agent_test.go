@@ -119,7 +119,7 @@ func TestProbeStateWaitingOnQuestion(t *testing.T) {
 	questions := `[{"sessionID":"ses_mine","questions":[{"header":"Fork trigger","question":"When should canaveral fork a session?","options":[{"label":"Always"},{"label":"Never"}]}]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Fatalf("State = %q, want waiting (question outranks busy)", h.State)
 	}
@@ -141,7 +141,7 @@ func TestProbeIgnoresPendingForAnotherSession(t *testing.T) {
 	questions := `[{"sessionID":"ses_somebody_else","questions":[{"header":"Nope","question":"?","options":[]}]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
 		t.Errorf("State = %q, want idle; another session's question leaked in", h.State)
 	}
@@ -153,7 +153,7 @@ func TestProbeQuestionOutranksPermission(t *testing.T) {
 	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["rm -rf /"]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, questions)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Pending == nil || h.Pending.Kind != BlockQuestion {
 		t.Errorf("Pending = %+v, want the question to take precedence", h.Pending)
 	}
@@ -174,7 +174,7 @@ func TestProbeIgnoresAStaleQuestionFromAnAbortedTurn(t *testing.T) {
 		`"questions":[{"header":"Stale","question":"Still here?","options":[]}]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
 		t.Errorf("State = %q, want idle; the question's turn already ended", h.State)
 	}
@@ -192,7 +192,7 @@ func TestProbeHonoursAQuestionStillOpen(t *testing.T) {
 		`"questions":[{"header":"Pick","question":"Which?","options":[]}]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Errorf("State = %q, want waiting; the question's message is still open", h.State)
 	}
@@ -209,7 +209,7 @@ func TestProbeIgnoresAStalePermissionFromAnAbortedTurn(t *testing.T) {
 	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_aborted"},"permission":"bash","patterns":["rm -rf /"]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
 		t.Errorf("State = %q, want idle; the permission's turn already ended", h.State)
 	}
@@ -223,7 +223,7 @@ func TestProbeHonoursAPermissionStillOpen(t *testing.T) {
 	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_open"},"permission":"bash","patterns":["echo hi"]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Errorf("State = %q, want waiting; the permission's message is still open", h.State)
 	}
@@ -234,7 +234,7 @@ func TestProbePendingPermissionDetails(t *testing.T) {
 	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["echo hi"]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Fatalf("State = %q, want waiting", h.State)
 	}
@@ -252,7 +252,7 @@ func TestProbeWaitingOutranksRetrying(t *testing.T) {
 	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":[]}]`
 	srv := fakeServerQ(t, twoDirSessions, msgs, status, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Errorf("State = %q, want waiting (you can act; a retry is automatic)", h.State)
 	}
@@ -262,7 +262,7 @@ func TestProbeNoPendingLeavesPendingNil(t *testing.T) {
 	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
 	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Pending != nil {
 		t.Errorf("Pending = %+v, want nil when nothing is blocked", h.Pending)
 	}
@@ -270,14 +270,14 @@ func TestProbeNoPendingLeavesPendingNil(t *testing.T) {
 
 func TestProbeStateBusy(t *testing.T) {
 	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, `[]`)
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateBusy {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateBusy {
 		t.Errorf("State = %q, want busy", h.State)
 	}
 }
 
 func TestProbeStateIdle(t *testing.T) {
 	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateIdle {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateIdle {
 		t.Errorf("State = %q, want idle", h.State)
 	}
 }
@@ -285,7 +285,7 @@ func TestProbeStateIdle(t *testing.T) {
 func TestProbeStateRetrying(t *testing.T) {
 	status := `{"ses_mine":{"type":"retry","attempt":1,"message":"rate limited","next":5}}`
 	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), status, `[]`)
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.State != StateRetrying {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateRetrying {
 		t.Errorf("State = %q, want retrying", h.State)
 	}
 }
@@ -300,7 +300,7 @@ func TestProbeUsesTheLastAssistantMessageAsTheCurrentTurn(t *testing.T) {
 	)
 	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if !h.Busy {
 		t.Error("Busy = false; the newest turn is still generating")
 	}
@@ -320,7 +320,7 @@ func TestProbeWorkedSumsCompletedTurnsOnly(t *testing.T) {
 	)
 	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if want := 3 * time.Second; h.Worked != want {
 		t.Errorf("Worked = %v, want %v", h.Worked, want)
 	}
@@ -336,7 +336,7 @@ func TestProbeFiltersByDirectory(t *testing.T) {
 		`"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":1,"write":0}},"cost":0.25}}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if !h.Reachable {
 		t.Fatalf("not reachable: %v", h.Err)
 	}
@@ -362,7 +362,7 @@ func TestProbeExposesModelVariantAndProvider(t *testing.T) {
 		`"providerID":"github-copilot","time":{"created":1,"completed":2},"finish":"stop"}}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Model != "claude-sonnet-5" {
 		t.Errorf("Model = %q", h.Model)
 	}
@@ -385,7 +385,7 @@ func TestProbeExcludesSubagentSessionsFromTheCount(t *testing.T) {
 	)
 	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Sessions != 1 {
 		t.Errorf("Sessions = %d, want 1 top-level conversation", h.Sessions)
 	}
@@ -404,7 +404,7 @@ func TestProbePicksTheNewestRootNotANewerSubagent(t *testing.T) {
 	)
 	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.SessionID != "ses_root" {
 		t.Errorf("SessionID = %q, want the root conversation even though a subagent is newer", h.SessionID)
 	}
@@ -421,7 +421,7 @@ func TestProbeAggregatesCostAcrossTheSubagentFamily(t *testing.T) {
 	)
 	srv := fakeServer(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Cost != 7.0 {
 		t.Errorf("Cost = %v, want 7.0 (root + both descendants, not the unrelated root)", h.Cost)
 	}
@@ -443,7 +443,7 @@ func TestProbeWorkedExcludesSubagentTurns(t *testing.T) {
 	)
 	srv := fakeServer(t, sessions, msgList(asst(0, "5000", 0, 0, 0, `,"finish":"stop"`)))
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Worked != 5*time.Second {
 		t.Errorf("Worked = %v, want 5s from the conversation's own turns only", h.Worked)
 	}
@@ -454,7 +454,7 @@ func TestProbeBusyWhenNotCompleted(t *testing.T) {
 	msgs := msgList(asst(1, "", 0, 0, 0, ""))
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if !h.Busy {
 		t.Error("Busy = false, want true when time.completed is absent")
 	}
@@ -465,7 +465,7 @@ func TestProbeSurfacesError(t *testing.T) {
 		`"error":{"name":"UnknownError","data":{"message":"HTTP 401 bad model"}}}}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.LastError != "HTTP 401 bad model" {
 		t.Errorf("LastError = %q, want the provider message", h.LastError)
 	}
@@ -482,7 +482,7 @@ func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Worked != 2*time.Millisecond {
 		t.Errorf("Worked = %v, want 2ms across the two completed turns", h.Worked)
 	}
@@ -494,7 +494,7 @@ func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 
 func TestProbeNoSessionsForDirectory(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, `[]`)
-	h := Probe(context.Background(), srv.URL, "/w/nothing-here")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/nothing-here"})
 	if !h.Reachable {
 		t.Fatal("want reachable")
 	}
@@ -504,7 +504,7 @@ func TestProbeNoSessionsForDirectory(t *testing.T) {
 }
 
 func TestProbeUnreachable(t *testing.T) {
-	h := Probe(context.Background(), "http://127.0.0.1:1", "/w")
+	h := Probe(context.Background(), "opencode", Conn{URL: "http://127.0.0.1:1", Dir: "/w"})
 	if h.Reachable {
 		t.Error("Reachable = true for a dead endpoint")
 	}
@@ -514,7 +514,7 @@ func TestProbeUnreachable(t *testing.T) {
 }
 
 func TestProbeEmptyURL(t *testing.T) {
-	if h := Probe(context.Background(), "", "/w"); h.Err == nil {
+	if h := Probe(context.Background(), "opencode", Conn{URL: "", Dir: "/w"}); h.Err == nil {
 		t.Error("empty URL should report an error")
 	}
 }
@@ -532,7 +532,7 @@ func TestListenReMatchesOpencodeOutput(t *testing.T) {
 }
 
 func TestServeCmdQuotesPath(t *testing.T) {
-	got := ServeCmd("/home/a b/opencode")
+	got := (opencode{}).ServeCmd("/home/a b/opencode")
 	want := "exec '/home/a b/opencode' serve --hostname 127.0.0.1 --port 0"
 	if got != want {
 		t.Errorf("ServeCmd = %q, want %q", got, want)
@@ -550,7 +550,7 @@ func TestProbeReadsTodos(t *testing.T) {
 	srv := fakeServerT(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)),
 		`{}`, `[]`, `[]`, todos)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	got := h.Todos
 	if got.Total != 5 || got.Completed != 2 || got.InProgress != 1 || got.Pending != 1 || got.Cancelled != 1 {
 		t.Errorf("Todos = %+v", got)
@@ -581,7 +581,7 @@ func TestProbeClearsStaleCompletedTodos(t *testing.T) {
 	)
 	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 0 {
 		t.Errorf("Todos = %+v, want zeroed once a newer prompt makes the finished list stale", h.Todos)
 	}
@@ -600,7 +600,7 @@ func TestProbeKeepsCompletedTodosWithoutNewerPrompt(t *testing.T) {
 	)
 	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 2 || h.Todos.Completed != 2 {
 		t.Errorf("Todos = %+v, want the just-finished list still reported", h.Todos)
 	}
@@ -620,7 +620,7 @@ func TestProbeKeepsInProgressTodosDespiteNewerPrompt(t *testing.T) {
 	)
 	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, stillGoing)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 2 || h.Todos.Current != "Wire the widget" {
 		t.Errorf("Todos = %+v, want the in-progress list kept", h.Todos)
 	}
@@ -628,7 +628,7 @@ func TestProbeKeepsInProgressTodosDespiteNewerPrompt(t *testing.T) {
 
 func TestProbeNoTodosIsZeroed(t *testing.T) {
 	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 0 || h.Todos.Current != "" {
 		t.Errorf("Todos = %+v, want zeroed when the agent uses no list", h.Todos)
 	}
@@ -656,7 +656,7 @@ func TestProbeReportsTheRunningToolAsActivity(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions,
 		msgList(msgWithTool("bash", "running", "bin/rails test", 1700000000000)))
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil {
 		t.Fatal("Activity = nil, want the running tool call")
 	}
@@ -670,7 +670,7 @@ func TestProbeReportsTheRunningToolAsActivity(t *testing.T) {
 
 func TestProbeTreatsPendingToolsAsActivity(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("edit", "pending", "app/models/user.rb", 1)))
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil || h.Activity.Tool != "edit" {
 		t.Errorf("Activity = %+v, want the pending call", h.Activity)
 	}
@@ -678,7 +678,7 @@ func TestProbeTreatsPendingToolsAsActivity(t *testing.T) {
 
 func TestProbeNoActivityWhenToolsHaveFinished(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("bash", "completed", "ls", 1)))
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity != nil {
 		t.Errorf("Activity = %+v, want nil once the call has completed", h.Activity)
 	}
@@ -691,7 +691,7 @@ func TestProbeActivityIgnoresEarlierTurns(t *testing.T) {
 		msgWithTool("bash", "running", "old and stuck", 1),
 		msgWithTool("grep", "completed", "done", 2),
 	))
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity != nil {
 		t.Errorf("Activity = %+v, want nil (the newest turn has nothing running)", h.Activity)
 	}
@@ -700,7 +700,7 @@ func TestProbeActivityIgnoresEarlierTurns(t *testing.T) {
 func TestProbeActivityTitleIsTrimmedToOneLine(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions,
 		msgList(msgWithTool("bash", "running", "cd /somewhere \u0026\u0026 \\n  bin/rails test \\n  --verbose", 1)))
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil {
 		t.Fatal("Activity = nil")
 	}
@@ -717,7 +717,7 @@ func TestProbeActivityFallsBackToInputWhileRunning(t *testing.T) {
 		`"input":{"command":"bin/rails test","timeout":120000},"time":{"start":5}}}]}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil {
 		t.Fatal("Activity = nil")
 	}
@@ -759,7 +759,7 @@ func TestProbeReportsLastMessageFromEachSide(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.LastUser != "cancel workflow shouldn't be here" {
 		t.Errorf("LastUser = %q", h.LastUser)
 	}
@@ -774,7 +774,7 @@ func TestProbeIgnoresEmptyTextParts(t *testing.T) {
 		textMsg("assistant", "   "),
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.LastAssistant != "real answer" {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.LastAssistant != "real answer" {
 		t.Errorf("LastAssistant = %q, want the last non-empty text", h.LastAssistant)
 	}
 }
@@ -810,7 +810,7 @@ func TestProbeSeesAPermissionBlockingASubagent(t *testing.T) {
 	perms := `[{"sessionID":"ses_sub","permission":"external_directory","patterns":["/gems/ruby_llm/*"]}]`
 	srv := fakeServerQ(t, sessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
 		t.Fatalf("State = %q, want waiting; a blocked subagent blocks the conversation", h.State)
 	}
@@ -833,7 +833,7 @@ func TestProbeIgnoresPendingFromAnUnrelatedConversation(t *testing.T) {
 	perms := `[{"sessionID":"ses_other_sub","permission":"bash","patterns":[]}]`
 	srv := fakeServerQ(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, perms, `[]`)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
 		t.Errorf("State = %q, want idle; another conversation's prompt leaked in", h.State)
 	}
@@ -850,7 +850,7 @@ func TestProbeHidesTheAssistantReplyToAnEarlierPrompt(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.LastUser != "if one file is not supported, skip it" {
 		t.Errorf("LastUser = %q", h.LastUser)
 	}
@@ -866,7 +866,7 @@ func TestProbeShowsTheAssistantReplyOnceItAnswers(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.LastAssistant != "Wrapped the parser so unsupported files are skipped." {
 		t.Errorf("LastAssistant = %q, want the reply to the current prompt", h.LastAssistant)
 	}
@@ -883,7 +883,7 @@ func TestProbeShowsPartialReplyDuringTheSameTurn(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.LastAssistant != "Looking into it now." {
 		t.Errorf("LastAssistant = %q, want the in-turn narration", h.LastAssistant)
 	}
@@ -891,7 +891,7 @@ func TestProbeShowsPartialReplyDuringTheSameTurn(t *testing.T) {
 
 func TestProbeShowsAssistantTextWithNoUserMessageAtAll(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgList(textMsg("assistant", "standalone")))
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.LastAssistant != "standalone" {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.LastAssistant != "standalone" {
 		t.Errorf("LastAssistant = %q", h.LastAssistant)
 	}
 }
@@ -908,7 +908,7 @@ func TestProbeSincePromptMeasuresFromTheUserMessage(t *testing.T) {
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
-	h := Probe(context.Background(), srv.URL, "/w/mine")
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.SincePrompt < 4*time.Minute || h.SincePrompt > 6*time.Minute {
 		t.Errorf("SincePrompt = %v, want ~5m (from the user's message)", h.SincePrompt)
 	}
@@ -921,7 +921,7 @@ func TestProbeSincePromptMeasuresFromTheUserMessage(t *testing.T) {
 
 func TestProbeSincePromptZeroWithNoUserMessage(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)))
-	if h := Probe(context.Background(), srv.URL, "/w/mine"); h.SincePrompt != 0 {
+	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.SincePrompt != 0 {
 		t.Errorf("SincePrompt = %v, want 0", h.SincePrompt)
 	}
 }
@@ -964,7 +964,7 @@ func TestResolveFallsBackToInteractiveShellPATH(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("SHELL", bashPath)
 
-	got, err := Resolve()
+	got, err := (opencode{}).Resolve()
 	if err != nil {
 		t.Fatalf("Resolve() error = %v, want success via the shell fallback", err)
 	}
@@ -1011,7 +1011,7 @@ func TestResolveFallsBackToLoginShellPATH(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("SHELL", bashPath)
 
-	got, err := Resolve()
+	got, err := (opencode{}).Resolve()
 	if err != nil {
 		t.Fatalf("Resolve() error = %v, want success via the login-shell fallback", err)
 	}
@@ -1045,7 +1045,7 @@ func TestResolveReportsErrorWhenNotFoundAnywhere(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("SHELL", "bash")
 
-	if _, err := Resolve(); err == nil {
+	if _, err := (opencode{}).Resolve(); err == nil {
 		t.Fatal("Resolve() error = nil, want an error when opencode is nowhere to be found")
 	}
 }

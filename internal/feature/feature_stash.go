@@ -95,8 +95,8 @@ func Stash(ctx context.Context, f *state.Feature, r Reporter) (*state.Stash, err
 	return s, nil
 }
 
-// recordSessions probes each opencode agent for the session it is working in,
-// so a pop can reopen that conversation rather than starting a new one.
+// recordSessions probes each agent for the session it is working in, so a
+// pop can reopen that conversation rather than starting a new one.
 //
 // Best-effort throughout: an unreachable agent, or one that has not been
 // spoken to yet, simply contributes nothing. The agent running this very
@@ -106,13 +106,13 @@ func recordSessions(ctx context.Context, f *state.Feature) map[string]string {
 	self := unit.Self()
 	out := map[string]string{}
 	for _, a := range f.Agents {
-		if a.Tool != "opencode" || a.URL == "" {
+		if !agent.Probeable(a.Tool, a.URL) {
 			continue
 		}
 		if a.Unit != "" && a.Unit == self {
 			continue
 		}
-		if h := agent.Probe(ctx, a.URL, f.Worktree); h.Reachable && h.SessionID != "" {
+		if h := agent.Probe(ctx, a.Tool, agentConn(f, a)); h.Reachable && h.SessionID != "" {
 			out[a.Name] = h.SessionID
 		}
 	}

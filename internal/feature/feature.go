@@ -374,11 +374,14 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 	agents := map[string]tmpl.AgentRef{}
 	for _, a := range f.Agents {
 		ref := tmpl.AgentRef{URL: a.URL}
-		switch {
-		case resume[a.Name] != "":
-			ref = ref.WithSession(resume[a.Name])
-		case fresh && a.Tool == "opencode" && a.URL != "":
-			ref = ref.WithSession(forkedSessionFor(ctx, f.Project, f.Name, a.Name, a.URL, f.Worktree))
+		session := resume[a.Name]
+		if session == "" && fresh {
+			session = forkedSessionFor(ctx, f, a)
+		}
+		// The flag that reopens a session is the harness's to spell:
+		// opencode says --session, Claude Code says --resume.
+		if h, err := agent.For(a.Tool); err == nil {
+			ref = ref.WithSession(h.SessionFlag(session))
 		}
 		agents[a.Name] = ref
 	}

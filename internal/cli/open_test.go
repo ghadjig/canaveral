@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 )
@@ -85,17 +86,36 @@ func TestOpenFeatureRejectsAReservedName(t *testing.T) {
 	}
 }
 
-// The starter manifest has to survive being loaded back. It did not: the
-// chrome window's exec command omitted {{.Class}}, which manifest validation
-// requires, so `canaveral init` followed by any other command failed on the
-// file canaveral had just written itself.
-func TestStarterTemplateLoads(t *testing.T) {
-	dir := t.TempDir()
-	body := fmt.Sprintf(starterTemplate, "demo", `"node_modules"`, `".env"`, "")
-	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manifest.Load(dir); err != nil {
-		t.Fatalf("starter manifest does not load: %v", err)
+// TestStarterTemplateParsesForEveryTool guards the starter manifest against
+// the one failure that would matter most: `canaveral init` writing a file
+// that `canaveral new` then refuses to load. The agent block is generated
+// from the harness, so a new tool gets a manifest nobody hand-checked.
+func TestStarterTemplateParsesForEveryTool(t *testing.T) {
+	for _, tool := range agent.Tools() {
+		t.Run(tool, func(t *testing.T) {
+			dir := t.TempDir()
+			body := fmt.Sprintf(starterTemplate, "demo", "", "", detectService(dir), starterAgent(tool))
+			if err := os.WriteFile(filepath.Join(dir, manifest.FileName), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m, err := manifest.Load(dir)
+			if err != nil {
+				t.Fatalf("the starter manifest for %s does not load: %v\n%s", tool, err, body)
+			}
+			if len(m.Agents) != 1 || m.Agents[0].Tool != tool {
+				t.Fatalf("agents = %+v, want a single %s agent", m.Agents, tool)
+			}
+			// The window must actually open the agent, or `init` produces a
+			// project whose agent nothing ever attaches to.
+			var run string
+			for _, w := range m.Windows {
+				if w.Name == tool && w.Run != nil {
+					run = *w.Run
+				}
+			}
+			if !strings.Contains(run, "{{.Agent.main.Session}}") {
+				t.Errorf("window %q run = %q, want it to splice in the session flags", tool, run)
+			}
+		})
 	}
 }

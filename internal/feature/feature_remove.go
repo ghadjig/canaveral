@@ -261,11 +261,11 @@ func Reap(ctx context.Context, r Reporter) ([]string, error) {
 }
 
 // recordNamespaceSession is a best-effort step: if this feature is
-// namespaced, remember its newest opencode session before tearing down its
-// agent, so a later sibling under the same namespace can still fork from it
-// even though this feature's own state (and therefore any record of it) is
-// about to be deleted. Called here rather than continuously because this is
-// the last point at which the agent is guaranteed to still be reachable.
+// namespaced, remember its newest session before tearing down its agent, so
+// a later sibling under the same namespace can still fork from it even
+// though this feature's own state (and therefore any record of it) is about
+// to be deleted. Called here rather than continuously because this is the
+// last point at which the agent is guaranteed to still be reachable.
 func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 	ns := Namespace(f.Name)
 	if ns == "" {
@@ -273,7 +273,7 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 	}
 	self := unit.Self()
 	for _, a := range f.Agents {
-		if a.Tool != "opencode" || a.URL == "" {
+		if !agent.Probeable(a.Tool, a.URL) {
 			continue
 		}
 		// Probing the agent running this very teardown is worse than
@@ -284,7 +284,7 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 		if a.Unit != "" && a.Unit == self {
 			continue
 		}
-		h := agent.Probe(ctx, a.URL, f.Worktree)
+		h := agent.Probe(ctx, a.Tool, agentConn(f, a))
 		if h.Reachable && h.SessionID != "" {
 			_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
 				Feature: f.Name, SessionID: h.SessionID,

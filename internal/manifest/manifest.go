@@ -16,6 +16,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/config"
 	"github.com/bandito/canaveral/internal/toolchain"
 )
 
@@ -230,14 +232,22 @@ func (r Ready) Kind() string {
 	return ""
 }
 
-// Agent is a coding agent server started for a feature.
+// Agent is a coding agent canaveral runs for a feature.
 type Agent struct {
-	Name  string            `toml:"name"`
-	Tool  string            `toml:"tool"`
-	Dir   string            `toml:"dir"`
-	Env   map[string]string `toml:"env"`
-	Model string            `toml:"model"`
-	Agent string            `toml:"agent"`
+	Name string `toml:"name"`
+	// Tool names the harness to run, e.g. "opencode" or "claude". Empty
+	// means whichever agent this machine defaults to — see internal/config,
+	// which is where a preference that belongs to you rather than to the
+	// project is recorded.
+	Tool string            `toml:"tool"`
+	Dir  string            `toml:"dir"`
+	Env  map[string]string `toml:"env"`
+	// Model overrides the agent's default model.
+	Model string `toml:"model"`
+	// Agent selects a named persona or mode to start in, e.g. opencode's
+	// "build" or "plan". Harnesses that have no such notion — Claude Code
+	// picks its subagents per task rather than per session — ignore it.
+	Agent string `toml:"agent"`
 }
 
 // Window is a GUI window belonging to a feature's Hyprland workspace.
@@ -532,10 +542,11 @@ func (m *Manifest) normalizeAgents() error {
 		}
 		seenAgent[a.Name] = true
 		if a.Tool == "" {
-			a.Tool = "opencode"
+			a.Tool = config.DefaultAgentTool()
 		}
-		if a.Tool != "opencode" {
-			return fmt.Errorf("agent %q: unsupported tool %q (only \"opencode\" is supported)", a.Name, a.Tool)
+		if !agent.Known(a.Tool) {
+			return fmt.Errorf("agent %q: unsupported tool %q (known: %s)",
+				a.Name, a.Tool, strings.Join(agent.Tools(), ", "))
 		}
 		if a.Dir == "" {
 			a.Dir = "."

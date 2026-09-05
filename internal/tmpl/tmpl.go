@@ -35,10 +35,10 @@ type Vars struct {
 	Port map[string]int
 	// URL maps the same names to http://localhost:<port>.
 	URL map[string]string
-	// Agent maps agent names to their opencode server URLs. Populated only
-	// after agents have started. {{.Agent.main}} renders as the URL;
-	// {{.Agent.main.Session}} renders extra flags to splice into the same
-	// window's own attach command (see AgentRef).
+	// Agent maps agent names to their servers. Populated only after agents
+	// have started. {{.Agent.main}} renders as the URL, which is empty for a
+	// harness that has no server; {{.Agent.main.Session}} renders extra
+	// flags to splice into the same window's own command (see AgentRef).
 	Agent map[string]AgentRef
 	// DBSuffix is the per-feature database suffix, empty when shared.
 	DBSuffix string
@@ -51,18 +51,23 @@ type Vars struct {
 	Profile string
 }
 
-// AgentRef is an agent's template value: a plain string (its opencode server
-// URL) by default, with additional named fields for advanced use.
+// AgentRef is an agent's template value: a plain string (its server URL, for
+// a harness that has one) by default, with additional named fields for
+// advanced use.
 //
 // {{.Agent.main}} renders as the URL — String() is what text/template calls
 // to print a non-basic value directly — while {{.Agent.main.Session}}
 // accesses Session specifically.
 type AgentRef struct {
 	URL string
-	// Session is "--session <id>" when this agent should open an existing
+	// Session is the flags that make this agent open an existing
 	// conversation rather than start a new one, and "" when it should not.
-	// Meant to be spliced into the window's own attach command, e.g.
-	// `run = "opencode attach {{.Agent.main}} {{.Agent.main.Session}}"`.
+	// The spelling is the harness's own — "--session <id>" for opencode,
+	// "--resume <id>" for Claude Code — so a manifest window splices it in
+	// without knowing which tool it got:
+	//
+	//	run = "opencode attach {{.Agent.main}} {{.Agent.main.Session}}"
+	//	run = "claude {{.Agent.main.Session}}"
 	//
 	// Two situations fill it, and they are mutually exclusive because they
 	// concern opposite halves of a feature's life. A freshly created feature
@@ -79,15 +84,16 @@ type AgentRef struct {
 	Fork string
 }
 
-// WithSession returns a copy of the ref carrying "--session <id>", or the ref
-// unchanged when id is empty. Setting both spellings in one place is what
-// keeps Session and its Fork alias from drifting apart.
-func (a AgentRef) WithSession(id string) AgentRef {
-	if id == "" {
+// WithSession returns a copy of the ref carrying flags (as rendered by
+// agent.Harness.SessionFlag), or the ref unchanged when they are empty.
+// Setting both spellings in one place is what keeps Session and its Fork
+// alias from drifting apart.
+func (a AgentRef) WithSession(flags string) AgentRef {
+	if flags == "" {
 		return a
 	}
-	a.Session = "--session " + id
-	a.Fork = a.Session
+	a.Session = flags
+	a.Fork = flags
 	return a
 }
 

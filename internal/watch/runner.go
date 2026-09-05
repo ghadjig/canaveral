@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
-	"github.com/bandito/canaveral/internal/ocevents"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -71,7 +70,7 @@ type Runner struct {
 	// git is measured out of band; see gitCache.
 	git *gitCache
 	// probe is swappable so tests do not need real agent servers.
-	probe func(ctx context.Context, url, dir string) agent.Health
+	probe func(ctx context.Context, tool string, c agent.Conn) agent.Health
 	// load is swappable for the same reason.
 	load func(project string) ([]*state.Feature, error)
 	now  func() time.Time
@@ -194,8 +193,13 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 // running always because it issues no network calls of its own.
 const phaseRescan = 200 * time.Millisecond
 
-// resubscribe starts an SSE watcher for every agent that does not have one
+// resubscribe starts an event watcher for every agent that does not have one
 // and stops watchers for agents that have gone away.
+//
+// A harness with no event stream (Claude Code has none — there is no server
+// to push from) simply never gets a watcher, and its rows refresh on the
+// safety interval instead. That is a slower view, not a wrong one: events
+// only ever trigger a re-read, and the periodic refresh does the same thing.
 func (r *Runner) resubscribe(ctx context.Context) {
 	features, err := r.load(r.opt.Project)
 	if err != nil {
@@ -204,7 +208,8 @@ func (r *Runner) resubscribe(ctx context.Context) {
 	live := map[string]bool{}
 	for _, f := range features {
 		for _, a := range f.Agents {
-			if a.URL == "" {
+			h, err := agent.For(a.Tool)
+			if err != nil || !h.Serves() || a.URL == "" {
 				continue
 			}
 			key := f.Key() + "/" + a.Name
@@ -222,13 +227,9 @@ func (r *Runner) resubscribe(ctx context.Context) {
 			r.subs[key] = cancel
 			r.mu.Unlock()
 
-			url := a.URL
+			c := agent.Conn{URL: a.URL, Dir: a.Dir}
 			go func() {
-				_ = ocevents.Watch(sctx, url, func(ev ocevents.Event) {
-					if relevant(ev.Type) {
-						r.wake()
-					}
-				})
+				_ = h.Watch(sctx, c, r.wake)
 			}()
 		}
 	}
@@ -241,30 +242,6 @@ func (r *Runner) resubscribe(ctx context.Context) {
 		}
 	}
 	r.mu.Unlock()
-}
-
-// relevant filters the event firehose down to the ones that can change a
-// feature's headline state.
-//
-// opencode emits a great deal per turn (token deltas, individual message
-// parts); reacting to all of it would mean re-probing every agent dozens of
-// times a second for no visible difference. The prefixes here are
-// deliberately broad because an event only triggers a re-read — being
-// slightly over-inclusive costs one HTTP round trip, while being
-// under-inclusive would mean missing a state change entirely.
-func relevant(t string) bool {
-	switch t {
-	case "session.idle", "session.error", "session.status", "session.created", "session.deleted",
-		"permission.asked", "permission.replied",
-		"permission.v2.asked", "permission.v2.replied",
-		"question.asked", "question.replied", "question.rejected",
-		"question.v2.asked", "question.v2.replied", "question.v2.rejected",
-		"todo.updated",
-		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
-		"server.connected":
-		return true
-	}
-	return false
 }
 
 func (r *Runner) wake() {
@@ -293,14 +270,14 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 	)
 	for _, f := range features {
 		for _, a := range f.Agents {
-			if a.URL == "" {
+			if !agent.Probeable(a.Tool, a.URL) {
 				continue
 			}
 			f, a := f, a
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				h := r.probe(ctx, a.URL, a.Dir)
+				h := r.probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir})
 				mu.Lock()
 				if results[f.Key()] == nil {
 					results[f.Key()] = map[string]agent.Health{}

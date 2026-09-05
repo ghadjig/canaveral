@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/config"
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
@@ -421,16 +423,7 @@ link = [%s]
 copy = [%s]
 
 %s
-[[agent]]
-name = "main"
-tool = "opencode"
-
-# Windows opened on the feature's Hyprland workspace, grouped as tabs.
-# "run" executes inside a terminal rooted at the worktree; "exec" is a GUI app.
-[[window]]
-name = "opencode"
-run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Session}}"
-
+%s
 [[window]]
 name = "terminal"
 run  = ""
@@ -470,7 +463,8 @@ func runInit(ctx context.Context, args []string) error {
 	}
 
 	link, cp := detectArtifacts(abs)
-	body := fmt.Sprintf(starterTemplate, filepath.Base(abs), link, cp, detectService(abs))
+	body := fmt.Sprintf(starterTemplate, filepath.Base(abs), link, cp,
+		detectService(abs), starterAgent(config.DefaultAgentTool()))
 	if err := os.WriteFile(out, []byte(body), 0o644); err != nil {
 		return err
 	}
@@ -478,6 +472,39 @@ func runInit(ctx context.Context, args []string) error {
 	r.OK("wrote %s", homeTilde(out))
 	r.Info("review it, then run: canaveral new <feature>")
 	return nil
+}
+
+// starterAgent writes the [[agent]] block and the window that opens it, for
+// whichever agent this machine defaults to.
+//
+// The window command comes from the harness rather than being hardcoded,
+// because the two tools are opened in entirely different ways: opencode
+// attaches to the server canaveral started for it, while Claude Code *is*
+// the program the window runs. Deriving it from AttachArgv keeps the starter
+// manifest correct for any harness added later without anyone remembering to
+// come back here.
+func starterAgent(tool string) string {
+	h, err := agent.For(tool)
+	if err != nil {
+		// Unreachable via the config layer, which validates the name; a
+		// commented-out block is still a better starting point than nothing.
+		return "# [[agent]]\n# name = \"main\"\n# tool = \"opencode\"\n"
+	}
+	// The placeholders are manifest templates, rendered per feature at open
+	// time — see internal/tmpl.
+	argv := h.AttachArgv(agent.Conn{URL: "{{.Agent.main}}", Dir: "{{.Worktree}}"}, false)
+	cmd := strings.Join(append(argv, "{{.Agent.main.Session}}"), " ")
+
+	return fmt.Sprintf(`[[agent]]
+name = "main"
+tool = %q
+
+# Windows opened on the feature's Hyprland workspace, grouped as tabs.
+# "run" executes inside a terminal rooted at the worktree; "exec" is a GUI app.
+[[window]]
+name = %q
+run  = %q
+`, tool, tool, cmd)
 }
 
 // detectArtifacts guesses which gitignored paths a worktree will need.
