@@ -5,7 +5,19 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/bandito/canaveral/internal/agent"
 )
+
+// isolateAgentDefault detaches a test from whichever agent this machine
+// happens to prefer. Both the environment override and the config file are
+// live inputs to normalizeAgents, and a developer who has set either would
+// otherwise see failures that say nothing about the code.
+func isolateAgentDefault(t *testing.T) {
+	t.Helper()
+	t.Setenv("CANAVERAL_AGENT", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
 
 func write(t *testing.T, dir, body string) string {
 	t.Helper()
@@ -16,6 +28,7 @@ func write(t *testing.T, dir, body string) string {
 }
 
 func TestLoadDefaults(t *testing.T) {
+	isolateAgentDefault(t)
 	dir := write(t, t.TempDir(), `
 [[agent]]
 name = "main"
@@ -36,13 +49,14 @@ name = "main"
 }
 
 func TestLoadRejects(t *testing.T) {
+	isolateAgentDefault(t)
 	cases := map[string]string{
 		"unknown key":          "nme = \"typo\"\n",
 		"duplicate service":    "[[service]]\nname=\"a\"\ncmd=\"x\"\n[[service]]\nname=\"a\"\ncmd=\"y\"\n",
 		"duplicate agent":      "[[agent]]\nname=\"a\"\n[[agent]]\nname=\"a\"\n",
 		"service without cmd":  "[[service]]\nname=\"a\"\n",
 		"bad isolation":        "isolation = \"nope\"\n",
-		"unsupported tool":     "[[agent]]\nname=\"a\"\ntool=\"claude\"\n",
+		"unsupported tool":     "[[agent]]\nname=\"a\"\ntool=\"nano-banana\"\n",
 		"bad name":             "name = \"has space\"\n",
 		"bad duration":         "[[service]]\nname=\"a\"\ncmd=\"x\"\nready.timeout=\"soon\"\n",
 		"exec without class":   "[[window]]\nname=\"w\"\nexec=\"chrome\"\n",
@@ -508,5 +522,52 @@ func TestWorktreeRootAbsoluteAndTilde(t *testing.T) {
 	m.Worktree.Root = "~/dev/wt"
 	if got, _ := m.WorktreeRoot(); got != filepath.Join(home, "dev/wt") {
 		t.Errorf("tilde = %q", got)
+	}
+}
+
+func TestLoadAcceptsEveryKnownTool(t *testing.T) {
+	isolateAgentDefault(t)
+	for _, tool := range agent.Tools() {
+		t.Run(tool, func(t *testing.T) {
+			dir := write(t, t.TempDir(), "[[agent]]\nname=\"main\"\ntool=\""+tool+"\"\n")
+			m, err := Load(dir)
+			if err != nil {
+				t.Fatalf("Load with tool=%q: %v", tool, err)
+			}
+			if m.Agents[0].Tool != tool {
+				t.Errorf("Tool = %q, want %q", m.Agents[0].Tool, tool)
+			}
+		})
+	}
+}
+
+// An agent without a tool takes the machine's default, so that the same
+// manifest opens with whichever harness you use rather than whichever one
+// its author did.
+func TestLoadAgentToolDefaultsFromEnvironment(t *testing.T) {
+	isolateAgentDefault(t)
+	t.Setenv("CANAVERAL_AGENT", "claude")
+	dir := write(t, t.TempDir(), "[[agent]]\nname=\"main\"\n")
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.Agents[0].Tool != "claude" {
+		t.Errorf("Tool = %q, want claude from CANAVERAL_AGENT", m.Agents[0].Tool)
+	}
+}
+
+// A manifest that names a tool keeps it: the project's choice is explicit
+// and must not be overridden by a machine-wide preference.
+func TestLoadAgentToolInManifestBeatsTheDefault(t *testing.T) {
+	isolateAgentDefault(t)
+	t.Setenv("CANAVERAL_AGENT", "claude")
+	dir := write(t, t.TempDir(), "[[agent]]\nname=\"main\"\ntool=\"opencode\"\n")
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.Agents[0].Tool != "opencode" {
+		t.Errorf("Tool = %q, want the manifest's own opencode", m.Agents[0].Tool)
 	}
 }

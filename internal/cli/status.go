@@ -151,9 +151,12 @@ const (
 )
 
 type row struct {
-	Feature     string        `json:"feature"`
-	Kind        rowKind       `json:"kind"`
-	Name        string        `json:"name"`
+	Feature string  `json:"feature"`
+	Kind    rowKind `json:"kind"`
+	Name    string  `json:"name"`
+	// Tool is the agent harness this row's agent runs, e.g. "opencode" or
+	// "claude". Set only on kindAgent rows.
+	Tool        string        `json:"tool,omitempty"`
 	Unit        string        `json:"unit,omitempty"`
 	State       string        `json:"state"`
 	MemBytes    uint64        `json:"mem_bytes,omitempty"`
@@ -375,16 +378,27 @@ func serviceRow(ctx context.Context, f *state.Feature, s state.Service) row {
 	return r
 }
 
-// agentRow queries a single agent's unit status and, if it is active,
-// probes its opencode server for the fuller telemetry (busy/state, tokens,
+// agentRow reports a single agent: its unit status where it has one, and the
+// fuller telemetry its harness can give (busy/state, tokens, task list,
 // pending question or permission, and so on).
+//
+// An agent with no unit is one canaveral does not supervise — Claude Code is
+// started by its own window, not by us — so there is nothing to ask systemd
+// and the harness answers the "is it up" question itself. Its telemetry is
+// still worth reading when it is down, since it survives the program
+// exiting, which is why the probe is not gated on being live.
 func agentRow(ctx context.Context, f *state.Feature, a state.Agent) row {
-	r := row{Feature: f.Name, Kind: kindAgent, Name: a.Name, Unit: a.Unit, URL: a.URL}
-	fillUnit(ctx, &r)
-	if r.State != "active" || a.URL == "" {
-		return r
+	r := row{Feature: f.Name, Kind: kindAgent, Name: a.Name, Tool: a.Tool, Unit: a.Unit, URL: a.URL}
+	if a.Unit != "" {
+		fillUnit(ctx, &r)
+		if r.State != "active" || a.URL == "" {
+			return r
+		}
 	}
-	h := agent.Probe(ctx, a.URL, a.Dir)
+	h := agent.Probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir})
+	if a.Unit == "" {
+		r.State = unsupervisedState(h)
+	}
 	r.Busy, r.Sessions = h.Busy, h.Sessions
 	r.AgentState = string(h.State)
 	r.Worked, r.Working = h.Worked, h.Working
@@ -406,6 +420,19 @@ func agentRow(ctx context.Context, f *state.Feature, a state.Agent) row {
 		r.Detail = "unreachable"
 	}
 	return r
+}
+
+// unsupervisedState maps a harness's own answer onto the same vocabulary a
+// systemd unit's ActiveState uses, so the status table needs no special case
+// for agents canaveral does not start.
+func unsupervisedState(h agent.Health) string {
+	switch {
+	case !h.Reachable:
+		return "gone"
+	case h.Live:
+		return "active"
+	}
+	return "inactive"
 }
 
 // applyPending copies what an agent is blocked on, if anything, onto r.
@@ -518,7 +545,10 @@ func printFeatureBlock(f *state.Feature, rows []row, bs worktree.BranchStatus, h
 	// so it gets its own prominent line instead of being just another
 	// row buried in the service/agent/window table below.
 	for _, r := range rows {
-		if r.Kind == kindAgent && r.URL != "" {
+		// Probeable rather than "has a URL": an agent canaveral does not
+		// supervise has no URL to have, and its summary is exactly as
+		// worth reading.
+		if r.Kind == kindAgent && agent.Probeable(r.Tool, r.URL) {
 			fmt.Println(agentSummaryLine(r))
 		}
 	}
@@ -746,7 +776,7 @@ func summaryDetailLines(r row) []string {
 func runAttach(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral attach <feature> [agent] [flags]\n\nAttach an opencode TUI to a feature's agent.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral attach <feature> [agent] [flags]\n\nOpen a feature's agent in this terminal.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (
@@ -791,25 +821,42 @@ func runAttach(ctx context.Context, args []string) error {
 		a = &f.Agents[0]
 	}
 
-	if a.URL == "" {
-		return fmt.Errorf("agent %q has no recorded URL", a.Name)
-	}
-	if *printURL {
-		fmt.Println(a.URL)
-		return nil
-	}
-	if st, err := unit.Query(ctx, a.Unit); err != nil || !st.Running() {
-		return fmt.Errorf("agent %q is not running (run `canaveral reset %s`)", a.Name, f.Name)
-	}
-
-	bin, err := agent.Resolve()
+	h, err := agent.For(a.Tool)
 	if err != nil {
 		return err
 	}
-	argv := []string{"opencode", "attach", a.URL, "--dir", a.Dir}
-	if *cont {
-		argv = append(argv, "--continue")
+	if *printURL {
+		if a.URL == "" {
+			return fmt.Errorf("agent %q runs %s, which has no server to point at", a.Name, a.Tool)
+		}
+		fmt.Println(a.URL)
+		return nil
 	}
+	// Only a supervised agent can be "not running" in a way `reset` fixes.
+	// One canaveral does not start is started by this very command, so
+	// checking whether it is up first would refuse to do the only thing it
+	// is for.
+	if h.Serves() {
+		if a.URL == "" {
+			return fmt.Errorf("agent %q has no recorded URL", a.Name)
+		}
+		if st, err := unit.Query(ctx, a.Unit); err != nil || !st.Running() {
+			return fmt.Errorf("agent %q is not running (run `canaveral reset %s`)", a.Name, f.Name)
+		}
+	}
+
+	bin, err := h.Resolve()
+	if err != nil {
+		return err
+	}
+	// The agent's directory scopes its session history, and a harness with
+	// no server has no flag to say so — it reads its own working directory.
+	if a.Dir != "" {
+		if err := os.Chdir(a.Dir); err != nil {
+			return fmt.Errorf("enter %s: %w", a.Dir, err)
+		}
+	}
+	argv := h.AttachArgv(agent.Conn{URL: a.URL, Dir: a.Dir}, *cont)
 	// Replace this process so the TUI owns the terminal directly.
 	return syscallExec(bin, argv, os.Environ())
 }
@@ -842,18 +889,24 @@ func runLogs(ctx context.Context, args []string) error {
 	}
 
 	target, path := pos[1], ""
+	named := false
 	for _, s := range f.Services {
 		if s.Name == target {
-			path = s.LogPath
+			named, path = true, s.LogPath
 		}
 	}
 	for _, a := range f.Agents {
 		if a.Name == target {
-			path = a.LogPath
+			named, path = true, a.LogPath
 		}
 	}
-	if path == "" {
+	switch {
+	case !named:
 		return fmt.Errorf("no service or agent named %q in feature %q", target, f.Name)
+	case path == "":
+		// An agent canaveral does not start writes to its own terminal,
+		// not to a log file we own; there is nothing here to tail.
+		return fmt.Errorf("agent %q is started by its own window and keeps no log", target)
 	}
 
 	tailArgs := []string{"-n", fmt.Sprint(*lines)}

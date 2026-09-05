@@ -12,6 +12,97 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- Claude Code works as a canaveral agent, alongside opencode. A manifest asks
+  for one with `tool = "claude"`, and everything downstream — `status`,
+  `watch`, the widgets, task lists, tokens, session continuity — behaves the
+  same either way, because none of it speaks a particular tool's API any
+  more.
+
+  The two tools are not the same shape and canaveral no longer pretends
+  otherwise. opencode runs headless as a server that canaveral starts in a
+  systemd unit and interrogates over REST. Claude Code has no server: the
+  program in your terminal *is* the agent, so canaveral starts nothing,
+  records no unit and no URL, and learns what it is doing from the transcript
+  Claude Code writes as it works, under `~/.claude/projects/`. That file is
+  append-only and written as things happen, so it is a live view rather than
+  a log — the same information the TUI is drawing from.
+
+  Two things do not survive the missing server, and are reported honestly
+  rather than faked. A permission prompt is drawn and answered entirely in
+  the TUI and never reaches the transcript until it has been resolved, so a
+  Claude agent blocked on one reads as `busy` rather than `waiting`. And
+  there is nothing to push events, so `canaveral watch` refreshes such a row
+  on its polling interval instead of instantly.
+
+  In exchange, a Claude agent's telemetry outlives the program: close the
+  window and the row stays, showing the task list, tokens and last exchange
+  from a conversation you can pick straight back up. Its `STATE` says whether
+  the program is actually running, since there is no unit to ask.
+
+- `canaveral attach` opens whichever agent the feature has, in that agent's
+  own way, and runs in the agent's directory so a harness that scopes
+  sessions by working directory finds the right history.
+
+- Session continuity works for Claude Code too. A new namespaced feature
+  still starts from whichever sibling's conversation is most recent, and
+  `canaveral pop` still reopens exactly the conversation a feature was
+  stashed in. `{{.Agent.<name>.Session}}` renders in the harness's own
+  spelling — `--session <id>` for opencode, `--resume <id>` for Claude Code —
+  so a window splices it in without knowing which tool it got.
+
+  Claude Code has no fork and no way to move a session between directories,
+  because the directory is literally how a transcript is filed. Copying the
+  transcript into the destination worktree's own project directory is
+  therefore the whole of what a fork means there: the copy is a complete,
+  independent conversation that `claude --resume` opens like any other, with
+  its session id and recorded working directory rewritten so it does not
+  carry the source worktree around in its own history.
+
+- `~/.config/canaveral/config.toml` (honouring `XDG_CONFIG_HOME`) records
+  which agent you use, and `CANAVERAL_AGENT` overrides it for a single run:
+
+  ```toml
+  agent = "claude"
+  ```
+
+  An `[[agent]]` with no `tool` gets that default, which is `opencode` when
+  nothing says otherwise. Which agent you use is a property of your machine,
+  not of a project — the same repo gets opened by people running different
+  tools — so it deliberately does not live in the committed manifest. A
+  manifest that *does* name a tool keeps it.
+
+  The file is optional and an absent one is not an error. An unknown key in
+  it is, though: the one thing it does is decide which agent runs, and
+  quietly running the other one is the worst available outcome. A broken file
+  still never stops canaveral starting — the built-in default stands in.
+
+- `canaveral init` writes its starter manifest for whichever agent that
+  resolves to, window command included. The window is generated from the
+  harness rather than hardcoded, because the two tools are opened in
+  entirely different ways: opencode attaches to the server canaveral started,
+  while Claude Code is the program the window runs.
+
+### Changed
+
+- `[[agent]]`'s `model` maps onto whichever variable the tool reads —
+  `OPENCODE_MODEL` or `ANTHROPIC_MODEL`. `agent`, which names a persona to
+  start in, has no Claude Code equivalent and is dropped rather than
+  approximated: its subagents are files in `.claude/agents`, chosen per task
+  by the model rather than fixed for a session.
+
+- An unsupported `tool` now lists the ones that do work instead of asserting
+  that opencode is the only possibility.
+
+### Fixed
+
+- `canaveral logs` said "no service or agent named X" for an agent that
+  exists but keeps no log, which sent you looking for a typo. It now says the
+  agent is started by its own window and has nothing to tail.
+
 ## v0.7.1 — 2026-09-05
 
 ### Added

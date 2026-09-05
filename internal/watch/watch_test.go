@@ -11,7 +11,7 @@ import (
 func feat(name string, agents ...string) *state.Feature {
 	f := &state.Feature{Project: "norules", Name: name, Branch: name}
 	for _, a := range agents {
-		f.Agents = append(f.Agents, state.Agent{Name: a, URL: "http://x"})
+		f.Agents = append(f.Agents, state.Agent{Name: a, Tool: "opencode", URL: "http://x"})
 	}
 	return f
 }

@@ -16,7 +16,7 @@ import (
 )
 
 // testRunner builds a Runner with the network and disk seams stubbed out.
-func testRunner(t *testing.T, features []*state.Feature, probe func(ctx context.Context, url, dir string) agent.Health) *Runner {
+func testRunner(t *testing.T, features []*state.Feature, probe func(ctx context.Context, tool string, c agent.Conn) agent.Health) *Runner {
 	t.Helper()
 	r := NewRunner(Options{Debounce: 10 * time.Millisecond, Rescan: time.Hour, Safety: time.Hour})
 	r.load = func(string) ([]*state.Feature, error) { return features, nil }
@@ -44,7 +44,7 @@ func TestRunEmitsAnInitialSnapshotImmediately(t *testing.T) {
 	// A widget that has just launched must have something to render rather
 	// than staying blank until the first event happens to arrive.
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		return agent.Health{Reachable: true, State: agent.StateIdle}
 	})
 
@@ -72,7 +72,7 @@ func TestRunFlushesTheStartupSnapshotBeforeExiting(t *testing.T) {
 	// indefinitely — and a test that only inspected output after shutdown
 	// would not notice, because exiting flushes.
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		return agent.Health{Reachable: true, State: agent.StateIdle}
 	})
 
@@ -116,7 +116,7 @@ func TestRunEmitsOnStateChange(t *testing.T) {
 	var mu sync.Mutex
 	st := agent.StateIdle
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		mu.Lock()
 		defer mu.Unlock()
 		return agent.Health{Reachable: true, State: st}
@@ -162,7 +162,7 @@ func TestRunEmitsTeardownOfAFeatureLeavingAPhase(t *testing.T) {
 	f.Phase, f.PhaseSince = "removing", time.Now()
 	features := []*state.Feature{f}
 
-	r := testRunner(t, features, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, features, func(context.Context, string, agent.Conn) agent.Health {
 		return agent.Health{Reachable: true, State: agent.StateIdle}
 	})
 	// The load seam has to return the live set, so the teardown below is seen.
@@ -207,7 +207,7 @@ func TestRunDoesNotReEmitWhenNothingChanged(t *testing.T) {
 	// a busy turn's event burst would spam the consumer with identical
 	// snapshots.
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		return agent.Health{Reachable: true, State: agent.StateBusy}
 	})
 
@@ -234,7 +234,7 @@ func TestRefreshPreservesSinceAcrossRepeatedBusyEvents(t *testing.T) {
 	// several identical "busy" statuses per turn, and the gauge must not
 	// reset each time.
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		return agent.Health{Reachable: true, State: agent.StateBusy}
 	})
 
@@ -255,7 +255,7 @@ func TestRefreshDetectsChange(t *testing.T) {
 	var mu sync.Mutex
 	st := agent.StateIdle
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		mu.Lock()
 		defer mu.Unlock()
 		return agent.Health{Reachable: true, State: st}
@@ -270,35 +270,6 @@ func TestRefreshDetectsChange(t *testing.T) {
 	mu.Unlock()
 	if _, changed := r.refresh(ctx); !changed {
 		t.Error("refresh after a real state change should report changed")
-	}
-}
-
-func TestRelevantFiltersTheFirehose(t *testing.T) {
-	want := []string{
-		"session.idle", "session.error", "session.status",
-		"permission.asked", "permission.v2.asked",
-		"question.asked", "question.v2.asked", "question.v2.replied",
-		// Todo progress moves a progress gauge even while the headline
-		// status stays "working".
-		"todo.updated",
-		"server.connected",
-	}
-	for _, e := range want {
-		if !relevant(e) {
-			t.Errorf("relevant(%q) = false, want true", e)
-		}
-	}
-	// The high-frequency streaming events must be ignored, or every token
-	// would trigger a re-probe of every agent.
-	ignore := []string{
-		"message.part.delta", "message.part.updated", "session.next.text.delta",
-		"session.next.reasoning.delta", "plugin.added", "server.heartbeat",
-		"file.watcher.updated",
-	}
-	for _, e := range ignore {
-		if relevant(e) {
-			t.Errorf("relevant(%q) = true, want false", e)
-		}
 	}
 }
 
@@ -334,7 +305,7 @@ func TestRefreshEmitsWhenOnlyTodoProgressChanged(t *testing.T) {
 	var mu sync.Mutex
 	done := 1
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		mu.Lock()
 		defer mu.Unlock()
 		return agent.Health{
@@ -364,7 +335,7 @@ func TestRefreshEmitsWhenTheRunningToolChanges(t *testing.T) {
 	var mu sync.Mutex
 	title := "bin/rails test"
 	f := feat("alpha", "main")
-	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, string) agent.Health {
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
 		mu.Lock()
 		defer mu.Unlock()
 		return agent.Health{

@@ -18,7 +18,7 @@ func vars() Vars {
 		URL:      URLsFor(ports),
 		Agent: map[string]AgentRef{
 			"main":     {URL: "http://127.0.0.1:4096"},
-			"reviewer": AgentRef{URL: "http://127.0.0.1:4097"}.WithSession("abc"),
+			"reviewer": AgentRef{URL: "http://127.0.0.1:4097"}.WithSession("--session abc"),
 		},
 		DBSuffix: "_small_fixes",
 	}

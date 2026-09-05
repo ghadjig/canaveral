@@ -35,14 +35,18 @@ func TestPortOf(t *testing.T) {
 
 func TestForkedSessionForNoNamespaceIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkedSessionFor(context.Background(), "norules", "small-fixes", "main", "http://x", "/wt"); got != "" {
+	if got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "small-fixes", Worktree: "/wt"},
+		state.Agent{Name: "main", Tool: "opencode", URL: "http://x"}); got != "" {
 		t.Errorf("forkedSessionFor for an unnamespaced feature = %q, want empty", got)
 	}
 }
 
 func TestForkedSessionForNothingToForkFromIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkedSessionFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt"); got != "" {
+	if got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step1", Worktree: "/wt"},
+		state.Agent{Name: "main", Tool: "opencode", URL: "http://x"}); got != "" {
 		t.Errorf("forkedSessionFor with no siblings = %q, want empty", got)
 	}
 }
@@ -61,7 +65,9 @@ func TestForkedSessionForUsesRecordedSession(t *testing.T) {
 	var moved string
 	srv := forkFakeServer(t, `{"data":[]}`, "ses_forked", &moved)
 
-	got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", srv.URL, "/wt/step2")
+	got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step2", Worktree: "/wt/step2"},
+		state.Agent{Name: "main", Tool: "opencode", URL: srv.URL})
 	if want := "ses_forked"; got != want {
 		t.Errorf("forkedSessionFor = %q, want %q (the forked copy, not the source)", got, want)
 	}
@@ -99,7 +105,9 @@ func TestForkedSessionForPrefersMoreRecentLiveSibling(t *testing.T) {
 	var moved string
 	fsrv := forkFakeServer(t, `{"data":[]}`, "ses_forked_live", &moved)
 
-	got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", fsrv.URL, "/wt/step2")
+	got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step2", Worktree: "/wt/step2"},
+		state.Agent{Name: "main", Tool: "opencode", URL: fsrv.URL})
 	if want := "ses_forked_live"; got != want {
 		t.Errorf("forkedSessionFor = %q, want %q", got, want)
 	}
@@ -119,7 +127,9 @@ func TestForkedSessionForFallsBackToAFreshSessionWhenForkFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Nothing listening: fork cannot succeed.
-	if got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", "http://127.0.0.1:1", "/wt"); got != "" {
+	if got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step2", Worktree: "/wt"},
+		state.Agent{Name: "main", Tool: "opencode", URL: "http://127.0.0.1:1"}); got != "" {
 		t.Errorf("forkedSessionFor = %q, want empty when the fork fails", got)
 	}
 }
@@ -133,7 +143,9 @@ func TestForkedSessionForOnlyMatchesSameNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := forkedSessionFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt")
+	got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step1", Worktree: "/wt"},
+		state.Agent{Name: "main", Tool: "opencode", URL: "http://x"})
 	if got != "" {
 		t.Errorf("forkedSessionFor leaked across namespaces: got %q, want empty", got)
 	}
@@ -262,5 +274,95 @@ func TestReconcileAgentsAdoptsAnAlreadyRunningUnit(t *testing.T) {
 	}
 	if len(res.StartedAgent) != 0 {
 		t.Errorf("StartedAgent = %v, adopting a running unit must not report a fresh start", res.StartedAgent)
+	}
+}
+
+// fakeBin puts an executable of the given name on a fresh PATH, so a test
+// can exercise a harness without the real tool being installed.
+func fakeBin(t *testing.T, name string) {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// An agent whose harness has no server is started by its own window, not by
+// canaveral. Reconciling one must record it — status, watch and session
+// continuity all key off the record — while starting no unit at all.
+func TestReconcileAgentsRecordsAnUnsupervisedAgentWithoutAUnit(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	fakeBin(t, "claude")
+
+	root := t.TempDir()
+	f := &state.Feature{Project: "unsupervised-test", Name: "main", Root: root, Worktree: t.TempDir()}
+	m := &manifest.Manifest{Root: root, Agents: []manifest.Agent{{Name: "main", Tool: "claude", Dir: "."}}}
+	prog := newProgress(f, state.PhaseBooting, 1)
+	res := &Result{}
+
+	if err := reconcileAgents(context.Background(), m, f, tmpl.Vars{}, nil, res, quietReporter{}, prog); err != nil {
+		t.Fatalf("reconcileAgents: %v", err)
+	}
+	if len(f.Agents) != 1 {
+		t.Fatalf("f.Agents = %v, want exactly one", f.Agents)
+	}
+	got := f.Agents[0]
+	if got.Unit != "" || got.URL != "" || got.Port != 0 {
+		t.Errorf("agent = %+v, want no unit, URL or port for a harness canaveral does not start", got)
+	}
+	if got.Dir != f.Worktree {
+		t.Errorf("Dir = %q, want the worktree — it is what scopes the conversation", got.Dir)
+	}
+	if len(res.launched) != 0 || len(res.StartedAgent) != 0 {
+		t.Errorf("launched = %v, StartedAgent = %v, want nothing started", res.launched, res.StartedAgent)
+	}
+}
+
+// A tool canaveral has no harness for must fail by name and before anything
+// is started. Load rejects one, so the only way here is a state file written
+// by a newer canaveral — which is exactly when a clear message matters.
+func TestReconcileAgentsFailsOnAnUnknownTool(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &state.Feature{Project: "unknown-tool-test", Name: "main", Worktree: t.TempDir()}
+	m := &manifest.Manifest{Agents: []manifest.Agent{{Name: "main", Tool: "nano-banana", Dir: "."}}}
+	prog := newProgress(f, state.PhaseBooting, 1)
+
+	err := reconcileAgents(context.Background(), m, f, tmpl.Vars{}, nil, &Result{}, quietReporter{}, prog)
+	if err == nil {
+		t.Fatal("reconcileAgents succeeded with a tool it has no harness for")
+	}
+	if !strings.Contains(err.Error(), "nano-banana") || !strings.Contains(err.Error(), "main") {
+		t.Errorf("error = %v, want it to name both the agent and the tool", err)
+	}
+}
+
+// The flag that reopens a conversation is the harness's to spell, so a
+// manifest window splices in {{.Agent.main.Session}} without knowing which
+// tool it got.
+func TestVarsForUsesTheHarnessesOwnSessionFlag(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cases := map[string]string{
+		"opencode": "--session ses_1",
+		"claude":   "--resume ses_1",
+	}
+	for tool, want := range cases {
+		t.Run(tool, func(t *testing.T) {
+			f := &state.Feature{
+				Project: "p", Name: "f", Worktree: t.TempDir(),
+				Agents: []state.Agent{{Name: "main", Tool: tool}},
+			}
+			v := varsFor(context.Background(), &manifest.Manifest{}, f, false,
+				map[string]string{"main": "ses_1"})
+			if got := v.Agent["main"].Session; got != want {
+				t.Errorf("Session = %q, want %q", got, want)
+			}
+			// Fork is the former spelling and must keep agreeing with it.
+			if got := v.Agent["main"].Fork; got != want {
+				t.Errorf("Fork = %q, want %q", got, want)
+			}
+		})
 	}
 }

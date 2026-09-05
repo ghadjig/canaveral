@@ -11,8 +11,9 @@ canaveral new onboarding/ask-for-name-at-first-step
 
 Each command creates a fully independent universe for that feature:
 its own git worktree and branch, its own ports, its own services and agent, and
-its own Hyprland workspace with the windows you declared — opencode, a terminal,
-tailed server logs, a browser.
+its own Hyprland workspace with the windows you declared — the coding agent, a
+terminal, tailed server logs, a browser. opencode and Claude Code are both
+supported; see [Agents](#agents).
 
 ```
 $ canaveral new small-fixes
@@ -48,7 +49,7 @@ $ canaveral new small-fixes
 | `canaveral prune` | Stop leftover units whose feature no longer exists; `--dry-run` to look first |
 | `canaveral rebase [feature]` | Fetch, then rebase onto the default branch; leaves conflicts in place to resolve (defaults to the one you're in) |
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
-| `canaveral attach <feature>` | Attach an opencode TUI to the feature's agent |
+| `canaveral attach <feature>` | Open the feature's agent in this terminal |
 | `canaveral logs <feature> <name>` | Print or follow a service or agent log |
 | `canaveral path [feature]` | Print a feature's worktree path; with no name, the one you are in |
 | `canaveral exec <feature> -- <cmd>` | Run a command inside a feature's worktree |
@@ -152,7 +153,7 @@ A popped feature gets its old port slot back whenever nothing has taken it in
 the meantime, so a bookmarked `localhost:3002` usually still works; when
 something has, it comes back on the lowest free slot and says so. Its agent
 reopens the conversation it was in, if the window asks for one — see
-[session continuity](#opencode-session-continuity).
+[session continuity](#session-continuity).
 
 Stashed features are invisible to everything that deals in running
 workspaces: they hold no slot, take no widget number, and appear in `ls` as a
@@ -172,6 +173,70 @@ it has already been cancelled — a Ctrl-C part-way through `canaveral new` stop
 what it started rather than leaving a server holding the feature's port. If one
 does escape anyway, `canaveral prune` reaps every feature unit that no feature
 still claims.
+
+## Agents
+
+canaveral is not tied to one coding agent. A manifest declares what it wants
+and the harness for that tool does the rest:
+
+```toml
+[[agent]]
+name = "main"
+tool = "opencode"        # or "claude"; omit it to use your own default
+```
+
+Two are built in.
+
+| | `opencode` | `claude` |
+| --- | --- | --- |
+| how it runs | a headless server canaveral starts in its own systemd unit | the terminal program itself, started by its window |
+| `canaveral logs <f> main` | the server's log | nothing to show — it writes to its own terminal |
+| status/`watch` source | the server's REST API | the transcripts under `~/.claude/projects/` |
+| updates | pushed, the instant they happen | polled, on `canaveral watch`'s refresh interval |
+| `waiting` state | question and permission prompts are reported | not visible outside the TUI, so a blocked agent reads as `busy` |
+| session continuity | fork and re-home over the API | the transcript is copied into the new worktree |
+
+Everything else — `status`, `watch`, the widgets, task lists, tokens, the
+model in use, what tool is running right now — works the same either way,
+because it all speaks one vocabulary rather than one tool's API.
+
+### Choosing the default
+
+Which agent *you* use is a property of your machine, not of a project, so it
+does not live in the manifest — the same repo gets opened by people running
+different tools. It comes from, in order:
+
+1. an `[[agent]]`'s own `tool`, when the manifest names one;
+2. `CANAVERAL_AGENT`, for a single run;
+3. `agent` in `~/.config/canaveral/config.toml` (honours `XDG_CONFIG_HOME`);
+4. `opencode`.
+
+```toml
+# ~/.config/canaveral/config.toml
+agent = "claude"
+```
+
+The file is optional and that is the whole of it today. An unknown key in it
+is an error rather than something silently ignored, since the one thing it
+does is decide which agent runs.
+
+`canaveral init` writes a starter manifest for whichever agent that resolves
+to, window command included — the two are opened in entirely different ways,
+so the window is generated from the harness rather than hardcoded.
+
+### Model and persona
+
+```toml
+[[agent]]
+name  = "main"
+model = "anthropic/claude-opus-4-5"
+agent = "build"          # opencode's named persona; ignored by claude
+```
+
+`model` becomes `OPENCODE_MODEL` or `ANTHROPIC_MODEL` as appropriate. `agent`
+has no Claude Code equivalent — its subagents are files in `.claude/agents`,
+chosen per task by the model rather than fixed for a session — so it is
+dropped rather than approximated.
 
 ## Namespaces
 
@@ -204,21 +269,27 @@ Namespace sharing is scoped to the exact parent path: `onboarding/a` and
 `onboarding` — only same-parent siblings do, the same way git namespaces
 nested refs.
 
-### opencode session continuity
+### Session continuity
 
-If an agent's `tool` is `opencode`, canaveral can hand a window an existing
-conversation to open instead of a blank one. Opt in per window with the
-`{{.Agent.<name>.Session}}` placeholder:
+canaveral can hand a window an existing conversation to open instead of a
+blank one. Opt in per window with the `{{.Agent.<name>.Session}}`
+placeholder:
 
 ```toml
 [[window]]
 name = "opencode"
 run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Session}}"
+
+# or, for Claude Code
+[[window]]
+name = "claude"
+run  = "claude {{.Agent.main.Session}}"
 ```
 
-It renders as `--session <id>`, or as nothing at all when there is no
-conversation to open — safe to include unconditionally. Two situations fill
-it, and they concern opposite ends of a feature's life:
+It renders in the harness's own spelling — `--session <id>` for opencode,
+`--resume <id>` for Claude Code — or as nothing at all when there is no
+conversation to open, so it is safe to include unconditionally. Two
+situations fill it, and they concern opposite ends of a feature's life:
 
 - **A newly created namespaced feature** gets a fork of whichever sibling
   under the same namespace was most recently active, whether it is still
@@ -229,12 +300,16 @@ it, and they concern opposite ends of a feature's life:
   progress in favour of a sibling's.
 - **A feature restored by `canaveral pop`** gets its own conversation back,
   exactly the one it was in when stashed. Nothing is forked here: the
-  worktree never moved, so opencode still has the session filed under the
-  same directory.
+  worktree never moved, so the session is still filed under the same
+  directory.
 
-`--dir` matters in both cases: without it, a forked session keeps operating
-relative to wherever it was originally started rather than this feature's own
-worktree.
+Both agents file a session under the directory it was started in, and neither
+lets a copy simply point somewhere else, so a fork alone would leave the new
+feature's agent working in its predecessor's checkout — one that may since
+have been deleted. opencode's copy is moved with the control-plane API;
+Claude Code's transcript is copied into the destination's own project
+directory, which for it *is* the move. Passing `--dir {{.Worktree}}` to
+`opencode attach` matters for the same reason on the client side.
 
 `{{.Agent.<name>.Fork}}` is the former name for this placeholder and still
 renders identically, so manifests written against it keep working. Prefer
@@ -288,7 +363,7 @@ optional = true             # may fail without failing the feature
 
 [[agent]]
 name = "main"
-tool = "opencode"
+tool = "opencode"           # or "claude"; omit for your own default
 
 [[window]]
 name = "opencode"
@@ -331,8 +406,8 @@ own:
 | `{{.URL.web}}` | `http://localhost:3001` |
 | `{{.Worktree}}` `{{.Root}}` | the feature checkout, the main checkout |
 | `{{.Branch}}` `{{.Slot}}` | `small-fixes`, `1` |
-| `{{.Agent.main}}` | `http://127.0.0.1:4096` |
-| `{{.Agent.main.Session}}` | `--session ses_abc123`, or empty — see [sessions](#opencode-session-continuity) |
+| `{{.Agent.main}}` | `http://127.0.0.1:4096`, or empty for an agent with no server |
+| `{{.Agent.main.Session}}` | `--session ses_abc123`, `--resume <uuid>`, or empty — see [sessions](#session-continuity) |
 | `{{.DBSuffix}}` | `_small_fixes`, or empty when shared |
 
 A typo such as `{{.Port.wbe}}` is a hard error at startup rather than a silently
@@ -815,8 +890,17 @@ are computed live from git, not cached.
 | --- | --- |
 | `waiting` | blocked on you: a question it asked, or a permission request |
 | `busy` | actively generating |
-| `retrying` | the provider errored and opencode is auto-retrying |
+| `retrying` | the provider errored and the agent is auto-retrying |
 | `idle` | none of the above |
+
+Not every harness can tell all four apart. Claude Code draws and answers
+permission prompts entirely inside its TUI and never writes one to its
+transcript until it has been resolved, so a Claude agent stopped on one reads
+as `busy`; `waiting` and `retrying` are opencode-only today. An agent with no
+server also has no unit, so its `STATE` column reports whether the program is
+actually running — `inactive` for a feature whose window you closed, with its
+task list, tokens and last exchange all still shown, because those outlive
+the process.
 
 A blocked **subagent** counts too: the Task tool runs subagents in their own
 sessions, and one stopping for permission blocks the whole conversation,
@@ -965,11 +1049,12 @@ permanently wrong.
 ## On disk
 
 ```
+~/.config/canaveral/config.toml       optional: which agent you use
 ~/.local/state/canaveral/
   projects.json                       the project registry: name -> checkout, last used
   features/<project>/<feature>.json   slot, branch, ports, units, windows
   stashed/<project>/<feature>.json    a parked feature: the same record, plus its agent sessions
-  logs/<project>/<feature>/*.log      service and agent logs
+  logs/<project>/<feature>/*.log      service and agent logs (agents canaveral starts)
   worktrees/<project>/<feature>/      the feature checkout, only with [worktree] root = "state"
 ```
 
@@ -1078,8 +1163,9 @@ by class.
 
 ## Requirements
 
-systemd user manager, git, `opencode`, and Hyprland for the window layer. Without
-Hyprland the window step is skipped with a warning and everything else works.
+systemd user manager, git, a coding agent (`opencode` or `claude` — see
+[Agents](#agents)), and Hyprland for the window layer. Without Hyprland the
+window step is skipped with a warning and everything else works.
 
 ## Building and installing
 
@@ -1099,7 +1185,8 @@ Replacing the binary is not just a copy, because running units hold the old
 executable open. `install.sh` goes through these steps in order:
 
 1. **Preflight.** Requires a Go toolchain, on `PATH` or via `mise`. Missing
-   `git`, `systemctl`, `opencode`, `hyprctl` or `mise` only warn.
+   `git`, `systemctl`, `hyprctl` or `mise` only warn, as does having no
+   coding agent at all — any one of them is enough.
 2. **Build** with the version stamped in (see below), and read the new version
    back out of `./bin/canaveral`.
 3. **Stop every `canaveral-*` systemd user unit** — feature agents and feature

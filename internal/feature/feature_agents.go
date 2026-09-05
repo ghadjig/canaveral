@@ -1,7 +1,15 @@
 package feature
 
-// Agent reconciliation: starting/adopting opencode agent units, and
-// forking a namespace sibling's session into a freshly created one.
+// Agent reconciliation: starting or adopting the agents a manifest declares,
+// and carrying a namespace sibling's conversation into a freshly created
+// feature.
+//
+// Not every agent is a process canaveral starts. A serving harness
+// (opencode) gets a systemd unit of its own, announces a URL and outlives
+// the windows attached to it; a non-serving one (Claude Code) is the
+// terminal program itself, so there is nothing here to launch and the record
+// exists purely so that status, watch and session continuity know the agent
+// is meant to be there. agent.Harness.Serves is the bit that decides which.
 
 import (
 	"context"
@@ -19,39 +27,56 @@ import (
 	"github.com/bandito/canaveral/internal/unit"
 )
 
+// agentConn describes a recorded agent to its harness: the server URL for
+// the harnesses that have one, and the directory the conversation is rooted
+// at for the ones that key sessions by working directory.
+func agentConn(f *state.Feature, a state.Agent) agent.Conn {
+	dir := a.Dir
+	if dir == "" {
+		dir = f.Worktree
+	}
+	return agent.Conn{URL: a.URL, Dir: dir}
+}
+
 // forkedSessionFor returns the ID of a fresh fork of a namespace sibling's
-// opencode session, for the window's attach command to open, or "" when
-// there's nothing to fork from — no namespace, no sibling, or none has an
-// opencode session on record yet.
+// conversation, for the window's command to open, or "" when there's nothing
+// to fork from — no namespace, no sibling, none with a session on record
+// yet, or a harness that cannot copy a conversation at all.
 //
 // Checks two sources and takes whichever is newer: skills.LatestSession,
 // which survives a sibling being removed (recorded in Remove, below), and
-// every currently-existing sibling's live agent server, for the case where
-// it's still running and has moved on since that was last recorded.
+// every currently-existing sibling's live agent, for the case where it's
+// still running and has moved on since that was last recorded.
 //
 // Only ever consulted when the feature itself was just created (varsFor's
 // fresh argument) — once a feature has its own session building up,
 // re-forking on every later reset would silently discard it in favour of a
 // sibling's, possibly stale, history.
-func forkedSessionFor(ctx context.Context, project, name, agentName, baseURL, worktree string) string {
-	ns := Namespace(name)
-	if ns == "" {
+func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) string {
+	ns := Namespace(f.Name)
+	if ns == "" || !agent.Probeable(a.Tool, a.URL) {
 		return ""
 	}
 
-	best, have := recordedSiblingSession(project, ns, agentName)
-	best, have = newestLiveSiblingSession(ctx, project, ns, name, agentName, best, have)
+	best, have := recordedSiblingSession(f.Project, ns, a.Name)
+	best, have = newestLiveSiblingSession(ctx, f.Project, ns, f.Name, a.Name, best, have)
 	if !have {
 		return ""
 	}
 
-	// Fork here rather than letting `opencode attach --fork` do it, so the
+	// Fork here rather than letting the agent's own attach do it, so the
 	// copy's ID is known and it can be re-homed into this feature's
 	// worktree. Without that the copy keeps the source's directory: it
 	// would operate in another feature's checkout, or in one that has since
 	// been deleted, and would be invisible to anything scoping sessions by
 	// directory (canaveral status included).
-	forked, err := agent.ForkInto(ctx, baseURL, best.SessionID, worktree)
+	//
+	// The Conn deliberately mixes the two: our own URL, because an opencode
+	// server can fork any session it can see and this feature's is the one
+	// we have, and the *source's* worktree, because a harness with no server
+	// finds the conversation by the directory it was held in.
+	c := agent.Conn{URL: a.URL, Dir: best.Worktree}
+	forked, err := agent.Fork(ctx, a.Tool, c, best.SessionID, f.Worktree)
 	if err != nil {
 		// Continuity is a convenience; a fresh session is a fine outcome.
 		return ""
@@ -95,17 +120,17 @@ func newestLiveSiblingSession(ctx context.Context, project, ns, name, agentName 
 }
 
 // siblingSession probes a single sibling feature's agent, returning its
-// newest session if the agent is reachable and has one.
+// newest session if the agent can be asked and has one.
 func siblingSession(ctx context.Context, project, sib, agentName string) (skills.SessionRecord, bool) {
 	sf, err := state.Load(project, sib)
 	if err != nil {
 		return skills.SessionRecord{}, false
 	}
 	a, ok := sf.Agent(agentName)
-	if !ok || a.URL == "" {
+	if !ok || !agent.Probeable(a.Tool, a.URL) {
 		return skills.SessionRecord{}, false
 	}
-	h := agent.Probe(ctx, a.URL, sf.Worktree)
+	h := agent.Probe(ctx, a.Tool, agentConn(sf, *a))
 	if !h.Reachable || h.SessionID == "" {
 		return skills.SessionRecord{}, false
 	}
@@ -121,9 +146,23 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	if len(m.Agents) == 0 {
 		return nil
 	}
-	bin, err := agent.Resolve()
-	if err != nil {
-		return err
+	// Resolve every harness's binary up front, once per tool: a missing
+	// toolchain becomes an immediate, clear error rather than a unit that
+	// starts and dies, or a window that vanishes the instant it spawns.
+	bins := map[string]string{}
+	for _, a := range m.Agents {
+		if _, done := bins[a.Tool]; done {
+			continue
+		}
+		h, err := agent.For(a.Tool)
+		if err != nil {
+			return fmt.Errorf("agent %q: %w", a.Name, err)
+		}
+		bin, err := h.Resolve()
+		if err != nil {
+			return err
+		}
+		bins[a.Tool] = bin
 	}
 	base, err := envFor(m, f, tc, vars)
 	if err != nil {
@@ -137,18 +176,30 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	var records []state.Agent
 	for _, a := range m.Agents {
 		prog.start("agent " + a.Name)
+		dir := serviceDir(f, m, a.Dir)
+		h, _ := agent.For(a.Tool) // already validated above
+
+		if !h.Serves() {
+			// Nothing to start: the agent is whatever the window runs. The
+			// record still matters — status, watch and session continuity
+			// all key off it — so it is written with no unit and no URL.
+			records = append(records, state.Agent{Name: a.Name, Tool: a.Tool, Dir: dir})
+			r.OK("agent %s (%s, started by its window)", a.Name, a.Tool)
+			prog.done()
+			continue
+		}
+
 		unitName := unit.Name(f.Project+"-"+f.Name, "agent", a.Name)
 		logPath := filepath.Join(logDir, "agent-"+a.Name+".log")
-		dir := serviceDir(f, m, a.Dir)
 
 		if st, err := unit.Query(ctx, unitName); err == nil && st.Running() {
-			rec := adoptRunningAgent(ctx, f, a, unitName, dir, logPath)
+			rec := adoptRunningAgent(ctx, h, f, a, unitName, dir, logPath)
 			records = append(records, rec)
 			prog.done()
 			continue
 		}
 
-		rec, err := startAgent(ctx, m, f, a, bin, base, vars, unitName, dir, logPath, res, r)
+		rec, err := startAgent(ctx, h, f, a, bins[a.Tool], base, vars, unitName, dir, logPath, res, r)
 		if err != nil {
 			return err
 		}
@@ -168,14 +219,15 @@ func reconcileAgents(ctx context.Context, m *manifest.Manifest, f *state.Feature
 // already running: from the feature's previous state if we already knew it,
 // otherwise from its log (the unit is alive but the URL was lost, e.g.
 // after canaveral itself restarted).
-func adoptRunningAgent(ctx context.Context, f *state.Feature, a manifest.Agent, unitName, dir, logPath string) state.Agent {
+func adoptRunningAgent(ctx context.Context, h agent.Harness, f *state.Feature, a manifest.Agent,
+	unitName, dir, logPath string) state.Agent {
 	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
 	if prev, ok := f.Agent(a.Name); ok {
 		rec.URL, rec.Port = prev.URL, prev.Port
 	}
 	if rec.URL == "" {
 		// The unit is alive but we lost its URL; recover it from the log.
-		if u, err := agent.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
+		if u, err := h.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
 			rec.URL, rec.Port = u, portOf(u)
 		}
 	}
@@ -186,9 +238,9 @@ func adoptRunningAgent(ctx context.Context, f *state.Feature, a manifest.Agent, 
 // announce its listen URL, tearing the unit back down if it never does. An
 // agent that never announces a URL is unusable and, unlike a service,
 // nothing can adopt it later — the URL is only ever printed once, at
-// startup — so leaving it running would strand an opencode server that no
-// window can attach to.
-func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a manifest.Agent,
+// startup — so leaving it running would strand a server that no window can
+// attach to.
+func startAgent(ctx context.Context, h agent.Harness, f *state.Feature, a manifest.Agent,
 	bin string, base map[string]string, vars tmpl.Vars, unitName, dir, logPath string,
 	res *Result, r Reporter) (state.Agent, error) {
 	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
@@ -198,12 +250,7 @@ func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a m
 		return rec, err
 	}
 	env := manifest.MergeEnv(base, agentEnv)
-	if a.Model != "" {
-		env["OPENCODE_MODEL"] = a.Model
-	}
-	if a.Agent != "" {
-		env["OPENCODE_AGENT"] = a.Agent
-	}
+	env = manifest.MergeEnv(env, h.EnvFor(agent.Selection{Model: a.Model, Agent: a.Agent}))
 
 	unit.Reset(ctx, unitName)
 	r.Step("agent %s", a.Name)
@@ -212,13 +259,13 @@ func startAgent(ctx context.Context, m *manifest.Manifest, f *state.Feature, a m
 		Name:        unitName,
 		Description: fmt.Sprintf("canaveral %s/%s agent %s", f.Project, f.Name, a.Name),
 		Dir:         dir,
-		Cmd:         agent.ServeCmd(bin),
+		Cmd:         h.ServeCmd(bin),
 		Env:         env,
 		LogPath:     logPath,
 	}); err != nil {
 		return rec, err
 	}
-	url, err := agent.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
+	url, err := h.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
 	if err != nil {
 		_ = unit.Stop(ctx, unitName)
 		unit.Reset(ctx, unitName)

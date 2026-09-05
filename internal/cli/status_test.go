@@ -632,3 +632,25 @@ func TestRunLsAllCoversEveryProject(t *testing.T) {
 		t.Errorf("out = %q, want features from both projects", out)
 	}
 }
+
+// An agent canaveral does not supervise has no unit to ask, so the harness's
+// own answer has to land in the same vocabulary the status table already
+// speaks. Note that "not running" is still a row worth drawing: Claude Code
+// leaves its transcript behind, so tokens, task list and the last exchange
+// are all still there to show.
+func TestUnsupervisedState(t *testing.T) {
+	cases := []struct {
+		name string
+		h    agent.Health
+		want string
+	}{
+		{"running", agent.Health{Reachable: true, Live: true}, "active"},
+		{"stopped", agent.Health{Reachable: true}, "inactive"},
+		{"cannot tell", agent.Health{}, "gone"},
+	}
+	for _, c := range cases {
+		if got := unsupervisedState(c.h); got != c.want {
+			t.Errorf("unsupervisedState(%s) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
