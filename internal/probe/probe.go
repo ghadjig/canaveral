@@ -19,7 +19,29 @@ import (
 // DefaultTimeout applies when a probe does not set one.
 const DefaultTimeout = 60 * time.Second
 
-const interval = 300 * time.Millisecond
+// Attempts back off from interval up to maxInterval, growing by factor.
+//
+// A fixed interval assumes the probe is cheap, which holds only while the
+// target is a local socket. It is not always: a service that tunnels its port
+// — devspace holding open a kubectl port forward into a pod, say — pays a new
+// TCP connection *and* a pair of multiplexed streams for every attempt,
+// because keep-alives are off below. At a flat 300ms that is 3.3 connections
+// a second sustained for the whole of a boot, and a slow-starting app with a
+// generous ready.timeout can be polled thousands of times. Measured against a
+// cold Rails start behind devspace, it drove 115 connections in 35 seconds
+// and left the forwarder unable to open further streams ("error creating
+// error stream ... Timeout occurred"), which devspace answers by restarting
+// the forward — taking the port down rather than bringing it up.
+//
+// Backing off keeps what the tight interval was for: a service that is
+// already warm still answers on the first or second attempt, well inside a
+// second. Only the slow case is throttled, and that is the only case where
+// the polling ever adds up to anything.
+const (
+	interval    = 300 * time.Millisecond
+	maxInterval = 5 * time.Second
+	factor      = 1.5
+)
 
 // Alive is called between attempts; returning false aborts the wait early
 // (for example when the underlying unit has already died).
@@ -43,8 +65,7 @@ func Wait(ctx context.Context, r manifest.Ready, dir, logPath string, alive Aliv
 	defer cancel()
 
 	var lastErr error
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	delay := interval
 
 	for {
 		if alive != nil {
@@ -62,12 +83,25 @@ func Wait(ctx context.Context, r manifest.Ready, dir, logPath string, alive Aliv
 			lastErr = err
 		}
 
+		// Timed from here rather than from a ticker started up front, so the
+		// gap is between attempts. check blocks for up to its own timeout
+		// when a service accepts the connection and then stalls, and a
+		// ticker would have already fired by the time it returned — turning
+		// the backoff into no wait at all in exactly the case it exists for.
+		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return fmt.Errorf("%w (%s) after %s: %w", ErrTimeout, kind, timeout, lastErr)
-		case <-ticker.C:
+		case <-t.C:
 		}
+		delay = next(delay)
 	}
+}
+
+// next grows a retry delay towards maxInterval.
+func next(d time.Duration) time.Duration {
+	return min(time.Duration(float64(d)*factor), maxInterval)
 }
 
 var client = &http.Client{

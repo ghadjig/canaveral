@@ -29,6 +29,25 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   is only an accident of the current shape. `omitempty`, so an older
   consumer sees nothing new.
 
+### Fixed
+
+- Readiness probes back off between attempts instead of polling at a flat
+  300ms, which could take down the very service they were waiting for.
+
+  The old pacing assumed the probe was cheap, which holds only while
+  `ready.http` names a local socket. Under yogurt it names a devspace port
+  forward — a kubectl tunnel into a pod — and because the probe disables
+  keep-alives, every attempt cost a fresh TCP connection plus a pair of
+  streams multiplexed onto the single connection to the API server. Three a
+  second, sustained for the whole of a Rails boot, was enough to exhaust it:
+  115 connections in 35 seconds, after which the forwarder could no longer
+  open streams and devspace restarted the forward. With `ready.timeout =
+  "20m"` the worst case was around 4,000 connections; it is now around 245.
+
+  Retries now grow from 300ms to a 5s cap, so a service that is already warm
+  is still reported ready on the first or second attempt and only the slow
+  case is throttled.
+
 ## v0.8.1 — 2026-09-05
 
 ### Added

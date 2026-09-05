@@ -131,3 +131,52 @@ func TestWaitTCPBecomesReady(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+func TestNextBacksOffAndCaps(t *testing.T) {
+	d := interval
+	for range 20 {
+		grown := next(d)
+		if grown < d {
+			t.Fatalf("next(%v) = %v, must not shrink", d, grown)
+		}
+		if grown > maxInterval {
+			t.Fatalf("next(%v) = %v, exceeds cap %v", d, grown, maxInterval)
+		}
+		d = grown
+	}
+	if d != maxInterval {
+		t.Errorf("delay settled at %v, want the %v cap", d, maxInterval)
+	}
+}
+
+func TestWaitBacksOffBetweenAttempts(t *testing.T) {
+	// The probe is not always pointed at a local socket. Behind a devspace
+	// port forward every attempt costs a fresh connection and a pair of
+	// multiplexed streams, and polling at a flat interval for the whole of a
+	// slow boot is what took the forward down. Retries must thin out.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	const window = 3 * time.Second
+	r := manifest.Ready{HTTP: srv.URL, Status: 200}
+	r.Timeout.Duration = window
+	if err := Wait(context.Background(), r, "", "", nil); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+
+	// A flat interval would manage window/interval attempts; backing off
+	// should land nearer a third of that. The bound is loose enough to
+	// survive a slow machine and still fail a regression to fixed pacing.
+	flat := int32(window / interval)
+	if got := hits.Load(); got > flat*2/3 {
+		t.Errorf("hits = %d over %v, want well under the %d a flat %v interval gives",
+			got, window, flat, interval)
+	}
+	if hits.Load() < 2 {
+		t.Errorf("hits = %d, probe should still retry", hits.Load())
+	}
+}
