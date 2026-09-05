@@ -19,10 +19,10 @@ import (
 	"github.com/bandito/canaveral/internal/unit"
 )
 
-// forkArgsFor returns "--session <id> --fork" for an opencode agent when a
-// namespace sibling has a more recently active session to hand off, or ""
-// when there's nothing to fork from — no namespace, no sibling, or none has
-// an opencode session on record yet.
+// forkedSessionFor returns the ID of a fresh fork of a namespace sibling's
+// opencode session, for the window's attach command to open, or "" when
+// there's nothing to fork from — no namespace, no sibling, or none has an
+// opencode session on record yet.
 //
 // Checks two sources and takes whichever is newer: skills.LatestSession,
 // which survives a sibling being removed (recorded in Remove, below), and
@@ -33,7 +33,7 @@ import (
 // fresh argument) — once a feature has its own session building up,
 // re-forking on every later reset would silently discard it in favour of a
 // sibling's, possibly stale, history.
-func forkArgsFor(ctx context.Context, project, name, agentName, baseURL, worktree string) string {
+func forkedSessionFor(ctx context.Context, project, name, agentName, baseURL, worktree string) string {
 	ns := Namespace(name)
 	if ns == "" {
 		return ""
@@ -56,7 +56,7 @@ func forkArgsFor(ctx context.Context, project, name, agentName, baseURL, worktre
 		// Continuity is a convenience; a fresh session is a fine outcome.
 		return ""
 	}
-	return fmt.Sprintf("--session %s", forked)
+	return forked
 }
 
 // recordedSiblingSession returns the namespace's recorded newest session for

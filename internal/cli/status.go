@@ -29,27 +29,39 @@ func runLs(ctx context.Context, args []string) error {
 	}
 
 	var features []*state.Feature
+	var stashes []*state.Stash
 	var err error
 	if *all {
 		features, err = state.LoadAll()
+		stashes, _ = state.LoadAllStashes()
 	} else {
 		m, mErr := loadManifest()
 		if mErr != nil {
 			return mErr
 		}
 		features, err = state.LoadProject(m.Name)
+		stashes, _ = state.LoadStashes(m.Name)
 	}
 	if err != nil {
 		return err
 	}
 	if *names {
+		// Stashes are deliberately absent here. --names feeds shell
+		// completion and scripts that act on running features, and a name
+		// that has no ports, no units and no windows behind it would break
+		// every one of them.
 		for _, f := range features {
 			fmt.Println(f.Name)
 		}
 		return nil
 	}
 	if len(features) == 0 {
-		fmt.Println("no features yet — create one with `canaveral new <feature>`")
+		if len(stashes) == 0 {
+			fmt.Println("no features yet — create one with `canaveral new <feature>`")
+			return nil
+		}
+		fmt.Println("nothing running")
+		printStashes(stashes)
 		return nil
 	}
 
@@ -74,7 +86,11 @@ func runLs(ctx context.Context, args []string) error {
 			f.Name, shorten(f.Branch, 28), portSummary(f.Ports),
 			live, len(f.Services), openWindows, humanAgo(f.CreatedAt))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	printStashes(stashes)
+	return nil
 }
 
 func countOpenWindows(ctx context.Context, f *state.Feature) string {

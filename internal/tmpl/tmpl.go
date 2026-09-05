@@ -37,7 +37,7 @@ type Vars struct {
 	URL map[string]string
 	// Agent maps agent names to their opencode server URLs. Populated only
 	// after agents have started. {{.Agent.main}} renders as the URL;
-	// {{.Agent.main.Fork}} renders extra flags to splice into the same
+	// {{.Agent.main.Session}} renders extra flags to splice into the same
 	// window's own attach command (see AgentRef).
 	Agent map[string]AgentRef
 	// DBSuffix is the per-feature database suffix, empty when shared.
@@ -52,19 +52,43 @@ type Vars struct {
 }
 
 // AgentRef is an agent's template value: a plain string (its opencode server
-// URL) by default, with an additional named field for advanced use.
+// URL) by default, with additional named fields for advanced use.
 //
 // {{.Agent.main}} renders as the URL — String() is what text/template calls
-// to print a non-basic value directly — while {{.Agent.main.Fork}} accesses
-// Fork specifically.
+// to print a non-basic value directly — while {{.Agent.main.Session}}
+// accesses Session specifically.
 type AgentRef struct {
 	URL string
-	// Fork is "--session <id> --fork", when a namespace sibling has a more
-	// recently active session for this agent name to hand off, or "" when
-	// there is nothing to fork from. Meant to be spliced into the window's
-	// own attach command, e.g.
-	// `run = "opencode attach {{.Agent.main}} {{.Agent.main.Fork}}"`.
+	// Session is "--session <id>" when this agent should open an existing
+	// conversation rather than start a new one, and "" when it should not.
+	// Meant to be spliced into the window's own attach command, e.g.
+	// `run = "opencode attach {{.Agent.main}} {{.Agent.main.Session}}"`.
+	//
+	// Two situations fill it, and they are mutually exclusive because they
+	// concern opposite halves of a feature's life. A freshly created feature
+	// under a namespace gets a fork of whichever sibling's conversation is
+	// most recent, so the agent does not start from zero on work its
+	// neighbours already did. A feature restored by `canaveral pop` gets its
+	// own conversation back, exactly the one it was in when stashed.
+	Session string
+	// Fork is the former name of Session and carries the same value. Kept so
+	// manifests written against `{{.Agent.main.Fork}}` keep working; new ones
+	// should say Session, which is what the flag has always actually done —
+	// the fork itself happens in canaveral, before the window is ever
+	// rendered, and what lands here is only ever a session to open.
 	Fork string
+}
+
+// WithSession returns a copy of the ref carrying "--session <id>", or the ref
+// unchanged when id is empty. Setting both spellings in one place is what
+// keeps Session and its Fork alias from drifting apart.
+func (a AgentRef) WithSession(id string) AgentRef {
+	if id == "" {
+		return a
+	}
+	a.Session = "--session " + id
+	a.Fork = a.Session
+	return a
 }
 
 func (a AgentRef) String() string { return a.URL }

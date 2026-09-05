@@ -53,12 +53,21 @@ type Options struct {
 	NoAgents bool
 	// Base is the git ref new feature branches start from.
 	Base string
+	// Resume maps agent name to an opencode session that agent's window
+	// should reopen instead of starting a fresh conversation. Set by Pop
+	// from the stash record; nil everywhere else.
+	Resume map[string]string
 }
 
 // Result summarises what a reconcile pass changed.
 type Result struct {
-	Feature       *state.Feature
-	Created       bool
+	Feature *state.Feature
+	Created bool
+	// Restored marks a pass that brought a stashed feature back, which the
+	// CLI reports differently: a pop that started nothing because the
+	// manifest declares nothing to start has still restored a workspace, and
+	// "already up to date" would be describing the wrong event.
+	Restored      bool
 	StartedSvc    []string
 	StartedAgent  []string
 	SpawnedWindow []string
@@ -172,7 +181,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	}
 	res := &Result{Feature: f, Created: created}
 
-	vars := varsFor(ctx, m, f, created)
+	vars := varsFor(ctx, m, f, created, opt.Resume)
 	tcMode := m.ToolchainMode()
 
 	// Progress is published from here on. The record already exists, so a
@@ -226,7 +235,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 
 	if !opt.NoWindows {
 		// Agent URLs are only known after agents start, so windows render last.
-		vars = varsFor(ctx, m, f, res.Created)
+		vars = varsFor(ctx, m, f, res.Created, opt.Resume)
 		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, originalWS, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
@@ -346,12 +355,22 @@ func dbSuffixFor(m *manifest.Manifest, name string) string {
 	}, name)
 }
 
-func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh bool) tmpl.Vars {
+// varsFor builds the template context for a feature.
+//
+// resume names, per agent, a session that agent's window should reopen rather
+// than starting a new conversation — this feature's own, restored by
+// `canaveral pop`. It takes precedence over forking a namespace sibling's:
+// a popped feature already has its own history, and handing it a neighbour's
+// instead would be a strictly worse answer to the same question.
+func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh bool, resume map[string]string) tmpl.Vars {
 	agents := map[string]tmpl.AgentRef{}
 	for _, a := range f.Agents {
 		ref := tmpl.AgentRef{URL: a.URL}
-		if fresh && a.Tool == "opencode" && a.URL != "" {
-			ref.Fork = forkArgsFor(ctx, f.Project, f.Name, a.Name, a.URL, f.Worktree)
+		switch {
+		case resume[a.Name] != "":
+			ref = ref.WithSession(resume[a.Name])
+		case fresh && a.Tool == "opencode" && a.URL != "":
+			ref = ref.WithSession(forkedSessionFor(ctx, f.Project, f.Name, a.Name, a.URL, f.Worktree))
 		}
 		agents[a.Name] = ref
 	}
@@ -495,5 +514,5 @@ func EnvFor(ctx context.Context, m *manifest.Manifest, f *state.Feature) (map[st
 	// fresh=false: agent URLs are not needed to render [env] — referencing
 	// one there is an error anyway — and asking for them would mean an HTTP
 	// round trip to every agent just to set up a shell command.
-	return envFor(m, f, tc, varsFor(ctx, m, f, false))
+	return envFor(m, f, tc, varsFor(ctx, m, f, false, nil))
 }

@@ -33,21 +33,21 @@ func TestPortOf(t *testing.T) {
 	}
 }
 
-func TestForkArgsForNoNamespaceIsEmpty(t *testing.T) {
+func TestForkedSessionForNoNamespaceIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkArgsFor(context.Background(), "norules", "small-fixes", "main", "http://x", "/wt"); got != "" {
-		t.Errorf("forkArgsFor for an unnamespaced feature = %q, want empty", got)
+	if got := forkedSessionFor(context.Background(), "norules", "small-fixes", "main", "http://x", "/wt"); got != "" {
+		t.Errorf("forkedSessionFor for an unnamespaced feature = %q, want empty", got)
 	}
 }
 
-func TestForkArgsForNothingToForkFromIsEmpty(t *testing.T) {
+func TestForkedSessionForNothingToForkFromIsEmpty(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt"); got != "" {
-		t.Errorf("forkArgsFor with no siblings = %q, want empty", got)
+	if got := forkedSessionFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt"); got != "" {
+		t.Errorf("forkedSessionFor with no siblings = %q, want empty", got)
 	}
 }
 
-func TestForkArgsForUsesRecordedSession(t *testing.T) {
+func TestForkedSessionForUsesRecordedSession(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
@@ -61,9 +61,9 @@ func TestForkArgsForUsesRecordedSession(t *testing.T) {
 	var moved string
 	srv := forkFakeServer(t, `{"data":[]}`, "ses_forked", &moved)
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", srv.URL, "/wt/step2")
-	if want := "--session ses_forked"; got != want {
-		t.Errorf("forkArgsFor = %q, want %q (the forked copy, not the source)", got, want)
+	got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", srv.URL, "/wt/step2")
+	if want := "ses_forked"; got != want {
+		t.Errorf("forkedSessionFor = %q, want %q (the forked copy, not the source)", got, want)
 	}
 	// The copy must be re-homed, or it would operate in the source's
 	// worktree and stay invisible to anything scoping by directory.
@@ -72,7 +72,7 @@ func TestForkArgsForUsesRecordedSession(t *testing.T) {
 	}
 }
 
-func TestForkArgsForPrefersMoreRecentLiveSibling(t *testing.T) {
+func TestForkedSessionForPrefersMoreRecentLiveSibling(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	old := time.Now().Add(-time.Hour)
@@ -99,16 +99,16 @@ func TestForkArgsForPrefersMoreRecentLiveSibling(t *testing.T) {
 	var moved string
 	fsrv := forkFakeServer(t, `{"data":[]}`, "ses_forked_live", &moved)
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", fsrv.URL, "/wt/step2")
-	if want := "--session ses_forked_live"; got != want {
-		t.Errorf("forkArgsFor = %q, want %q", got, want)
+	got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", fsrv.URL, "/wt/step2")
+	if want := "ses_forked_live"; got != want {
+		t.Errorf("forkedSessionFor = %q, want %q", got, want)
 	}
 	if !strings.Contains(moved, "-> /wt/step2") {
 		t.Errorf("move = %q, want it re-homed into this feature's worktree", moved)
 	}
 }
 
-func TestForkArgsForFallsBackToAFreshSessionWhenForkFails(t *testing.T) {
+func TestForkedSessionForFallsBackToAFreshSessionWhenForkFails(t *testing.T) {
 	// Continuity is a convenience; if the fork or move fails the feature
 	// should still come up, just without the previous conversation.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -119,12 +119,12 @@ func TestForkArgsForFallsBackToAFreshSessionWhenForkFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Nothing listening: fork cannot succeed.
-	if got := forkArgsFor(context.Background(), "norules", "onboarding/step2", "main", "http://127.0.0.1:1", "/wt"); got != "" {
-		t.Errorf("forkArgsFor = %q, want empty when the fork fails", got)
+	if got := forkedSessionFor(context.Background(), "norules", "onboarding/step2", "main", "http://127.0.0.1:1", "/wt"); got != "" {
+		t.Errorf("forkedSessionFor = %q, want empty when the fork fails", got)
 	}
 }
 
-func TestForkArgsForOnlyMatchesSameNamespace(t *testing.T) {
+func TestForkedSessionForOnlyMatchesSameNamespace(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	if err := skills.RecordSession("norules", "other-epic", "main", skills.SessionRecord{
@@ -133,9 +133,9 @@ func TestForkArgsForOnlyMatchesSameNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := forkArgsFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt")
+	got := forkedSessionFor(context.Background(), "norules", "onboarding/step1", "main", "http://x", "/wt")
 	if got != "" {
-		t.Errorf("forkArgsFor leaked across namespaces: got %q, want empty", got)
+		t.Errorf("forkedSessionFor leaked across namespaces: got %q, want empty", got)
 	}
 }
 

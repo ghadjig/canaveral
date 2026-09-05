@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bandito/canaveral/internal/launcherhistory"
 	"github.com/bandito/canaveral/internal/registry"
@@ -384,5 +385,121 @@ func TestCommonPrefixNeverShortensWhatWasTyped(t *testing.T) {
 	got = commonPrefix(nil, "r")
 	if got != "r" {
 		t.Errorf("commonPrefix = %q, want %q", got, "r")
+	}
+}
+
+// stashFeature parks a feature of an already-written completeProject, so
+// completion tests can exercise the stash tree without going near systemd.
+func stashFeature(t *testing.T, project, root, name string, stashedAt time.Time) {
+	t.Helper()
+	if err := state.SaveStash(&state.Stash{
+		Feature:   &state.Feature{Project: project, Name: name, Root: root, Branch: name},
+		StashedAt: stashedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompletePopOffersStashesNewestFirst(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules", "running")
+	now := time.Now()
+	stashFeature(t, "norules", root, "parked-long-ago", now.Add(-2*time.Hour))
+	stashFeature(t, "norules", root, "parked-just-now", now)
+
+	c := complete([]string{root, "pop", ""}, true)
+	got := values(c)
+	if len(got) != 2 {
+		t.Fatalf("pop offered %v, want exactly the two stashes", got)
+	}
+	// Newest first, matching what a bare `canaveral pop` would restore.
+	if got[0] != "parked-just-now" {
+		t.Errorf("first candidate = %q, want the most recently stashed", got[0])
+	}
+	if kinds(c)["parked-just-now"] != candStash {
+		t.Errorf("stash candidate kind = %q, want %q", kinds(c)["parked-just-now"], candStash)
+	}
+	// A running feature is not something `pop` can do anything with.
+	for _, v := range got {
+		if v == "running" {
+			t.Error("pop offered an active feature")
+		}
+	}
+}
+
+func TestCompleteFirstWordOffersStashesBecauseBareDispatchRestoresThem(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules", "running")
+	stashFeature(t, "norules", root, "parked", time.Now())
+
+	c := complete([]string{root, "par"}, true)
+	if kinds(c)["parked"] != candStash {
+		t.Errorf("stashed feature missing from bare dispatch candidates %v", values(c))
+	}
+}
+
+func TestCompleteNewOffersAStashRatherThanCreatingOverIt(t *testing.T) {
+	// `canaveral new <stashed>` restores rather than refusing, so completion
+	// has to say "this is parked" instead of "create this feature" — the
+	// latter would be describing something that is not going to happen.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+	stashFeature(t, "norules", root, "parked", time.Now())
+
+	c := complete([]string{root, "new", "parked"}, true)
+	got := kinds(c)
+	if got["parked"] != candStash {
+		t.Errorf("stash missing from %v", values(c))
+	}
+	for _, cand := range c.Candidates {
+		if cand.Kind == candNew {
+			t.Errorf("offered to create %q over an existing stash", cand.Value)
+		}
+	}
+}
+
+func TestCompleteRmOffersStashesToo(t *testing.T) {
+	// Stashing something must not be a way to make it undeletable.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules", "running")
+	stashFeature(t, "norules", root, "parked", time.Now())
+
+	c := complete([]string{root, "rm", ""}, true)
+	got := kinds(c)
+	if got["parked"] != candStash {
+		t.Errorf("stash missing from rm candidates %v", values(c))
+	}
+	if got["running"] != candFeature {
+		t.Errorf("active feature missing from rm candidates %v", values(c))
+	}
+}
+
+func TestCompleteStashOffersOnlyActiveFeatures(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules", "running")
+	stashFeature(t, "norules", root, "parked", time.Now())
+
+	got := values(complete([]string{root, "stash", ""}, true))
+	if len(got) != 1 || got[0] != "running" {
+		t.Errorf("stash offered %v, want only the active feature", got)
+	}
+}
+
+func TestCompleteOffersANamespaceHoldingOnlyStashes(t *testing.T) {
+	// A namespace whose features are all parked is still one worth
+	// descending into — its shared skill and its stashes are both in there.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CANAVERAL_ROOT", "")
+	root := completeProject(t, "norules")
+	stashFeature(t, "norules", root, "onboarding/step1", time.Now())
+
+	c := complete([]string{root, ""}, true)
+	if kinds(c)["onboarding/"] != candNamespace {
+		t.Errorf("namespace missing from %v", values(c))
 	}
 }

@@ -12,7 +12,63 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.7.0 — 2026-09-05
+
+### Added
+
+- `canaveral stash` parks a feature whole, and `canaveral pop` brings it back.
+  Stashing is the non-destructive half of `rm`: it stops the services, agents
+  and windows, releases the Hyprland workspace, the port slot and the widget
+  number, and leaves everything that *is* the work exactly where it stands —
+  the worktree on disk with its uncommitted edits and untracked files, the
+  branch, and a note of which opencode session each agent was in.
+
+  There is deliberately no merge check and no dirty-worktree check, because
+  nothing is lost. Stashing is what to reach for on precisely the
+  half-finished, unmerged work that `rm` refuses.
+
+  Four ways to bring one back, all meaning "give me this workspace":
+  `canaveral pop <feature>`, `canaveral pop` on its own for whichever was
+  stashed most recently, bare `canaveral <feature>`, and `canaveral new
+  <feature>`. `new` restores rather than refusing because the alternative is
+  worse than an error: the branch and worktree are still there for it to
+  adopt, so it would otherwise succeed and hand back the same feature minus
+  everything that had been remembered about it. It says which it is doing.
+
+  A popped feature reclaims its old port slot whenever nothing has taken it
+  meanwhile, so a bookmarked `localhost:3002` usually still works; when
+  something has, it comes back on the lowest free slot and says so. Its agent
+  reopens the conversation it was stashed in, if the window asks for one.
+
+  Stashes live in their own tree under `~/.local/state/canaveral/stashed/`,
+  which is what makes them cost nothing: every enumeration in canaveral reads
+  the features tree, so a record moved out of it stops holding a slot, a
+  widget number and a row in `ls` without any of those callers needing to
+  know stashes exist. `ls` lists them in a separate block below the table,
+  and `canaveral rm` still reaches one by name — a stash owns a worktree and
+  a branch just as an active feature does, and stashing something must not be
+  a way to make it undeletable.
+
+  `canaveral watch` reports a feature mid-stash as `removing`, since from a
+  widget's point of view the row is on its way out either way. An interrupted
+  stash carries a phase of its own rather than sharing `removing`, so
+  `canaveral prune` cannot mistake one for an abandoned teardown and finish
+  it by deleting the worktree — the exact loss stashing exists to prevent.
+  Such a feature is simply left active; run `canaveral stash` again.
+
+### Changed
+
+- `{{.Agent.<name>.Fork}}` is now spelled `{{.Agent.<name>.Session}}`. It
+  renders the same `--session <id>`, and now does so for a popped feature's
+  own conversation as well as for a fork of a namespace sibling's. The old
+  name still works and renders identically, so no manifest has to change —
+  but `Fork` was never accurate: the fork, when there is one, happens inside
+  canaveral before the window is ever rendered, and what reached the template
+  was only ever a session to open.
+
+  `canaveral init`'s starter manifest now includes the placeholder, and
+  `--dir {{.Worktree}}` alongside it, since a window that omits either gets
+  no continuity at all and there is no reason to opt out by default.
 
 ### Removed
 
