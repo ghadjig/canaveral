@@ -27,6 +27,12 @@ const (
 	candService   = "service"
 	candAgent     = "agent"
 	candFlag      = "flag"
+	// candStash is a parked feature: not running, but not gone either. A
+	// separate kind from candFeature because pressing Enter on one means
+	// something different — it brings a whole workspace back, services and
+	// windows and all, where a feature candidate merely focuses one that is
+	// already there.
+	candStash = "stash"
 	// candNew is the candidate that creates something that does not exist yet.
 	// It is the whole reason the launcher exists, and it has to be visible
 	// rather than implied: bare dispatch will happily create a feature from a
@@ -98,6 +104,14 @@ const (
 	// argLogTarget is a service or an agent: `logs` accepts either.
 	argLogTarget
 	argService
+	// argStashed is a stashed feature name — `pop`'s argument, which comes
+	// from the stash tree and never from the active one.
+	argStashed
+	// argFeatureOrStash is a feature in either tree: `rm` discards a parked
+	// workspace as readily as a running one, since both hold a worktree and
+	// a branch, and stashing something must not be a way to make it
+	// undeletable.
+	argFeatureOrStash
 	// argFeatureOrService is `restart`'s first argument, which is genuinely
 	// ambiguous — restartTarget resolves it at run time and refuses when a name
 	// is both — so completion offers both rather than picking a side.
@@ -118,7 +132,9 @@ var commandArgs = map[string][]argKind{
 	"restart":  {argFeatureOrService, argService},
 	"ls":       {argNone},
 	"status":   {argFeature, argNone},
-	"rm":       {argFeature},
+	"rm":       {argFeatureOrStash},
+	"stash":    {argFeature},
+	"pop":      {argStashed},
 	"prune":    {argNone},
 	"rebase":   {argFeature, argNone},
 	"merge":    {argFeature, argNone},
@@ -147,6 +163,8 @@ var commandFlags = map[string]map[string]string{
 	"ls":       {"--all": "list features across every project", "--names": "print only feature names"},
 	"status":   {"--json": "print as JSON", "--watch": "redraw on an interval", "--all": "every project"},
 	"rm":       {"--keep-worktree": "leave the worktree on disk", "--force": "remove despite uncommitted changes or an unmerged branch", "--keep-branch": "never delete the branch", "--all": "remove every feature of the project"},
+	"stash":    {"--all": "stash every feature of the project"},
+	"pop":      {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready"},
 	"prune":    {"--dry-run": "list what would be stopped, and stop nothing"},
 	"rebase":   {"--onto": "branch or ref to rebase onto", "--remote": "remote to fetch from", "--no-fetch": "skip the fetch"},
 	"merge":    {"--into": "branch to merge into", "--ff-only": "refuse a merge commit", "--keep": "do not tear the feature down afterwards"},
@@ -403,11 +421,15 @@ func completeArgs(m *manifest.Manifest, done []string, prefix string) completion
 
 	switch kindAt(cmd, positional) {
 	case argFeature:
-		return finish(prefix, featureCandidates(m, prefix, false), base)
+		return finish(prefix, featureCandidates(m, prefix, scopeActive), base)
 	case argNewFeature:
-		return finish(prefix, featureCandidates(m, prefix, true), base)
+		return finish(prefix, featureCandidates(m, prefix, scopeCreate), base)
+	case argFeatureOrStash:
+		return finish(prefix, featureCandidates(m, prefix, scopeRestorable), base)
+	case argStashed:
+		return finish(prefix, stashCandidates(m, prefix), base)
 	case argFeatureOrService:
-		return finish(prefix, append(featureCandidates(m, prefix, false), serviceCandidates(m, false)...), base)
+		return finish(prefix, append(featureCandidates(m, prefix, scopeActive), serviceCandidates(m, false)...), base)
 	case argService:
 		return finish(prefix, serviceCandidates(m, false), base)
 	case argAgent:
@@ -424,7 +446,8 @@ func completeArgs(m *manifest.Manifest, done []string, prefix string) completion
 // completeFirstWord offers commands and existing features together, because
 // the first word can be either: `canaveral rm` is a command and
 // `canaveral small-fixes` is a feature, and the user has not decided which they
-// are typing yet.
+// are typing yet. Stashed features are offered alongside the live ones,
+// because bare dispatch restores one — see openFeature.
 //
 // It does NOT offer to create anything. Bare dispatch only opens features that
 // already exist — a mistyped command must fail rather than quietly build a
@@ -436,9 +459,28 @@ func completeFirstWord(m *manifest.Manifest, prefix string) completion {
 		all = append(all, candidate{Value: c.name, Kind: candCommand, Desc: c.summary})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
-	all = append(all, featureCandidates(m, prefix, false)...)
+	all = append(all, featureCandidates(m, prefix, scopeRestorable)...)
 	return finish(prefix, all, completion{Prefix: prefix, Command: "open"})
 }
+
+// featureScope says which of a project's features a given argument accepts.
+type featureScope int
+
+const (
+	// scopeActive offers only features that are running now: everything that
+	// operates on a live workspace — status, logs, attach, rebase — can do
+	// nothing with a parked one.
+	scopeActive featureScope = iota
+	// scopeCreate names something that must not already exist. Active
+	// features are dropped, since `new` refuses one that is already there
+	// and offering it would be offering an error. Stashed ones stay, because
+	// `new` restores those rather than refusing them.
+	scopeCreate
+	// scopeRestorable offers both trees at once, for the positions that act
+	// on a workspace whether or not it happens to be running: bare dispatch,
+	// which pops a stash, and `rm`, which discards one.
+	scopeRestorable
+)
 
 // featureCandidates lists a project's features one path segment at a time.
 //
@@ -447,13 +489,7 @@ func completeFirstWord(m *manifest.Manifest, prefix string) completion {
 // before it became unusable. So a prefix of "" offers each namespace as a
 // single entry, and accepting one narrows to its contents — the same shape as
 // completing a directory path, for the same reason.
-//
-// `creating` switches this from naming something that exists to naming
-// something that must not: existing features are dropped, since `new` refuses
-// one that is already there and offering it would be offering an error, while
-// namespaces stay, since creating inside an existing one is ordinary. It also
-// widens where namespaces come from — see skills.Namespaces.
-func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []candidate {
+func featureCandidates(m *manifest.Manifest, prefix string, scope featureScope) []candidate {
 	names, err := state.List(m.Name)
 	if err != nil {
 		names = nil
@@ -462,6 +498,17 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 	if fs, err := state.LoadProject(m.Name); err == nil {
 		for _, f := range fs {
 			records[f.Name] = f
+		}
+	}
+	var stashed []string
+	stashes := map[string]*state.Stash{}
+	if scope != scopeActive {
+		if ss, err := state.LoadStashes(m.Name); err == nil {
+			for _, s := range ss {
+				stashed = append(stashed, s.Feature.Name)
+				stashes[s.Feature.Name] = s
+			}
+			sort.Strings(stashed)
 		}
 	}
 
@@ -473,15 +520,28 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 	}
 
 	leaves, ns, exact := partitionByNamespace(names, prefix, base)
+	stashLeaves, stashNs, stashExact := partitionByNamespace(stashed, prefix, base)
+	exact = exact || stashExact
+	// Noted but not counted. A namespace holding nothing but stashes is
+	// still one worth descending into, so it has to appear; its description
+	// counts what is open, and nothing there is.
+	for _, n := range stashNs.order {
+		ns.note(n)
+	}
 
 	var out []candidate
-	if creating {
+	if scope == scopeCreate {
 		// Namespaces survive, the features inside them do not.
 		namespacesFromSkills(m.Name, base, ns)
 	} else {
 		for _, n := range leaves {
 			out = append(out, candidate{Value: n, Kind: candFeature, Desc: featureDesc(records[n])})
 		}
+	}
+	// After the live ones: what is running now, then what can be brought
+	// back, then where else to look.
+	for _, n := range stashLeaves {
+		out = append(out, candidate{Value: n, Kind: candStash, Desc: stashDesc(stashes[n])})
 	}
 
 	// These land after the namespaces that still have features in them,
@@ -496,12 +556,43 @@ func featureCandidates(m *manifest.Manifest, prefix string, creating bool) []can
 		})
 	}
 
-	if creating && !exact {
-		if c, ok := newFeatureCandidate(prefix, base, records); ok {
+	if scope == scopeCreate && !exact {
+		if c, ok := newFeatureCandidate(prefix, base, records, stashes); ok {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// stashCandidates lists a project's stashed features, for `pop`.
+//
+// Flat, unlike featureCandidates: there are rarely many stashes, and a stash
+// under a namespace is reached by naming it in full rather than by descending
+// into a namespace that may hold nothing else.
+func stashCandidates(m *manifest.Manifest, prefix string) []candidate {
+	stashes, err := state.LoadStashes(m.Name)
+	if err != nil {
+		return nil
+	}
+	out := make([]candidate, 0, len(stashes))
+	for _, s := range stashes {
+		out = append(out, candidate{Value: s.Feature.Name, Kind: candStash, Desc: stashDesc(s)})
+	}
+	return out
+}
+
+// stashDesc describes a parked feature by when it was parked, which is the
+// question actually being asked of a stash list — several features named for
+// the same piece of work are told apart by which one you left most recently.
+func stashDesc(s *state.Stash) string {
+	if s == nil {
+		return "stashed"
+	}
+	parts := []string{"stashed " + humanAgo(s.StashedAt)}
+	if b := s.Feature.Branch; b != "" && b != s.Feature.Name {
+		parts = append(parts, b)
+	}
+	return strings.Join(parts, "  ")
 }
 
 // nsBucket accumulates the namespaces to offer as completions, in the order
@@ -580,8 +671,9 @@ func namespacesFromSkills(project, base string, b *nsBucket) {
 }
 
 // newFeatureCandidate offers to create prefix as a new feature, when it
-// does not already name one and genuinely extends what is settled.
-func newFeatureCandidate(prefix, base string, records map[string]*state.Feature) (candidate, bool) {
+// does not already name one — in either tree — and genuinely extends what is
+// settled.
+func newFeatureCandidate(prefix, base string, records map[string]*state.Feature, stashes map[string]*state.Stash) (candidate, bool) {
 	// Slugged, because that is the name that will actually be created — a
 	// launcher that shows "My Feature" and produces "my-feature" is lying
 	// about what Enter does.
@@ -592,7 +684,8 @@ func newFeatureCandidate(prefix, base string, records map[string]*state.Feature)
 	// create the namespace itself as a flat feature — the opposite of what
 	// someone who just typed a separator is asking for.
 	slug := feature.Slug(prefix)
-	if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] && records[slug] == nil {
+	if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] &&
+		records[slug] == nil && stashes[slug] == nil {
 		return candidate{Value: slug, Kind: candNew, Desc: "create this feature"}, true
 	}
 	return candidate{}, false

@@ -118,14 +118,25 @@ var ErrUnmerged = errors.New("not merged into the default branch")
 
 // unmergedError explains a refusal in the terms the user needs to act on:
 // which branch, which target, and the two ways forward.
-type unmergedError struct{ feature, branch, target string }
+type unmergedError struct {
+	feature, branch, target string
+	// stashed changes the first way forward. `merge` only ever operates on
+	// an active feature, so telling someone to run it against a parked one
+	// would send them to a second, less helpful error.
+	stashed bool
+}
 
 func (e *unmergedError) Is(target error) bool { return target == ErrUnmerged }
 
 func (e *unmergedError) Error() string {
+	land := fmt.Sprintf("land it with `canaveral merge %s`", e.feature)
+	if e.stashed {
+		land = fmt.Sprintf("restore and land it with `canaveral pop %s`, then `canaveral merge %s`",
+			e.feature, e.feature)
+	}
 	return fmt.Sprintf(
-		"%s is not merged into %s\n  land it with `canaveral merge %s`\n  or discard the workspace with `canaveral rm %s --force` (the branch is kept)",
-		e.branch, e.target, e.feature, e.feature)
+		"%s is not merged into %s\n  %s\n  or discard the workspace with `canaveral rm %s --force` (the branch is kept)",
+		e.branch, e.target, land, e.feature)
 }
 
 // Remove tears a feature down: units, windows, worktree and state.

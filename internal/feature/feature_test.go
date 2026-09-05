@@ -81,7 +81,7 @@ func TestVarsForExposesPortsAndAgents(t *testing.T) {
 		Ports:  map[string]int{"web": 3001},
 		Agents: []state.Agent{{Name: "main", URL: "http://127.0.0.1:4096"}},
 	}
-	v := varsFor(context.Background(), m, f, false)
+	v := varsFor(context.Background(), m, f, false, nil)
 	if v.Port["web"] != 3001 {
 		t.Errorf("Port.web = %d", v.Port["web"])
 	}

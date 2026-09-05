@@ -203,7 +203,7 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	if err != nil {
 		return err
 	}
-	vars := varsFor(ctx, m, f, false)
+	vars := varsFor(ctx, m, f, false, nil)
 	base, err := envFor(m, f, tc, vars)
 	if err != nil {
 		return err

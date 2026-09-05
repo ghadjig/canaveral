@@ -53,6 +53,8 @@ func commands() []command {
 		{"ls", "list features", runLs},
 		{"status", "show services, agents, windows and telemetry", runStatus},
 		{"rm", "tear a feature down; deletes the branch too once it's merged", runRm},
+		{"stash", "park a feature whole: worktree, branch and agent session kept", runStash},
+		{"pop", "restore a stashed feature exactly as it was", runPop},
 		{"prune", "stop leftover units whose feature no longer exists", runPrune},
 		{"rebase", "fetch, then rebase the current (or named) feature onto the default branch", runRebase},
 		{"merge", "rebase and merge the current (or named) feature, then tear it down", runMerge},

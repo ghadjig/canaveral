@@ -389,22 +389,7 @@ func LoadAll() ([]*Feature, error) {
 // Slots are dense and stable: a feature keeps its slot (and therefore its
 // ports) until removed, and a removed feature's slot is reused by the next one.
 func AllocateSlot(project, feature string) (int, error) {
-	existing, err := LoadProject(project)
-	if err != nil {
-		return 0, err
-	}
-	used := map[int]bool{}
-	for _, f := range existing {
-		if f.Name == feature {
-			return f.Slot, nil
-		}
-		used[f.Slot] = true
-	}
-	for slot := 0; ; slot++ {
-		if !used[slot] {
-			return slot, nil
-		}
-	}
+	return AllocateSlotPreferring(project, feature, -1)
 }
 
 // EnsureWSlots returns every feature across every project ordered by widget
@@ -497,6 +482,15 @@ func (f *Feature) Agent(name string) (*Agent, bool) {
 const (
 	PhaseBooting  = "booting"
 	PhaseRemoving = "removing"
+	// PhaseStashing is deliberately distinct from PhaseRemoving even though
+	// the two do much the same work, because Reap finishes an interrupted
+	// PhaseRemoving by calling Remove with force set — which deletes the
+	// worktree. Reusing the phase would turn "Ctrl-C during a stash, then
+	// `canaveral prune` ten minutes later" into exactly the loss of
+	// uncommitted work that stashing exists to prevent. An interrupted stash
+	// instead leaves the feature active with a stale phase, which is the
+	// state it was in to begin with: run `canaveral stash` again.
+	PhaseStashing = "stashing"
 )
 
 // StalePhaseAfter bounds how long a phase is believed.

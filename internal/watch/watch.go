@@ -346,6 +346,15 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			out.Status = StatusBooting
 		case state.PhaseRemoving:
 			out.Status = StatusRemoving
+		case state.PhaseStashing:
+			// Reported as removing rather than gaining a status of its own.
+			// From a widget's point of view the two are the same event —
+			// this row is on its way out — and the difference (that the
+			// worktree survives) is not something a row that is about to
+			// disappear can usefully express. Without this the feature would
+			// keep whatever its agents last said, so a progress bar would
+			// appear over the word "idle".
+			out.Status = StatusRemoving
 		}
 		out.Progress = &Progress{
 			Label: f.PhaseLabel,

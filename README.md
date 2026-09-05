@@ -43,6 +43,8 @@ $ canaveral new small-fixes
 | `canaveral ls` | Features, branches, ports, service and window counts |
 | `canaveral status [feature...]` | Per-item state, idle/worked time, CPU, memory, tokens, cost, branch status |
 | `canaveral rm [feature]` | Stop everything and drop the worktree; defaults to the feature you're in |
+| `canaveral stash [feature]` | Park a feature whole — worktree, branch and agent session kept; defaults to the feature you're in |
+| `canaveral pop [feature]` | Restore a stashed feature exactly as it was; with no name, the one stashed most recently |
 | `canaveral prune` | Stop leftover units whose feature no longer exists; `--dry-run` to look first |
 | `canaveral rebase [feature]` | Fetch, then rebase onto the default branch; leaves conflicts in place to resolve (defaults to the one you're in) |
 | `canaveral merge [feature]` | Rebase onto the default branch, merge it in, then `rm` the feature (defaults to the one you're in) |
@@ -113,6 +115,52 @@ haven't landed leaves a branch behind that is easy to lose track of. `--force`
 removes the workspace anyway and still keeps the branch; `--all` skips
 unmerged features and says so rather than stopping.
 
+### Stashing
+
+`canaveral stash` is the non-destructive half of `rm`. Everything that costs
+something to keep running is released — services, agents, windows, the
+Hyprland workspace, the port slot, the widget number — and everything that
+*is* the work is left exactly where it stands: the worktree on disk with its
+uncommitted edits and untracked files, the branch, and a note of which
+conversation each agent was in.
+
+```bash
+canaveral stash                  # the feature you're standing in
+canaveral stash small-fixes
+canaveral stash --all            # clear the decks
+```
+
+There is no merge check and no dirty-worktree check, because there is nothing
+to lose: stashing is what to reach for on exactly the half-finished, unmerged
+work that `rm` refuses.
+
+Bringing it back:
+
+```bash
+canaveral pop small-fixes
+canaveral pop                    # whichever you stashed most recently
+canaveral small-fixes            # bare dispatch restores a stash too
+canaveral new small-fixes        # and so does `new`, saying so out loud
+```
+
+All four do the same thing, because they all mean "give me this workspace".
+`new` in particular restores rather than refusing: the branch and the worktree
+are still there for it to adopt, so it would otherwise succeed and hand back
+the same feature minus everything that had been remembered about it.
+
+A popped feature gets its old port slot back whenever nothing has taken it in
+the meantime, so a bookmarked `localhost:3002` usually still works; when
+something has, it comes back on the lowest free slot and says so. Its agent
+reopens the conversation it was in, if the window asks for one — see
+[session continuity](#opencode-session-continuity).
+
+Stashed features are invisible to everything that deals in running
+workspaces: they hold no slot, take no widget number, and appear in `ls` as a
+separate block below the table rather than as rows with four empty columns.
+`canaveral rm` still reaches them by name, though, since a stash owns a
+worktree and a branch just as an active feature does — stashing something
+must not be a way to make it undeletable.
+
 Command names are reserved and cannot be used as feature names. Use
 `canaveral open <name>` if you need a feature whose name clashes.
 
@@ -156,29 +204,43 @@ Namespace sharing is scoped to the exact parent path: `onboarding/a` and
 `onboarding` — only same-parent siblings do, the same way git namespaces
 nested refs.
 
-### opencode session forking
+### opencode session continuity
 
-If an agent's `tool` is `opencode`, canaveral additionally tracks the newest
-session each namespaced feature's agent had, and offers it to whichever
-sibling gets created next — so it isn't just working from the same *notes*
-as a predecessor, it can continue the actual conversation. Opt in per window
-with the `{{.Agent.<name>.Fork}}` placeholder:
+If an agent's `tool` is `opencode`, canaveral can hand a window an existing
+conversation to open instead of a blank one. Opt in per window with the
+`{{.Agent.<name>.Session}}` placeholder:
 
 ```toml
 [[window]]
 name = "opencode"
-run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Fork}}"
+run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Session}}"
 ```
 
-`{{.Agent.main.Fork}}` renders as `--session <id>` when a namespace
-sibling has a session to hand off (picking whichever sibling was most
-recently active, whether it's still running or was already removed), or as
-nothing at all otherwise — safe to include unconditionally. `--dir` matters
-here: without it, a forked session keeps operating relative to wherever it
-was originally started rather than this feature's own worktree. This only
-ever fires for a feature's very first window; once it has a session of its
-own going, later `reset`s never re-fork it and silently discard that
-progress in favour of a sibling's.
+It renders as `--session <id>`, or as nothing at all when there is no
+conversation to open — safe to include unconditionally. Two situations fill
+it, and they concern opposite ends of a feature's life:
+
+- **A newly created namespaced feature** gets a fork of whichever sibling
+  under the same namespace was most recently active, whether it is still
+  running or was removed long ago. So it isn't just working from the same
+  *notes* as a predecessor — it continues the actual conversation. This only
+  ever fires for a feature's very first window; once it has a session of its
+  own going, later `reset`s never re-fork it and silently discard that
+  progress in favour of a sibling's.
+- **A feature restored by `canaveral pop`** gets its own conversation back,
+  exactly the one it was in when stashed. Nothing is forked here: the
+  worktree never moved, so opencode still has the session filed under the
+  same directory.
+
+`--dir` matters in both cases: without it, a forked session keeps operating
+relative to wherever it was originally started rather than this feature's own
+worktree.
+
+`{{.Agent.<name>.Fork}}` is the former name for this placeholder and still
+renders identically, so manifests written against it keep working. Prefer
+`Session`: the fork, when there is one, happens inside canaveral before the
+window is ever rendered, and what lands in the template was only ever a
+session to open.
 
 ## Manifest
 
@@ -270,6 +332,7 @@ own:
 | `{{.Worktree}}` `{{.Root}}` | the feature checkout, the main checkout |
 | `{{.Branch}}` `{{.Slot}}` | `small-fixes`, `1` |
 | `{{.Agent.main}}` | `http://127.0.0.1:4096` |
+| `{{.Agent.main.Session}}` | `--session ses_abc123`, or empty — see [sessions](#opencode-session-continuity) |
 | `{{.DBSuffix}}` | `_small_fixes`, or empty when shared |
 
 A typo such as `{{.Port.wbe}}` is a hard error at startup rather than a silently
@@ -905,6 +968,7 @@ permanently wrong.
 ~/.local/state/canaveral/
   projects.json                       the project registry: name -> checkout, last used
   features/<project>/<feature>.json   slot, branch, ports, units, windows
+  stashed/<project>/<feature>.json    a parked feature: the same record, plus its agent sessions
   logs/<project>/<feature>/*.log      service and agent logs
   worktrees/<project>/<feature>/      the feature checkout, only with [worktree] root = "state"
 ```
@@ -917,6 +981,12 @@ opened on that workspace yourself is moved to an ordinary workspace on the
 same monitor rather than closed, since it may hold real work. That also lets
 the feature's workspace be released instead of lingering with your window
 stranded on it.
+
+A stash is a separate tree rather than a flag on the record, and that
+separation is what does the work: every enumeration in canaveral reads the
+features tree, so moving a record out of it releases the port slot, the widget
+number and the row in `ls` without a single one of those callers having to
+learn the word "stashed".
 
 Services and agents run as transient systemd user units named
 `canaveral-<project>-<feature>-<svc|agent>-<name>.service`, so they survive the

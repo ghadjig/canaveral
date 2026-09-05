@@ -107,6 +107,37 @@ func openFeature(ctx context.Context, verb string, args []string, create bool) e
 		return fmt.Errorf("%q is a canaveral command; feature names cannot shadow commands", name)
 	}
 
+	opt := feature.Options{
+		NoWindows: *noWindows, NoServices: *noServices, NoAgents: *noAgents, Base: *base,
+	}
+	r := reporter{}
+
+	// A stashed name is restored, not refused, and by both verbs alike:
+	// `canaveral new x` and `canaveral x` equally mean "give me this
+	// workspace", and a stash is that workspace waiting — its worktree still
+	// on disk, its branch, its agent's conversation.
+	//
+	// `new` in particular has to do this rather than error, because the
+	// alternative is worse than an error. The branch and the worktree are
+	// still there for worktree.Ensure to adopt, so `new` would happily
+	// succeed and hand back the same feature minus everything that had been
+	// remembered about it: the session, the slot preference, the stash
+	// record itself left orphaned behind it. Saying so out loud is the only
+	// part that needs deciding.
+	stash, stashErr := state.LoadStash(m.Name, name)
+	if stashErr != nil && !errors.Is(stashErr, state.ErrNotFound) {
+		return stashErr
+	}
+	if stashErr == nil {
+		r.Step("restoring stashed %s  %s",
+			color(cBold, m.Name+"/"+name), color(cDim, humanAgo(stash.StashedAt)))
+		res, err := feature.Pop(ctx, m, name, opt, r)
+		if err != nil {
+			return err
+		}
+		return reportFeature(ctx, res, r, *focus && !*noWindows)
+	}
+
 	// Distinguish "no such feature" from an unreadable record: a corrupt
 	// state file must not look like a free name, or `new` would allocate a
 	// fresh slot over the top of a feature that still has units running.
@@ -115,26 +146,31 @@ func openFeature(ctx context.Context, verb string, args []string, create bool) e
 		return err
 	}
 
-	opt := feature.Options{
-		NoWindows: *noWindows, NoServices: *noServices, NoAgents: *noAgents, Base: *base,
-	}
-	r := reporter{}
 	r.Step("%s  %s", color(cBold, m.Name+"/"+name), color(cDim, homeTilde(m.Root)))
 
 	res, err := feature.Reconcile(ctx, m, name, opt, r)
 	if err != nil {
 		return err
 	}
-	f := res.Feature
+	return reportFeature(ctx, res, r, *focus && !*noWindows)
+}
 
-	if len(res.StartedSvc)+len(res.StartedAgent)+len(res.SpawnedWindow) == 0 && !res.Created {
+// reportFeature prints what a reconcile pass produced and, if asked, focuses
+// the workspace. Shared by `new`, bare dispatch and `pop`, which differ in
+// how they arrived at a Result and not at all in what they say about one.
+func reportFeature(ctx context.Context, res *feature.Result, r reporter, focus bool) error {
+	f := res.Feature
+	switch {
+	case res.Restored:
+		r.OK("%s restored", color(cBold, f.Key()))
+	case len(res.StartedSvc)+len(res.StartedAgent)+len(res.SpawnedWindow) == 0 && !res.Created:
 		r.OK("%s already up to date", f.Key())
-	} else {
+	default:
 		r.OK("%s ready", color(cBold, f.Key()))
 	}
 	printFeatureSummary(f)
 
-	if *focus && !*noWindows {
+	if focus {
 		focusFeatureWorkspace(ctx, f, r)
 	}
 	return nil
@@ -303,6 +339,13 @@ func runRm(ctx context.Context, args []string) error {
 		if names, err = state.List(m.Name); err != nil {
 			return err
 		}
+		// --all means every feature of the project, and a stashed one is
+		// still one of those: it holds a worktree and a branch just as an
+		// active one does, and leaving them behind after `rm --all` would
+		// make the flag quietly untrue.
+		if stashed, err := state.ListStashes(m.Name); err == nil {
+			names = append(names, stashed...)
+		}
 	}
 	if len(names) == 0 {
 		// Default to the feature you are standing in, the same way `merge`
@@ -321,6 +364,21 @@ func runRm(ctx context.Context, args []string) error {
 		name := feature.Slug(n)
 		f, err := state.Load(m.Name, name)
 		if err != nil {
+			// A stashed feature has no active record, but it does still own
+			// a worktree and a branch, so `rm` has to reach it — otherwise
+			// stashing something would be a way to make it undeletable
+			// without editing the state directory by hand. No flag to say
+			// which tree to look in: a name is only ever in one of them.
+			if s, ok := stashedFeature(m, name); ok {
+				r.Step("removing stashed %s", color(cBold, s.Feature.Key()))
+				if err := feature.DiscardStash(ctx, s, *keep, *force, *keepBranch, r); err != nil {
+					if len(names) == 1 {
+						return err
+					}
+					r.Warn("%s: %v", name, oneLine(err.Error()))
+				}
+				continue
+			}
 			r.Warn("%s: %v", name, err)
 			continue
 		}
@@ -371,7 +429,7 @@ tool = "opencode"
 # "run" executes inside a terminal rooted at the worktree; "exec" is a GUI app.
 [[window]]
 name = "opencode"
-run  = "opencode attach {{.Agent.main}}"
+run  = "opencode attach {{.Agent.main}} --dir {{.Worktree}} {{.Agent.main.Session}}"
 
 [[window]]
 name = "terminal"
