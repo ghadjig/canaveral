@@ -8,13 +8,19 @@ import (
 )
 
 func TestClassIsSanitised(t *testing.T) {
-	cases := []struct{ project, feature, window, want string }{
-		{"norules", "small-fixes", "chrome", "canaveral-norules-small-fixes-chrome"},
-		{"nor ules", "add/tasks", "server logs", "canaveral-nor-ules-add-tasks-server-logs"},
+	cases := []struct{ scope, window, want string }{
+		// A feature's scope is "project/feature", and the slash sanitises to
+		// the same hyphen the two halves used to be joined by — so classes
+		// are spelled exactly as they were before scope became one string,
+		// and a window open across the change is still recognised.
+		{"norules/small-fixes", "chrome", "canaveral-norules-small-fixes-chrome"},
+		{"nor ules/add/tasks", "server logs", "canaveral-nor-ules-add-tasks-server-logs"},
+		// A space has no project, so its scope is the bare name.
+		{"3d-printing", "onshape", "canaveral-3d-printing-onshape"},
 	}
 	for _, c := range cases {
-		if got := Class(c.project, c.feature, c.window); got != c.want {
-			t.Errorf("Class(%q,%q,%q) = %q, want %q", c.project, c.feature, c.window, got, c.want)
+		if got := Class(c.scope, c.window); got != c.want {
+			t.Errorf("Class(%q,%q) = %q, want %q", c.scope, c.window, got, c.want)
 		}
 	}
 }
@@ -22,12 +28,16 @@ func TestClassIsSanitised(t *testing.T) {
 func TestClassPrefixGroupsOnlyOwnFeature(t *testing.T) {
 	// The group rule is scoped to one feature so two features open at once are
 	// never tabbed into each other.
-	p := ClassPrefix("norules", "small-fixes")
-	if !strings.HasPrefix(Class("norules", "small-fixes", "terminal"), p) {
+	p := ClassPrefix("norules/small-fixes")
+	if !strings.HasPrefix(Class("norules/small-fixes", "terminal"), p) {
 		t.Error("class must carry the feature prefix")
 	}
-	if strings.HasPrefix(Class("norules", "other-feature", "terminal"), p) {
+	if strings.HasPrefix(Class("norules/other-feature", "terminal"), p) {
 		t.Error("a different feature must not share the prefix")
+	}
+	// A space must not be swept up by a project whose name it matches.
+	if strings.HasPrefix(Class("norules", "terminal"), p) {
+		t.Error("a space must not share a feature's prefix")
 	}
 }
 

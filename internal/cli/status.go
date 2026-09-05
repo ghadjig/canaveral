@@ -261,6 +261,11 @@ func resolveStatusTargets(pos []string, all bool) ([]*state.Feature, error) {
 	}
 	m, err := loadManifest()
 	if err != nil {
+		// Outside a project, named targets can still be spaces — they belong
+		// to no project and are reachable from anywhere.
+		if out, ok := spaceTargets(pos); ok {
+			return out, nil
+		}
 		return nil, err
 	}
 	if len(pos) == 0 {
@@ -270,11 +275,35 @@ func resolveStatusTargets(pos []string, all bool) ([]*state.Feature, error) {
 	for _, n := range pos {
 		f, err := state.Load(m.Name, feature.Slug(n))
 		if err != nil {
+			// A space shares the name space bare dispatch resolves from, so
+			// `canaveral status 3d-printing` has to reach one.
+			if sf, ok := spaceRecord(feature.Slug(n)); ok {
+				out = append(out, sf)
+				continue
+			}
 			return nil, err
 		}
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// spaceTargets resolves every name to an open space, reporting false unless
+// all of them are one — a partial match means the caller's real problem is
+// the missing manifest, and that is the error worth showing.
+func spaceTargets(pos []string) ([]*state.Feature, bool) {
+	if len(pos) == 0 {
+		return nil, false
+	}
+	var out []*state.Feature
+	for _, n := range pos {
+		f, ok := spaceRecord(feature.Slug(n))
+		if !ok {
+			return nil, false
+		}
+		out = append(out, f)
+	}
+	return out, true
 }
 
 // renderStatus resolves targets, collects their rows, and prints once, as
@@ -496,7 +525,7 @@ func collectBranchStatus(ctx context.Context, features []*state.Feature) map[str
 		out = make(map[string]worktree.BranchStatus, len(features))
 	)
 	for _, f := range features {
-		if f.Worktree == "" {
+		if f.Space || f.Worktree == "" {
 			continue
 		}
 		f := f
@@ -791,11 +820,7 @@ func runAttach(ctx context.Context, args []string) error {
 		return fmt.Errorf("specify a feature, e.g. `canaveral attach small-fixes`")
 	}
 
-	m, err := loadManifest()
-	if err != nil {
-		return err
-	}
-	f, err := state.Load(m.Name, feature.Slug(pos[0]))
+	f, err := resolveFeature(pos[0])
 	if err != nil {
 		return err
 	}
@@ -879,11 +904,7 @@ func runLogs(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: canaveral logs <feature> <service|agent>")
 	}
 
-	m, err := loadManifest()
-	if err != nil {
-		return err
-	}
-	f, err := state.Load(m.Name, feature.Slug(pos[0]))
+	f, err := resolveFeature(pos[0])
 	if err != nil {
 		return err
 	}

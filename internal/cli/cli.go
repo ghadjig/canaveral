@@ -62,6 +62,7 @@ func commands() []command {
 		{"logs", "print or follow a service or agent log", runLogs},
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
+		{"space", "define and open workspaces that have no project behind them", runSpace},
 		{"projects", "list the projects canaveral knows about, and where they live", runProjects},
 		{"complete", "list completion candidates for a partial command line", runComplete},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
@@ -137,7 +138,7 @@ func Main(ctx context.Context, args []string) int {
 		return 2
 	}
 	// Bare feature name.
-	return run(runOpen, args)
+	return run(runBare, args)
 }
 
 // chdirToProject consumes leading -C/--project flags and moves into the

@@ -15,6 +15,7 @@ import (
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
+	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -53,11 +54,20 @@ func recordProject(m *manifest.Manifest) {
 }
 
 func runNew(ctx context.Context, args []string) error {
-	return openFeature(ctx, "new", args, true)
+	return openFeature(ctx, "new", args, true, false)
 }
 
+// runOpen is the explicit `canaveral open <feature>`. It never resolves a
+// space: it is one of the two unambiguous escapes from a name that means
+// both things, the other being `canaveral space open <name>`.
 func runOpen(ctx context.Context, args []string) error {
-	return openFeature(ctx, "open", args, false)
+	return openFeature(ctx, "open", args, false, false)
+}
+
+// runBare handles `canaveral <name>` — the form with no verb at all, which
+// means "give me this workspace" whichever kind it turns out to be.
+func runBare(ctx context.Context, args []string) error {
+	return openFeature(ctx, "open", args, false, true)
 }
 
 // openFeature reconciles a feature, creating it only when asked to.
@@ -69,7 +79,7 @@ func runOpen(ctx context.Context, args []string) error {
 // dispatch now only ever opens something that already exists, so a mistyped
 // command fails in the one way you want it to — immediately and without side
 // effects.
-func openFeature(ctx context.Context, verb string, args []string, create bool) error {
+func openFeature(ctx context.Context, verb string, args []string, create, allowSpace bool) error {
 	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
 	fs.Usage = func() {
 		if create {
@@ -100,17 +110,32 @@ func openFeature(ctx context.Context, verb string, args []string, create bool) e
 		return fmt.Errorf("expected one feature name, got %d: %s", len(pos), strings.Join(pos, " "))
 	}
 
-	m, err := loadManifest()
-	if err != nil {
-		return err
-	}
 	name := feature.Slug(pos[0])
 	if reserved()[name] {
 		return fmt.Errorf("%q is a canaveral command; feature names cannot shadow commands", name)
 	}
-
 	opt := feature.Options{
 		NoWindows: *noWindows, NoServices: *noServices, NoAgents: *noAgents, Base: *base,
+	}
+
+	m, err := loadManifest()
+	if err != nil {
+		// Outside a project entirely. A space is the only thing a bare name
+		// can mean here, and it is the common way to open one: spaces exist
+		// precisely because there is no directory to be standing in.
+		if allowSpace && space.Exists(name) {
+			return openSpace(ctx, name, opt, *focus && !*noWindows)
+		}
+		return noProjectError(err, name, allowSpace)
+	}
+	if allowSpace {
+		if err := resolveBareName(m, name); err != nil {
+			return err
+		}
+		// Not a feature of this project, but a space by that name exists.
+		if !recordedFeature(m, name) && space.Exists(name) {
+			return openSpace(ctx, name, opt, *focus && !*noWindows)
+		}
 	}
 	r := reporter{}
 
@@ -231,7 +256,88 @@ func unknownFeature(project, name string) error {
 	return fmt.Errorf("%s\n  create it with `canaveral new %s`", msg, name)
 }
 
+// isOpenSpace reports whether a space by that name is currently up. Checked
+// alongside space.Exists so that a space whose definition was deleted by hand
+// can still be torn down.
+func isOpenSpace(name string) bool {
+	_, ok := spaceRecord(name)
+	return ok
+}
+
+// rmSpace is `canaveral rm <space>`: close it, and keep the definition.
+//
+// `rm` on a feature deletes the worktree because canaveral made it. It made
+// nothing for a space, so there is nothing here to delete, and silently
+// removing the definition would throw away the only copy of something you
+// wrote. Deleting that is `canaveral space rm`, which says so and asks.
+func rmSpace(ctx context.Context, name string, keepWorktree, keepBranch bool) error {
+	r := reporter{}
+	if keepWorktree || keepBranch {
+		r.Info("%s is a space: it has no worktree or branch, so those flags do nothing", name)
+	}
+	if err := closeSpace(ctx, name, r); err != nil {
+		return err
+	}
+	if space.Exists(name) {
+		r.Info("definition kept; delete it with `canaveral space rm %s`", name)
+	}
+	return nil
+}
+
+// resolveBareName refuses a name that is both a feature of the current
+// project and a space, pointing at the unambiguous form of each.
+//
+// Picking one silently is the failure mode `canaveral restart` already
+// avoids for a name that is both a service and a feature: whichever it
+// chose, the other would be unreachable by the form you actually typed.
+func resolveBareName(m *manifest.Manifest, name string) error {
+	if !recordedFeature(m, name) || !space.Exists(name) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%q is both a feature of %s and a space; say which you mean:\n"+
+			"  canaveral open %s        (the feature)\n"+
+			"  canaveral space open %s  (the space)",
+		name, m.Name, name, name)
+}
+
+// recordedFeature reports whether the project has this feature on record,
+// active or stashed. Deliberately not "could have": a name that names
+// nothing yet is free for a space to answer to.
+func recordedFeature(m *manifest.Manifest, name string) bool {
+	if _, err := state.Load(m.Name, name); err == nil {
+		return true
+	}
+	_, err := state.LoadStash(m.Name, name)
+	return err == nil
+}
+
+// noProjectError explains a bare name typed outside any project. The
+// manifest error is the true one, but on its own it sends you looking for a
+// canaveral.toml when what you meant was a space that does not exist yet.
+func noProjectError(manifestErr error, name string, allowSpace bool) error {
+	if !allowSpace {
+		return manifestErr
+	}
+	list, err := space.List()
+	if err != nil || len(list) == 0 {
+		return fmt.Errorf("%w\n  no spaces defined either; `canaveral space new %s` makes one that needs no project",
+			manifestErr, name)
+	}
+	if s := nearest(name, list); s != "" {
+		return fmt.Errorf("%w\n  did you mean the space `canaveral %s`?", manifestErr, s)
+	}
+	return fmt.Errorf("%w\n  spaces: %s", manifestErr, strings.Join(list, ", "))
+}
+
 func printFeatureSummary(f *state.Feature) {
+	if f.Space {
+		// No branch and no worktree to report: a space has neither, and its
+		// directory is one you already keep rather than something canaveral
+		// made and should account for.
+		printPortSummary(f)
+		return
+	}
 	fmt.Printf("    %s %s\n", dim("branch  "), f.Branch)
 	fmt.Printf("    %s %s\n", dim("worktree"), homeTilde(f.Worktree))
 	if len(f.Ports) > 0 {
@@ -245,6 +351,17 @@ func printFeatureSummary(f *state.Feature) {
 	if f.DBSuffix != "" {
 		fmt.Printf("    %s %s\n", dim("db      "), "suffix "+f.DBSuffix)
 	}
+}
+
+func printPortSummary(f *state.Feature) {
+	if len(f.Ports) == 0 {
+		return
+	}
+	var parts []string
+	for _, n := range sortedPortNames(f.Ports) {
+		parts = append(parts, fmt.Sprintf("%s=%d", n, f.Ports[n]))
+	}
+	fmt.Printf("    %s %s\n", dim("ports   "), strings.Join(parts, "  "))
 }
 
 func sortedPortNames(m map[string]int) []string {
@@ -333,6 +450,21 @@ func runRm(ctx context.Context, args []string) error {
 	}
 
 	m, err := loadManifest()
+
+	// A space is reachable from anywhere and belongs to no project, so `rm`
+	// has to reach one — the usual place to type this is somewhere with no
+	// project at all. The project is asked first all the same: an explicit
+	// verb always means the project's own, and `canaveral space close` is
+	// the form that always means the space. Resolving the other way round
+	// would let a space quietly shadow a feature of the same name and tear
+	// down the wrong workspace.
+	if len(pos) == 1 && !*all {
+		name := feature.Slug(pos[0])
+		mine := err == nil && recordedFeature(m, name)
+		if !mine && (space.Exists(name) || isOpenSpace(name)) {
+			return rmSpace(ctx, name, *keep, *keepBranch)
+		}
+	}
 	if err != nil {
 		return err
 	}

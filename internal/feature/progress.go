@@ -32,6 +32,11 @@ type progress struct {
 // remaining, never time remaining.
 func reconcileSteps(m *manifest.Manifest, opt Options) int {
 	n := 1
+	if m.Space {
+		// No worktree step to count: a space has none, and counting one it
+		// never performs would leave the bar a step short of full forever.
+		n = 0
+	}
 	if m.Precheck != "" {
 		n++
 	}

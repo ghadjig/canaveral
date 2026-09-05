@@ -9,6 +9,7 @@ import (
 
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -35,6 +36,19 @@ func runRestart(ctx context.Context, args []string) error {
 	if len(pos) == 0 {
 		fs.Usage()
 		return fmt.Errorf("specify at least one service")
+	}
+
+	// A space declares services the same way a project does, and its
+	// definition is the manifest they came from. Resolved first because the
+	// usual place to type this is outside any project.
+	if f, ok := spaceRecord(feature.Slug(pos[0])); ok && len(pos) > 1 {
+		m, err := space.Load(f.Name)
+		if err != nil {
+			return err
+		}
+		r := reporter{}
+		r.Step("restart %s", color(cBold, f.Key()))
+		return feature.RestartServices(ctx, m, f, pos[1:], r)
 	}
 
 	m, err := loadManifest()

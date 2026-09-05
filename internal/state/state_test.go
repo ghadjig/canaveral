@@ -631,3 +631,24 @@ func TestDiscoveredSurvivesSaveLoad(t *testing.T) {
 		t.Errorf("Discovered[web] = %d, want 3050", got.Discovered["web"])
 	}
 }
+
+// A space has no project, so neither its key nor its Hyprland workspace is
+// prefixed by one — "3d-printing:3d-printing" would be a colon separating a
+// thing from itself.
+func TestSpaceIdentityDropsTheProjectPrefix(t *testing.T) {
+	f := &Feature{Project: "norules", Name: "small-fixes"}
+	if got, want := f.Key(), "norules/small-fixes"; got != want {
+		t.Errorf("Key() = %q, want %q", got, want)
+	}
+	if got, want := f.HyprWorkspace(), "norules:small-fixes"; got != want {
+		t.Errorf("HyprWorkspace() = %q, want %q", got, want)
+	}
+
+	s := &Feature{Project: "3d-printing", Name: "3d-printing", Space: true}
+	if got, want := s.Key(), "3d-printing"; got != want {
+		t.Errorf("space Key() = %q, want %q", got, want)
+	}
+	if got, want := s.HyprWorkspace(), "3d-printing"; got != want {
+		t.Errorf("space HyprWorkspace() = %q, want %q", got, want)
+	}
+}

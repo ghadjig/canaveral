@@ -20,6 +20,12 @@ import (
 func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	vars tmpl.Vars, opt Options, created bool, r Reporter) error {
 
+	// A space has no repository to cut a worktree from, and its directory is
+	// one you already keep rather than one canaveral makes. Nothing to do,
+	// and nothing here it would be safe to do.
+	if m.Space {
+		return nil
+	}
 	if !worktree.IsRepo(ctx, m.Root) {
 		return fmt.Errorf("%s is not a git repository; canaveral needs one to create feature worktrees", m.Root)
 	}

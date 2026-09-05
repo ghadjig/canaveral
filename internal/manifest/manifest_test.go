@@ -571,3 +571,59 @@ func TestLoadAgentToolInManifestBeatsTheDefault(t *testing.T) {
 		t.Errorf("Tool = %q, want the manifest's own opencode", m.Agents[0].Tool)
 	}
 }
+
+// A space has no repository, so the four keys that only mean something with
+// one are refused rather than ignored. Ignoring them would be worse in both
+// directions: a space carrying `[worktree] link` was copied from a project
+// and its author expects those files to appear.
+func TestLoadSpaceRejectsProjectOnlyKeys(t *testing.T) {
+	isolateAgentDefault(t)
+	cases := map[string]string{
+		"branch":         "branch = \"{{.Feature}}\"\n",
+		"worktree link":  "[worktree]\nlink = [\"node_modules\"]\n",
+		"worktree setup": "[worktree]\nsetup = \"bundle install\"\n",
+		"database":       "[database]\nisolation = \"suffix\"\n",
+		"precheck":       "precheck = \"bin/check\"\n",
+	}
+	for label, body := range cases {
+		t.Run(label, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "s.toml")
+			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadSpace(p, "s"); err == nil {
+				t.Fatalf("LoadSpace accepted %q, which a space cannot have", body)
+			}
+		})
+	}
+}
+
+// The reverse: `dir` is a space's way of saying where it works, and a project
+// already answers that with the location of its canaveral.toml.
+func TestLoadRejectsDirInAProject(t *testing.T) {
+	isolateAgentDefault(t)
+	dir := write(t, t.TempDir(), "dir = \"/tmp\"\n")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load accepted `dir`, which belongs to a space")
+	}
+}
+
+func TestLoadSpaceTakesItsNameFromTheCaller(t *testing.T) {
+	isolateAgentDefault(t)
+	// The file is named after the space, so a `name` key inside it would be a
+	// second answer to a settled question; the caller's wins.
+	p := filepath.Join(t.TempDir(), "whatever.toml")
+	if err := os.WriteFile(p, []byte("name = \"ignored\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadSpace(p, "3d-printing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "3d-printing" {
+		t.Errorf("Name = %q, want the caller's", m.Name)
+	}
+	if !m.Space || m.Branch != "" {
+		t.Errorf("Space = %v, Branch = %q; a space has no branch", m.Space, m.Branch)
+	}
+}

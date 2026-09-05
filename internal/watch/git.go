@@ -58,7 +58,9 @@ func (c *gitCache) refresh(ctx context.Context, features []*state.Feature) bool 
 		next = map[string]*Git{}
 	)
 	for _, f := range features {
-		if f.Worktree == "" {
+		// A space's directory is not a checkout, so there is no branch to
+		// measure against anything.
+		if f.Space || f.Worktree == "" {
 			continue
 		}
 		f := f

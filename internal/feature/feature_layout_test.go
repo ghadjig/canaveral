@@ -145,7 +145,7 @@ func TestBuildWindowSpecForAnAlreadyOpenWindow(t *testing.T) {
 	m := &manifest.Manifest{Root: "/p"}
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
-	class := hypr.Class("p", "f", "chrome")
+	class := hypr.Class("p/f", "chrome")
 	open := map[string]hypr.Client{class: {}}
 
 	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, open, quietReporter{})
@@ -173,7 +173,7 @@ func TestBuildWindowSpecForAMissingWindow(t *testing.T) {
 	if pending == nil {
 		t.Fatal("a window that is not open must produce a pending spawn")
 	}
-	class := hypr.Class("p", "f", "chrome")
+	class := hypr.Class("p/f", "chrome")
 	if pending.spec.Class != class || pending.spec.Cmd != "chromium --class="+class {
 		t.Errorf("spec = %+v", pending.spec)
 	}

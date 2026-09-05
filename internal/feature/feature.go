@@ -267,6 +267,9 @@ func projectRoot(ctx context.Context, m *manifest.Manifest) string {
 
 // ensureRecord loads the feature or allocates a new slot, branch and ports.
 func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*state.Feature, bool, error) {
+	if m.Space {
+		return ensureSpaceRecord(m, name)
+	}
 	if f, err := state.Load(m.Name, name); err == nil {
 		// Ports and the database suffix follow the manifest, but the slot never
 		// moves. Both are derived values: recomputing them is what lets a
@@ -315,6 +318,36 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 	}
 	f.Branch = branch
 	return f, true, nil
+}
+
+// ensureSpaceRecord is ensureRecord for a workspace with no project behind
+// it. Everything the git half would have decided is simply absent: no branch
+// to render, no worktree to place, no main checkout to record, and no
+// database suffix, which only ever meant "this feature's own copy".
+//
+// A space is a singleton, so its project and feature name are the same word
+// and its slot is always 0 — there are no siblings to offset ports against.
+// Ports are still honoured: a space that runs a local server wants one, and
+// it gets the base straight from [ports].
+func ensureSpaceRecord(m *manifest.Manifest, name string) (*state.Feature, bool, error) {
+	if f, err := state.Load(m.Name, name); err == nil {
+		f.Space = true
+		f.Ports = portsFor(m, f.Slot)
+		f.MergeDiscovered()
+		// The directory follows the definition, so editing `dir` and
+		// reopening moves the space rather than stranding it where it was
+		// first opened.
+		f.Worktree = m.Root
+		return f, false, nil
+	}
+	return &state.Feature{
+		Project:   m.Name,
+		Name:      name,
+		Space:     true,
+		Worktree:  m.Root,
+		Ports:     portsFor(m, 0),
+		CreatedAt: time.Now(),
+	}, true, nil
 }
 
 // portsFor derives this feature's ports from the manifest bases and its slot.

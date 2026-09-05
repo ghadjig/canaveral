@@ -515,3 +515,67 @@ func TestBaseEnvExportsDiscoveredPorts(t *testing.T) {
 		t.Errorf("CANAVERAL_PORT_WEB = %q, want \"3050\"", env["CANAVERAL_PORT_WEB"])
 	}
 }
+
+// A space is a singleton with no worktree, so its record carries none of what
+// a repository would have decided.
+func TestEnsureSpaceRecord(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	m := &manifest.Manifest{
+		Name: "3d-printing", Space: true, Root: home,
+		Ports: map[string]int{"web": 8080},
+	}
+
+	f, created, err := ensureRecord(context.Background(), m, "3d-printing")
+	if err != nil {
+		t.Fatalf("ensureRecord: %v", err)
+	}
+	if !created {
+		t.Error("created = false for a space with no record yet")
+	}
+	if !f.Space {
+		t.Error("Space = false")
+	}
+	if f.Branch != "" || f.Root != "" || f.DBSuffix != "" {
+		t.Errorf("branch=%q root=%q db=%q, want all empty for a space", f.Branch, f.Root, f.DBSuffix)
+	}
+	if f.Worktree != home {
+		t.Errorf("Worktree = %q, want the space's directory %q", f.Worktree, home)
+	}
+	// Slot 0 always: there are no sibling features to offset ports against.
+	if f.Slot != 0 || f.Ports["web"] != 8080 {
+		t.Errorf("slot=%d ports=%v, want slot 0 and the base port", f.Slot, f.Ports)
+	}
+
+	// Reopening follows the definition, so editing `dir` moves the space
+	// rather than stranding it where it was first opened.
+	if err := state.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	moved := t.TempDir()
+	m.Root = moved
+	again, created, err := ensureRecord(context.Background(), m, "3d-printing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Error("created = true for a space that already had a record")
+	}
+	if again.Worktree != moved {
+		t.Errorf("Worktree = %q, want it to follow the definition to %q", again.Worktree, moved)
+	}
+}
+
+// The progress bar counts the steps a reconcile will actually perform, and a
+// space performs no worktree step — counting one would leave the bar a step
+// short of full forever.
+func TestReconcileStepsSkipsTheWorktreeForASpace(t *testing.T) {
+	m := &manifest.Manifest{Windows: []manifest.Window{{Name: "a"}, {Name: "b"}}}
+	if got, want := reconcileSteps(m, Options{}), 3; got != want {
+		t.Errorf("project steps = %d, want %d (worktree + 2 windows)", got, want)
+	}
+	m.Space = true
+	if got, want := reconcileSteps(m, Options{}), 2; got != want {
+		t.Errorf("space steps = %d, want %d (2 windows, no worktree)", got, want)
+	}
+}

@@ -157,7 +157,7 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// Checked before anything else: every step below this point is
 	// destructive, and stopping a feature's services only to then refuse to
 	// remove it would leave it half torn down.
-	if !force && !keepWorktree && f.Worktree != "" {
+	if !force && !keepWorktree && !f.Space && f.Worktree != "" {
 		if merged, target, ok := mergeTarget(ctx, f); ok && !merged {
 			return &unmergedError{feature: f.Name, branch: f.Branch, target: target}
 		}
@@ -301,7 +301,12 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 // regardless of keepBranch. keepBranch exists purely to opt out of deletion
 // even when merged, e.g. to keep it around for a while longer.
 func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
-	if keepWorktree || f.Worktree == "" {
+	// Space is asked before Worktree, and that order is the whole safety
+	// property here: a space's directory is one you already keep — your home
+	// directory by default — and it is recorded in the same field a feature's
+	// checkout is. Inferring "no repository" from an empty Worktree would be
+	// one well-meaning edit away from `git worktree remove ~`.
+	if keepWorktree || f.Space || f.Worktree == "" {
 		return nil
 	}
 	if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {

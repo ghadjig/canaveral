@@ -71,9 +71,26 @@ type Manifest struct {
 	Agents          []Agent   `toml:"agent"`
 	Windows         []Window  `toml:"window"`
 	Layout          Layout    `toml:"layout"`
+	// Dir is where a space's windows, services and agents open. Spaces only:
+	// a project's directory is wherever its canaveral.toml lives, so setting
+	// it there would be a second, disagreeing answer to a settled question.
+	//
+	// Empty means $HOME. canaveral never creates it — a space that names a
+	// directory is naming one you already keep.
+	Dir string `toml:"dir"`
 
-	// Root is the absolute directory containing the manifest. Not read from TOML.
+	// Root is the absolute directory the manifest works in. For a project
+	// that is the directory containing the canaveral.toml; for a space it is
+	// Dir, resolved. Not read from TOML.
 	Root string `toml:"-"`
+	// Space marks a manifest that describes a workspace with no project
+	// behind it — no repo, no worktree, no branch. Set by internal/space when
+	// it loads one out of canaveral's config directory, never by TOML: it is
+	// a property of where the file came from, not of what it says.
+	//
+	// Nearly every difference in handling follows from this one bit, the same
+	// way agent.Harness.Serves does for agents.
+	Space bool `toml:"-"`
 }
 
 // Layout forces a fixed column arrangement for windows instead of leaving
@@ -311,7 +328,13 @@ func (d Duration) Or(def time.Duration) time.Duration {
 	return d.Duration
 }
 
-var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+// NameRe is the shape of a project or space name: something that is safe as
+// a directory name, a systemd unit name and a Hyprland workspace name at
+// once. Exported because internal/space validates its own names against the
+// same rule, and two spellings of "valid name" would drift.
+var NameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+var nameRe = NameRe
 
 // Find locates the project root holding a canaveral.toml.
 //
@@ -359,7 +382,66 @@ func Load(root string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(abs, FileName)
+	m, err := decode(filepath.Join(abs, FileName))
+	if err != nil {
+		return nil, err
+	}
+	m.Root = abs
+	if err := m.finish(filepath.Join(abs, FileName)); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// LoadSpace reads and validates a space's manifest from an explicit path.
+//
+// A space's file is not a canaveral.toml in a checkout — it lives in
+// canaveral's config directory and is named after the space — so the name
+// comes from the caller rather than from the directory the file sits in, and
+// the keys that only make sense with a repo behind them are refused.
+func LoadSpace(path, name string) (*Manifest, error) {
+	m, err := decode(path)
+	if err != nil {
+		return nil, err
+	}
+	m.Space = true
+	m.Name = name
+
+	dir, err := expandDir(m.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: dir: %w", path, err)
+	}
+	m.Root = dir
+
+	if err := m.finish(path); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// expandDir resolves a space's dir to an absolute path, defaulting to the
+// home directory. A space usually has no directory of its own — that is the
+// point of one — and $HOME is the least surprising place for a browser or a
+// slicer to consider itself to be.
+func expandDir(dir string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir = strings.TrimSpace(dir)
+	switch {
+	case dir == "":
+		return home, nil
+	case dir == "~":
+		return home, nil
+	case strings.HasPrefix(dir, "~/"):
+		return filepath.Join(home, dir[2:]), nil
+	}
+	return filepath.Abs(dir)
+}
+
+// decode parses a manifest file, rejecting keys canaveral does not know.
+func decode(path string) (*Manifest, error) {
 	var m Manifest
 	md, err := toml.DecodeFile(path, &m)
 	if err != nil {
@@ -372,11 +454,48 @@ func Load(root string) (*Manifest, error) {
 		}
 		return nil, fmt.Errorf("%s: unknown keys: %s", path, strings.Join(keys, ", "))
 	}
-	m.Root = abs
-	if err := m.normalize(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
 	return &m, nil
+}
+
+// finish validates a decoded manifest, wrapping failures with the file they
+// came from.
+func (m *Manifest) finish(path string) error {
+	if err := m.validateKind(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if err := m.normalize(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// validateKind refuses the keys that belong to the other kind of manifest.
+//
+// Silently ignoring them would be worse than an error in both directions. A
+// space that carries `[worktree] link` was copied from a project and its
+// author expects those files to appear; a project that sets `dir` expects its
+// services to run somewhere other than where they will.
+func (m *Manifest) validateKind() error {
+	if !m.Space {
+		if m.Dir != "" {
+			return fmt.Errorf("dir belongs to a space; a project works in the directory holding its %s", FileName)
+		}
+		return nil
+	}
+	for _, bad := range []struct {
+		key string
+		set bool
+	}{
+		{"branch", m.Branch != ""},
+		{"worktree", m.Worktree.Root != "" || len(m.Worktree.Link) > 0 || len(m.Worktree.Copy) > 0 || m.Worktree.Setup != ""},
+		{"database", m.Database.Isolation != "" || m.Database.SuffixEnv != "" || m.Database.Setup != ""},
+		{"precheck", m.Precheck != ""},
+	} {
+		if bad.set {
+			return fmt.Errorf("%s belongs to a project; a space has no repository, worktree or branch", bad.key)
+		}
+	}
+	return nil
 }
 
 // normalize fills in defaults and validates every section of a parsed
@@ -414,7 +533,9 @@ func (m *Manifest) normalizeCore() error {
 	if !nameRe.MatchString(m.Name) {
 		return fmt.Errorf("invalid project name %q", m.Name)
 	}
-	if m.Branch == "" {
+	// A space has no branch to name, and leaving the template in place would
+	// hand it a branch it can never have.
+	if m.Branch == "" && !m.Space {
 		m.Branch = "{{.Feature}}"
 	}
 	if _, err := toolchain.ParseMode(m.Toolchain); err != nil {

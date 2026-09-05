@@ -111,7 +111,7 @@ func isLayoutFresh(m *manifest.Manifest, pending map[string]pendingSpawn) bool {
 func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
 	vars tmpl.Vars, base map[string]string, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
 
-	class := hypr.Class(f.Project, f.Name, w.Name)
+	class := hypr.Class(f.Key(), w.Name)
 
 	profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
 	if err != nil {
