@@ -200,21 +200,17 @@ PanelWindow {
         // is why the completer says so explicitly (completion.space) rather
         // than leaving the launcher to infer it from the highlighted row.
         if (result && result.space) {
-            const s = [root.bin].concat(w);
-            if (w.indexOf("--focus") < 0)
-                s.push("--focus");
-            return s;
+            return [root.bin].concat(w);
         }
         if (w.length < 2)
             return [];
         const rest = w.slice(1);
-        const out = [root.bin, "-C", w[0]].concat(rest);
-        // Neither `new` nor bare dispatch focuses the new workspace by default,
-        // since both are normally run from a terminal you are already looking
-        // at. From a launcher, going there is the entire intent.
-        if (result && (result.command === "open" || result.command === "new") && rest.indexOf("--focus") < 0)
-            out.push("--focus");
-        return out;
+        // No --focus is added here. Opening is a background operation, and the
+        // launcher is not a reason to make it something else: you fire a build
+        // off and carry on with what you were doing, rather than being thrown
+        // at a workspace whose windows are still arriving. Type --focus on the
+        // line when you do want to be taken there, exactly as from a terminal.
+        return [root.bin, "-C", w[0]].concat(rest);
     }
 
     readonly property var candidates: result && result.candidates ? result.candidates : []

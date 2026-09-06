@@ -445,3 +445,87 @@ func TestIsSelfFalseForANonPositivePID(t *testing.T) {
 		t.Error("IsSelf should be false for PID 0")
 	}
 }
+
+// installRecordingHyprctl installs a fake `hyprctl` that appends each
+// invocation's arguments to a log file, whose path it returns.
+//
+// Needed where the exact dispatcher argument is the thing under test: the
+// difference between `workspace 4` and `workspace name:4` is the difference
+// between two entirely different workspaces, and a fake that only reports an
+// exit code cannot tell them apart.
+func installRecordingHyprctl(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\nexit 0\n"
+	path := filepath.Join(dir, "hyprctl")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return log
+}
+
+func recordedCalls(t *testing.T, log string) []string {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read hyprctl recording: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(b)), "\n")
+}
+
+func TestFocusDispatchesANumericWorkspaceByBareID(t *testing.T) {
+	// `workspace name:4` does not go to workspace 4; it invents a named
+	// workspace that prints as "4". Restoring the user's view lands here
+	// whenever they were on a plain numbered workspace, which is most of the
+	// time, so the two forms have to be kept apart.
+	log := installRecordingHyprctl(t)
+	if err := Focus(context.Background(), "4"); err != nil {
+		t.Fatalf("Focus: %v", err)
+	}
+	if err := Focus(context.Background(), "norules:small-fixes"); err != nil {
+		t.Fatalf("Focus: %v", err)
+	}
+	got := recordedCalls(t, log)
+	want := []string{
+		"dispatch workspace 4",
+		"dispatch workspace name:norules:small-fixes",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("call %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestShowWorkspaceOnMonitorFocusesTheMonitorFirst(t *testing.T) {
+	// The workspace dispatcher acts on whichever monitor is focused, so
+	// putting a *different* monitor back to what it was showing means
+	// focusing it first. Order is the whole behaviour.
+	log := installRecordingHyprctl(t)
+	if err := ShowWorkspaceOnMonitor(context.Background(), "eDP-1", "4"); err != nil {
+		t.Fatalf("ShowWorkspaceOnMonitor: %v", err)
+	}
+	got := recordedCalls(t, log)
+	want := []string{"dispatch focusmonitor eDP-1", "dispatch workspace 4"}
+	if len(got) != len(want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("call %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestShowWorkspaceOnMonitorFails(t *testing.T) {
+	installFakeHyprctl(t)
+	t.Setenv("FAKE_HYPRCTL_DISPATCH_EXIT", "1")
+	if err := ShowWorkspaceOnMonitor(context.Background(), "eDP-1", "4"); err == nil {
+		t.Error("ShowWorkspaceOnMonitor should fail when hyprctl exits non-zero")
+	}
+}

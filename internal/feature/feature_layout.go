@@ -445,16 +445,19 @@ func waitForMatch(ctx context.Context, re *regexp.Regexp, seen map[string]bool, 
 // window is currently focused, and focusing a window switches what is
 // displayed — confirmed empirically — even though this whole process runs in
 // the background by default and should not disturb whatever the user is
-// actually looking at. Two things limit the damage: as soon as the
-// workspace exists, it is relocated to any monitor other than the one the
-// user is currently focused on (confirmed empirically that this neither
-// changes what is shown on their monitor nor steals their keyboard focus —
-// it only affects what the *other* monitor displays), so on a multi-monitor
-// setup the user's own screen is never touched at all; and on a single
-// monitor, where that is not possible, the original view is saved and
-// restored once everything is done, and the spawn+preselect+splitratio
-// sequence is structured to need as few focus switches as physically
-// possible (one per window instead of two).
+// actually looking at. So as soon as the workspace exists it is moved to a
+// monitor the user is not working on (see buildAway), which keeps the
+// shuffling off their screen; that monitor is then put back to what it was
+// showing, and the original view restored, once everything is done. On a
+// single monitor there is nowhere to hide the work, so only the restore
+// applies, and the spawn+preselect+splitratio sequence is structured to need
+// as few focus switches as physically possible (one per window instead of
+// two).
+//
+// None of this is invisible: keyboard focus does travel to the build monitor
+// for the duration, measured at roughly a quarter of a second for two
+// windows. It is bounded and it is put back, which is the most that can be
+// had while Hyprland requires focus to lay windows out at all.
 func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
 	pending map[string]pendingSpawn, layoutFresh bool, res *Result, r Reporter, originalWS string) error {
 
@@ -509,6 +512,18 @@ func spawnMissingIndependently(ctx context.Context, missing []string, pending ma
 func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
 	pending map[string]pendingSpawn, res *Result, r Reporter) error {
 
+	// Runs before reconcileLayoutWindows' own focus restore, which is
+	// registered earlier and so fires later: this monitor has to be showing
+	// the right workspace again before the user is sent back to theirs,
+	// otherwise the last thing that happened would be a focus change onto a
+	// screen still displaying the build.
+	var restoreSecondary func()
+	defer func() {
+		if restoreSecondary != nil {
+			restoreSecondary()
+		}
+	}()
+
 	ratios := splitRatioChain(m.Layout.Order, m.Layout.Fractions())
 	addresses := make(map[string]string, len(m.Layout.Order))
 	for i, name := range m.Layout.Order {
@@ -529,12 +544,10 @@ func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace s
 		if i == 0 {
 			// The workspace only comes into existence once this first window
 			// creates it, so this is the first moment it can be relocated.
-			// Doing so before any focus-shuffling begins means every
-			// subsequent preselect/splitratio focus change plays out on a
-			// monitor the user is not actively looking at, leaving whichever
-			// one they are using completely undisturbed for the entire
-			// operation — not just restored afterwards.
-			relocateToSecondaryMonitor(ctx, hyprWorkspace, r)
+			// Doing so before any focus-shuffling begins keeps every
+			// subsequent preselect/splitratio focus change off the monitor
+			// the user is working on.
+			restoreSecondary = buildAway(ctx, hyprWorkspace, r)
 		}
 
 		// Applied here, immediately, rather than in a second pass over all
@@ -570,18 +583,36 @@ func chainAfter(ctx context.Context, prevAddr, prevName, nextName string) error 
 	return nil
 }
 
-// relocateToSecondaryMonitor moves the just-created workspace onto any
-// monitor other than the one the user is currently focused on, confirmed
-// empirically to neither change what is shown on their monitor nor steal
-// their keyboard focus — it only affects what the *other* monitor displays.
-// A no-op when there is no secondary monitor to use.
-func relocateToSecondaryMonitor(ctx context.Context, hyprWorkspace string, r Reporter) {
+// buildAway moves the just-created workspace onto a monitor the user is not
+// looking at, and returns a function that puts that monitor back to whatever
+// it was displaying before. Returns nil when there is nothing to undo: a
+// single monitor, a failed relocation, or a secondary that was already
+// showing this workspace.
+//
+// The undo is the point. Relocating alone left the other monitor parked on
+// the workspace canaveral had just built, so opening a feature in the
+// background silently replaced whatever the user had on their second screen
+// and left it that way — a fair description of which is that the build stole
+// the monitor rather than borrowed it.
+func buildAway(ctx context.Context, hyprWorkspace string, r Reporter) func() {
 	sec, ok, err := hypr.SecondaryMonitor(ctx)
 	if err != nil || !ok {
-		return
+		return nil
 	}
+	// Read before the move, since afterwards this monitor's active workspace
+	// is the one being built.
+	was := sec.ActiveWorkspace.Name
 	if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
 		r.Warn("could not build on a secondary monitor: %v", err)
+		return nil
+	}
+	if was == "" || was == hyprWorkspace {
+		return nil
+	}
+	return func() {
+		if err := hypr.ShowWorkspaceOnMonitor(ctx, sec.Name, was); err != nil {
+			r.Warn("%v", err)
+		}
 	}
 }
 

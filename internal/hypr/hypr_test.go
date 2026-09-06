@@ -300,3 +300,20 @@ func TestCmdlineReportsWhenItCannotTell(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceArgKeepsNumericAndNamedApart(t *testing.T) {
+	cases := []struct{ name, want string }{
+		{"4", "4"},
+		{"0", "0"},
+		{"-3", "-3"},
+		{"norules:small-fixes", "name:norules:small-fixes"},
+		{"3d", "name:3d"},          // starts with a digit but is not one
+		{"3d-printing", "name:3d-printing"},
+		{"", "name:"},
+	}
+	for _, c := range cases {
+		if got := workspaceArg(c.name); got != c.want {
+			t.Errorf("workspaceArg(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

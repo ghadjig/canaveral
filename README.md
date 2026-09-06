@@ -349,11 +349,13 @@ halves, and the error you get on a clash names them both.
 
 The quickshell launcher lists spaces beside projects, and a space is a
 runnable line on its own: type enough of `3d-printing` to pick it out, press
-Enter, and it opens and focuses. A project still needs a command after it —
-a space *is* the command.
+Enter, and it opens in the background. A project still needs a command after
+it — a space *is* the command.
 
 Flags follow if you want them (`--no-windows`, `--focus` and friends), and
-that is all that can: the name was the verb.
+that is all that can: the name was the verb. The launcher adds nothing of its
+own, so opening from it means the same thing as opening from a terminal: it
+happens behind you, and `--focus` is how you ask to be taken there.
 
 Space names are flat: no `/`, so they take no part in the [namespace](#namespaces)
 syntax below. There is nothing there for them — a namespace shares a skill
@@ -1280,13 +1282,18 @@ disruption.
 Building a feature briefly needs to shuffle window focus to lay out each
 column, which would otherwise flash across whatever workspace you're currently
 looking at. If you have a second monitor, canaveral moves the new workspace
-there the moment the first window exists, so all of that shuffling happens
-somewhere you're not looking — your actual screen doesn't change at all during
-creation. `--focus` (and `canaveral-goto` / clicking a bar's slot) explicitly
-pulls the workspace back onto whichever monitor you're currently on before
-switching to it. On a single-monitor machine there's nowhere to hide the work,
-so it briefly flashes your current workspace and restores it afterwards
+there the moment the first window exists, so that shuffling happens somewhere
+you're not working, and puts that monitor back to whatever it was showing once
+the build is done. `--focus` (and `canaveral-goto` / clicking a bar's slot)
+explicitly pulls the workspace back onto whichever monitor you're currently on
+before switching to it. On a single-monitor machine there's nowhere to hide the
+work, so it briefly flashes your current workspace and restores it afterwards
 instead.
+
+This is bounded, not invisible: keyboard focus does travel to the build monitor
+while the layout is applied — a quarter of a second or so for two windows —
+because Hyprland will only lay windows out relative to whichever one is
+focused. It is put back where it was afterwards, on both monitors.
 
 ## Status bar integration
 

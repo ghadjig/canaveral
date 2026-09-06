@@ -227,7 +227,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "canaveral - one workspace per feature")
 	fmt.Fprintln(w, "\nUsage:")
 	fmt.Fprintln(w, "  canaveral new <feature>    create a feature workspace")
-	fmt.Fprintln(w, "  canaveral <feature>        reconcile an existing feature, then focus it")
+	fmt.Fprintln(w, "  canaveral <feature>        reconcile an existing feature, in the background")
 	fmt.Fprintln(w, "  canaveral <command> ...")
 	fmt.Fprintln(w, "  canaveral -C <project> ... run a command against a project from anywhere")
 	fmt.Fprintln(w, "\nCommands:")

@@ -12,6 +12,43 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Changed**
+
+- The quickshell launcher no longer appends `--focus` to what it runs.
+
+  Opening has always been a background operation everywhere else, on the
+  reasoning that you fire a build off and carry on; the launcher took the
+  opposite view and added the flag on your behalf for `open`, `new` and any
+  space. So the one path most people actually open things through was the one
+  path that threw you at a workspace whose windows were still arriving.
+  `--focus` still works, typed on the line, from the launcher as from a
+  terminal.
+
+**Fixed**
+
+- Opening a feature in the background no longer leaves your second monitor
+  showing it.
+
+  The layout chain moves the new workspace to a monitor you are not working on
+  so the focus shuffling it needs happens out of your way, but nothing ever
+  moved that monitor back — it was left parked on the workspace canaveral had
+  just built, silently replacing whatever had been there. It is now returned
+  to what it was displaying, as is keyboard focus.
+
+  Keyboard focus does still travel to that monitor while the layout is
+  applied, measured at about a quarter of a second for two windows, because
+  Hyprland will only lay windows out relative to the focused one. The source
+  claimed otherwise; sampling `hyprctl monitors` through a build showed the
+  claim was wrong, and the comments saying so have been corrected.
+
+- Restoring your view after a build could invent a workspace instead of
+  returning to one. Hyprland's `name:` selector always means a *named*
+  workspace, so switching back to plain workspace `4` dispatched `name:4` and
+  got a second workspace that merely prints as "4", at a negative ID, while
+  the real one sat untouched. Numeric names are now dispatched as bare IDs.
+
 ## v0.8.5 — 2026-09-06
 
 **Fixed**

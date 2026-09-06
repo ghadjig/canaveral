@@ -298,12 +298,15 @@ func ActiveMonitor(ctx context.Context) (Monitor, error) {
 // focused one, and false if there is only a single monitor.
 //
 // Used to build a feature's layout somewhere other than the monitor the user
-// is actually looking at: confirmed empirically that focusing a window (which
-// splitratio and preselect both require) only changes what is displayed on
-// that window's own monitor, and does not steal keyboard focus away from
-// wherever the user actually has it. Building on a monitor they are not
-// using leaves their real screen completely undisturbed for the whole
-// operation, not just restored afterwards.
+// is actually looking at, so that the preselect/splitratio focus shuffling
+// plays out on a screen they are not working on.
+//
+// It does not make that shuffling invisible. Focusing a window on this
+// monitor does move keyboard focus here — measured at roughly a quarter of a
+// second for a two-window layout — so the caller is responsible for putting
+// both the focus and this monitor's displayed workspace back afterwards. An
+// earlier version of this comment claimed focus was never stolen; sampling
+// `hyprctl monitors` through a build showed otherwise.
 func SecondaryMonitor(ctx context.Context) (Monitor, bool, error) {
 	ms, err := Monitors(ctx)
 	if err != nil {
@@ -495,13 +498,56 @@ func EnsureRules(ctx context.Context) error {
 	return nil
 }
 
-// Focus switches to a feature's workspace.
+// workspaceArg renders a workspace name as an argument to the `workspace`
+// dispatcher.
+//
+// Hyprland's `name:` selector always means a *named* workspace, so `name:4`
+// does not switch to workspace 4 — it creates a second workspace that merely
+// prints as "4", at a negative ID, alongside the real one. Numeric names
+// therefore have to go through as bare IDs. Confirmed empirically:
+// `dispatch workspace name:7` produced id -1351 named "7" while the numeric
+// 7 sat untouched.
+//
+// This matters because not every workspace canaveral switches to is one of
+// its own: restoring the view after a build returns the user to whatever
+// they were on, which is usually a plain number.
+func workspaceArg(name string) string {
+	if _, err := strconv.Atoi(name); err == nil {
+		return name
+	}
+	return "name:" + name
+}
+
+// Focus switches to a workspace, following it to whichever monitor owns it.
+//
+// Confirmed empirically: dispatching a workspace that belongs to another
+// monitor moves focus to that monitor rather than dragging the workspace
+// across, which is what makes this usable as a "put the user back where they
+// were" primitive.
 func Focus(ctx context.Context, workspace string) error {
-	cmd := exec.CommandContext(ctx, "hyprctl", "dispatch", "workspace", "name:"+workspace)
+	cmd := exec.CommandContext(ctx, "hyprctl", "dispatch", "workspace", workspaceArg(workspace))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("focus %s: %w: %s", workspace, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// ShowWorkspaceOnMonitor makes a monitor display the given workspace again.
+//
+// Keyboard focus is left on that monitor, since the dispatcher cannot change
+// what an unfocused monitor shows without focusing it first. Callers that
+// care where focus ends up are expected to follow this with Focus.
+func ShowWorkspaceOnMonitor(ctx context.Context, monitor, workspace string) error {
+	if err := focusMonitor(ctx, monitor); err != nil {
+		return fmt.Errorf("show %s on %s: %w", workspace, monitor, err)
+	}
+	cmd := exec.CommandContext(ctx, "hyprctl", "dispatch", "workspace", workspaceArg(workspace))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("show %s on %s: %w: %s", workspace, monitor, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }

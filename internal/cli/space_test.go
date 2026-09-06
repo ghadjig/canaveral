@@ -176,8 +176,9 @@ func TestLauncherMarksAFullySpelledSpaceAsRunnable(t *testing.T) {
 	if !c.Space || c.Project != "3d-printing" {
 		t.Errorf("Space=%v Project=%q, want the line marked runnable", c.Space, c.Project)
 	}
-	// "open" is what makes the launcher append --focus: going there is the
-	// entire intent of opening one from a hotkey.
+	// The command a bare space name resolves to. The launcher no longer
+	// appends --focus off the back of this, but it still needs the verb
+	// named rather than inferred from the highlighted row.
 	if c.Command != "open" {
 		t.Errorf("Command = %q, want open", c.Command)
 	}
