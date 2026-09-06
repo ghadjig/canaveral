@@ -16,6 +16,19 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 **Fixed**
 
+- Closing the terminal a launch is running in now tears down what that launch
+  had started, instead of orphaning it.
+
+  canaveral caught SIGINT and SIGTERM but not SIGHUP, so closing the window
+  killed it outright — no deferred cleanup, and the services it had already
+  started stayed up holding the feature's ports with nothing left that knew
+  about them. Ctrl-C had always handled this correctly; the difference between
+  the two was invisible from the outside and easy to hit, since a launch slow
+  enough to walk away from is exactly the one whose terminal gets closed.
+
+  SIGHUP already ignored on entry is left alone, so `nohup canaveral new ...`
+  still means what it says.
+
 - A step slow enough to matter now says so while it runs, instead of going
   silent until it either finishes or times out.
 
