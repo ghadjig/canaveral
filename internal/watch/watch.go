@@ -65,6 +65,12 @@ type Progress struct {
 	Total  int       `json:"total"`
 	Since  time.Time `json:"since"`
 	Detail string    `json:"detail,omitempty"`
+	// LastLine is the service's most recent log line, cleaned of ANSI escapes
+	// and truncated. Detail says whether the log is moving; this says where it
+	// has got to, which during a long silent step is the more useful of the
+	// two. Refreshed roughly every ten seconds, so it is current rather than
+	// live: a consumer should not animate it as though every line arrives.
+	LastLine string `json:"last_line,omitempty"`
 }
 
 // rank orders statuses by urgency for sorting and for picking the single
@@ -374,11 +380,12 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			out.Status = StatusRemoving
 		}
 		out.Progress = &Progress{
-			Label:  f.PhaseLabel,
-			Step:   f.PhaseStep,
-			Total:  f.PhaseTotal,
-			Since:  f.PhaseSince,
-			Detail: f.PhaseDetail,
+			Label:    f.PhaseLabel,
+			Step:     f.PhaseStep,
+			Total:    f.PhaseTotal,
+			Since:    f.PhaseSince,
+			Detail:   f.PhaseDetail,
+			LastLine: f.PhaseLine,
 		}
 	}
 	switch {

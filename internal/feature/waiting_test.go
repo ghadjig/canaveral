@@ -185,3 +185,128 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestLastLineReturnsTheMostRecentCompleteLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	if err := os.WriteFile(path, []byte("first\nsecond\nthird\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := watchLog(path).lastLine(); got != "third" {
+		t.Errorf("lastLine() = %q, want %q", got, "third")
+	}
+}
+
+// devspace colours nearly every line it prints. These bytes reach a status bar
+// as JSON, where they render as literal garbage rather than as colour.
+func TestLastLineStripsANSIEscapes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	body := "\x1b[0;32m[info]\x1b[0m Running bundle install...\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := watchLog(path).lastLine()
+	if strings.ContainsRune(got, '\x1b') {
+		t.Errorf("lastLine() = %q, still carries escape bytes", got)
+	}
+	if got != "[info] Running bundle install..." {
+		t.Errorf("lastLine() = %q", got)
+	}
+}
+
+// A service caught mid-write has bytes after the final newline. Showing half a
+// line, then the other half ten seconds later, reads as corruption.
+func TestLastLineIgnoresAPartiallyWrittenLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	if err := os.WriteFile(path, []byte("complete line\npartial with no newl"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := watchLog(path).lastLine(); got != "complete line" {
+		t.Errorf("lastLine() = %q, want the last COMPLETE line", got)
+	}
+}
+
+func TestLastLineSkipsBlankTrailingLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	if err := os.WriteFile(path, []byte("something happened\n\n   \n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := watchLog(path).lastLine(); got != "something happened" {
+		t.Errorf("lastLine() = %q, want the last line with content in it", got)
+	}
+}
+
+// Only the end of the file is read: this is sampled every beat, and a devspace
+// log with the pod's output streamed into it runs to megabytes.
+func TestLastLineReadsOnlyTheTailOfALargeLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	big := strings.Repeat("noise line that is here only to make the file large\n", 40000)
+	if err := os.WriteFile(path, []byte(big+"the last word\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Size() < tailBytes*10 {
+		t.Fatalf("test log is not big enough to exercise the tail read")
+	}
+	if got := watchLog(path).lastLine(); got != "the last word" {
+		t.Errorf("lastLine() = %q", got)
+	}
+}
+
+func TestLastLineTruncatesARunawayLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "svc.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 4000)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := watchLog(path).lastLine()
+	if n := len([]rune(got)); n > maxLineRunes+1 {
+		t.Errorf("lastLine() is %d runes, want it capped near %d", n, maxLineRunes)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("lastLine() = %q, want a truncation marker", got)
+	}
+}
+
+func TestLastLineIsEmptyWithoutALog(t *testing.T) {
+	if got := watchLog(filepath.Join(t.TempDir(), "absent.log")).lastLine(); got != "" {
+		t.Errorf("lastLine() = %q, want empty", got)
+	}
+	if got := watchLog("").lastLine(); got != "" {
+		t.Errorf("lastLine() with no path = %q, want empty", got)
+	}
+}
+
+// The status bar and the terminal have different readers and different
+// tolerances, so the record is refreshed more often than a line is printed.
+func TestWhileWaitingBeatsMoreOftenThanItPrints(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	shortBeat(t, 5*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "svc.log")
+	if err := os.WriteFile(path, []byte("Running bundle install...\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recordingReporter{}
+	f := &state.Feature{Project: "p", Name: "f"}
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
+	prog.start("service slow")
+
+	if err := whileWaiting(r, prog, "slow", time.Minute, path, func() error {
+		time.Sleep(120 * time.Millisecond)
+		return nil
+	}); err != nil {
+		t.Fatalf("whileWaiting: %v", err)
+	}
+
+	if f.PhaseLine != "Running bundle install..." {
+		t.Errorf("PhaseLine = %q, want the log's last line on the record", f.PhaseLine)
+	}
+	// ~24 beats in 120ms at a 5ms interval, so a 1:1 cadence would print far
+	// more than a third of them.
+	beats := 120 / 5
+	if got := r.count(); got > beats/2 {
+		t.Errorf("printed %d lines for roughly %d beats; the terminal is being written as often as the record", got, beats)
+	}
+	if r.count() == 0 {
+		t.Error("printed nothing at all: the terminal still needs its line")
+	}
+}

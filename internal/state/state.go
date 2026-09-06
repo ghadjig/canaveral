@@ -95,6 +95,16 @@ type Feature struct {
 	// lets the owner keep the record fresh without disturbing the clock a
 	// human is reading.
 	PhaseBeat time.Time `json:"phase_beat,omitempty"`
+	// PhaseLine is the service's most recent log line, refreshed with
+	// PhaseBeat.
+	//
+	// PhaseDetail says whether the log is moving; this says where it has got
+	// to. "Waiting for pod to become ready", "Running bundle install",
+	// "[2/5] Resolving packages" — during the long silent stretches of a boot
+	// that is the difference between knowing it is alive and knowing what it
+	// is doing. Stripped of ANSI escapes and truncated, because it is bound
+	// for a JSON consumer that would render the escapes as literal noise.
+	PhaseLine string `json:"phase_line,omitempty"`
 	// PhaseDetail is a short, human-facing note about what the current step is
 	// doing — "log +18.4K", "log quiet for 47s" — refreshed with PhaseBeat.
 	//
@@ -686,23 +696,34 @@ func (f *Feature) SetPhase(phase, label string, step, total int) error {
 	// Cleared, not carried: the detail belongs to the step that produced it,
 	// and "log quiet for 4m" left over the top of the next step would be a
 	// statement about the wrong thing.
-	f.PhaseDetail = ""
+	f.PhaseDetail, f.PhaseLine = "", ""
 	f.PhasePID = os.Getpid()
 	return Save(f)
 }
 
+// PhaseNote is what a heartbeat says about the step it is keeping alive.
+//
+// A struct rather than a pair of strings because both are short, optional and
+// easily transposed at a call site, and there is every chance of a third.
+type PhaseNote struct {
+	// Detail summarises whether the step is progressing: "log +18.4K".
+	Detail string
+	// Line is the service's most recent log line, already cleaned for display.
+	Line string
+}
+
 // BeatPhase refreshes the phase's liveness without moving the step's clock,
-// for a step slow enough to outlast StalePhaseAfter on its own. detail is a
-// short note on what the step is doing, or empty to leave it unsaid.
+// for a step slow enough to outlast StalePhaseAfter on its own.
 //
 // A no-op outside a phase, so a caller blocking on something that turned out
 // not to be part of one writes nothing.
-func (f *Feature) BeatPhase(detail string) error {
+func (f *Feature) BeatPhase(n PhaseNote) error {
 	if f.Phase == "" {
 		return nil
 	}
 	f.PhaseBeat = time.Now()
-	f.PhaseDetail = detail
+	f.PhaseDetail = n.Detail
+	f.PhaseLine = n.Line
 	f.PhasePID = os.Getpid()
 	return Save(f)
 }
@@ -727,6 +748,6 @@ func (f *Feature) ResetPhase() {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
 	f.PhaseSince = time.Time{}
 	f.PhaseBeat = time.Time{}
-	f.PhaseDetail = ""
+	f.PhaseDetail, f.PhaseLine = "", ""
 	f.PhasePID = 0
 }

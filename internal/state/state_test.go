@@ -835,7 +835,7 @@ func TestBeatPhaseRefreshesLivenessWithoutMovingTheStepsClock(t *testing.T) {
 	since := f.PhaseSince
 
 	time.Sleep(2 * time.Millisecond)
-	if err := f.BeatPhase("log +4.0K"); err != nil {
+	if err := f.BeatPhase(PhaseNote{Detail: "log +4.0K"}); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 
@@ -861,7 +861,7 @@ func TestBeatPhaseIsANoOpOutsideAPhase(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	f := &Feature{Project: "p", Name: "f"}
-	if err := f.BeatPhase("log +4.0K"); err != nil {
+	if err := f.BeatPhase(PhaseNote{Detail: "log +4.0K"}); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 	if !f.PhaseBeat.IsZero() {
@@ -876,7 +876,7 @@ func TestClearPhaseClearsTheHeartbeatToo(t *testing.T) {
 	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
 		t.Fatalf("SetPhase: %v", err)
 	}
-	if err := f.BeatPhase("log +4.0K"); err != nil {
+	if err := f.BeatPhase(PhaseNote{Detail: "log +4.0K"}); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 	if err := f.ClearPhase(); err != nil {
@@ -897,7 +897,7 @@ func TestBeatPhaseCarriesTheDetailToReadersThatCannotSeeIt(t *testing.T) {
 	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
 		t.Fatalf("SetPhase: %v", err)
 	}
-	if err := f.BeatPhase("log +18.4K"); err != nil {
+	if err := f.BeatPhase(PhaseNote{Detail: "log +18.4K"}); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 
@@ -920,7 +920,7 @@ func TestSetPhaseDropsThePreviousStepsDetail(t *testing.T) {
 	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
 		t.Fatalf("SetPhase: %v", err)
 	}
-	if err := f.BeatPhase("log quiet for 4m0s"); err != nil {
+	if err := f.BeatPhase(PhaseNote{Detail: "log quiet for 4m0s"}); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 	if err := f.SetPhase(PhaseBooting, "agent main", 3, 8); err != nil {
