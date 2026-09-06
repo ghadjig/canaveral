@@ -226,12 +226,50 @@ func (d Discover) Names() []string {
 
 // Ready describes a readiness probe. At most one check kind may be set.
 type Ready struct {
-	HTTP    string   `toml:"http"`
-	TCP     string   `toml:"tcp"`
-	Log     string   `toml:"log"`
-	Cmd     string   `toml:"cmd"`
-	Timeout Duration `toml:"timeout"`
-	Status  int      `toml:"status"`
+	// HTTP requests a URL until it answers. Convenient, and a trap for any
+	// service whose port is a tunnel rather than a local socket.
+	//
+	// canaveral disables HTTP keep-alives, so every attempt is a fresh
+	// connection, and behind `kubectl port-forward` a connection is a stream
+	// pair on one SPDY session — whether it succeeds or is refused because
+	// nothing is listening yet. The retry schedule then works against you:
+	// it starts at 300ms and takes about fifteen seconds to reach its five
+	// second ceiling, so the probe is at its fastest exactly when the tunnel
+	// is newest and the application is furthest from answering. Observed
+	// against devspace, this exhausted the forwarder:
+	//
+	//	ports Restarting because: error creating error stream for port 3055 -> 3000: Timeout occurred
+	//
+	// which takes the port down rather than bringing it up, in two of five
+	// consecutive runs. In the clearest of them the forward died before the
+	// initial file sync had finished, so the probe was the only client that
+	// could have been responsible.
+	//
+	// For anything tunnelled, prefer Log or LogMatch: the service is already
+	// writing a log canaveral is already capturing, and reading it costs the
+	// tunnel nothing. The same devspace launch went from restarting its
+	// forward to zero restarts, and the marker it waits for turned out to
+	// land four seconds before the application served its first request.
+	HTTP string `toml:"http"`
+	TCP  string `toml:"tcp"`
+	// Log waits for a literal substring in the service's log.
+	Log string `toml:"log"`
+	// LogMatch waits for a regular expression to match the service's log.
+	//
+	// Prefer Log when a fixed string will do — it cannot be got subtly wrong,
+	// and most "wait for the banner" markers are fixed strings. LogMatch is
+	// for a marker that carries something variable in it: a port, a pod name,
+	// a duration.
+	//
+	// Matched against the whole log, not line by line, so `^` and `$` mean
+	// start and end of the file unless you ask for multi-line with `(?m)`.
+	// Not treated as a template, unlike HTTP and TCP: `{` and `}` are
+	// repetition syntax in a regular expression, and a `{{.Port.web}}` inside
+	// one is ambiguous to a reader before it is ambiguous to a parser.
+	LogMatch string   `toml:"log_match"`
+	Cmd      string   `toml:"cmd"`
+	Timeout  Duration `toml:"timeout"`
+	Status   int      `toml:"status"`
 }
 
 // Kind reports which probe type is configured, or "" when the probe is empty.
@@ -243,10 +281,36 @@ func (r Ready) Kind() string {
 		return "tcp"
 	case r.Log != "":
 		return "log"
+	case r.LogMatch != "":
+		return "log_match"
 	case r.Cmd != "":
 		return "cmd"
 	}
 	return ""
+}
+
+// kinds lists every check kind this probe sets, for the "at most one" rule.
+//
+// Kind alone cannot enforce it: it picks the first field it finds, so a
+// manifest setting both http and log would silently get http and no warning
+// that the other line does nothing.
+func (r Ready) kinds() []string {
+	var out []string
+	for _, k := range []struct {
+		name string
+		set  bool
+	}{
+		{"ready.http", r.HTTP != ""},
+		{"ready.tcp", r.TCP != ""},
+		{"ready.log", r.Log != ""},
+		{"ready.log_match", r.LogMatch != ""},
+		{"ready.cmd", r.Cmd != ""},
+	} {
+		if k.set {
+			out = append(out, k.name)
+		}
+	}
+	return out
 }
 
 // Agent is a coding agent canaveral runs for a feature.
@@ -611,8 +675,32 @@ func (m *Manifest) normalizeServices() error {
 		if s.Ready.Status == 0 {
 			s.Ready.Status = 200
 		}
+		if err := validateReady(s); err != nil {
+			return err
+		}
 		if err := m.validateDiscover(s); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateReady checks one service's [ready] block.
+//
+// Both checks fail late and badly when left to run time. A second check kind
+// is simply ignored — Kind returns the first field it finds — so a manifest
+// that says both `ready.http` and `ready.log` waits on one of them and gives
+// no sign that the other line is dead. A regexp that will not compile becomes
+// a readiness timeout minutes into a boot, blamed on the service, rather than
+// a parse error before anything starts.
+func validateReady(s *Service) error {
+	if set := s.Ready.kinds(); len(set) > 1 {
+		return fmt.Errorf("service %q: set one readiness check, not %d (%s)",
+			s.Name, len(set), strings.Join(set, ", "))
+	}
+	if s.Ready.LogMatch != "" {
+		if _, err := regexp.Compile(s.Ready.LogMatch); err != nil {
+			return fmt.Errorf("service %q: ready.log_match is not a valid regular expression: %w", s.Name, err)
 		}
 	}
 	return nil

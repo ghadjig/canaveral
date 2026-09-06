@@ -180,3 +180,67 @@ func TestWaitBacksOffBetweenAttempts(t *testing.T) {
 		t.Errorf("hits = %d, probe should still retry", hits.Load())
 	}
 }
+
+func TestWaitLogMatchProbe(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+	if err := os.WriteFile(logPath, []byte("booting\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		// The port is what a fixed substring could not have waited for.
+		_ = os.WriteFile(logPath, []byte("booting\nListening on 0.0.0.0:34871\n"), 0o644)
+	}()
+
+	r := manifest.Ready{LogMatch: `Listening on \S+:\d+`}
+	r.Timeout.Duration = 5 * time.Second
+	if err := Wait(context.Background(), r, dir, logPath, nil); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
+// The whole file, not line by line, so a caller wanting line anchors has to
+// say (?m) — and one who does must still get them.
+func TestWaitLogMatchHonoursMultilineAnchors(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+	if err := os.WriteFile(logPath, []byte("prefix: Ready\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	anchored := manifest.Ready{LogMatch: `(?m)^Ready$`}
+	anchored.Timeout.Duration = 250 * time.Millisecond
+	if err := Wait(context.Background(), anchored, dir, logPath, nil); err == nil {
+		t.Error("^Ready$ matched a line that is not the whole line")
+	}
+
+	if err := os.WriteFile(logPath, []byte("prefix: no\nReady\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	anchored.Timeout.Duration = 5 * time.Second
+	if err := Wait(context.Background(), anchored, dir, logPath, nil); err != nil {
+		t.Errorf("Wait: %v", err)
+	}
+}
+
+// A pattern that cannot compile is the caller's mistake and must be reported
+// as such, immediately — not sat on for the whole timeout and then blamed on
+// the service for never becoming ready. The manifest rejects these at parse
+// time, so reaching here means a Ready built in code.
+func TestWaitRejectsAnUncompilableLogMatchAtOnce(t *testing.T) {
+	r := manifest.Ready{LogMatch: "^(Listening"}
+	r.Timeout.Duration = time.Hour
+
+	start := time.Now()
+	err := Wait(context.Background(), r, t.TempDir(), "/nonexistent", nil)
+	if err == nil {
+		t.Fatal("an invalid pattern was accepted")
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Error("reported as a readiness timeout rather than a bad pattern")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("took %s to reject an invalid pattern; it should not have waited at all", d)
+	}
+}

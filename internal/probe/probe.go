@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -60,6 +61,17 @@ func Wait(ctx context.Context, r manifest.Ready, dir, logPath string, alive Aliv
 		return nil
 	}
 
+	// Built once, not per attempt: a log_match probe would otherwise recompile
+	// its pattern on every one of the hundreds a long wait makes, and a
+	// pattern that cannot compile would be reported as a readiness timeout
+	// minutes later instead of immediately. The manifest rejects a bad one
+	// before anything starts, so reaching that error here means a caller
+	// built a Ready by hand.
+	attempt, err := checker(r, dir, logPath)
+	if err != nil {
+		return err
+	}
+
 	timeout := r.Timeout.Or(DefaultTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -73,7 +85,7 @@ func Wait(ctx context.Context, r manifest.Ready, dir, logPath string, alive Aliv
 				return err
 			}
 		}
-		if err := check(ctx, r, dir, logPath); err == nil {
+		if err := attempt(ctx); err == nil {
 			return nil
 		} else if lastErr == nil || ctx.Err() == nil {
 			// Past the deadline, check fails with the context's own error,
@@ -116,54 +128,90 @@ var client = &http.Client{
 	},
 }
 
-func check(ctx context.Context, r manifest.Ready, dir, logPath string) error {
+// checker builds the single-attempt check for a probe.
+//
+// A constructor rather than a function called per attempt, so one-off work —
+// compiling a log_match pattern — happens once and its failure is reported
+// before the first attempt rather than as a timeout after the last.
+func checker(r manifest.Ready, dir, logPath string) (func(context.Context) error, error) {
 	switch r.Kind() {
 	case "http":
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.HTTP, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		want := r.Status
-		if want == 0 {
-			want = 200
-		}
-		// Treat any non-5xx as ready when the caller asked for the default 200
-		// but the app redirects (very common for Rails root paths).
-		if resp.StatusCode == want || (want == 200 && resp.StatusCode < 500) {
-			return nil
-		}
-		return fmt.Errorf("got status %d, want %d", resp.StatusCode, want)
+		return func(ctx context.Context) error { return checkHTTP(ctx, r) }, nil
 
 	case "tcp":
-		d := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", r.TCP)
-		if err != nil {
-			return err
-		}
-		return conn.Close()
+		return func(ctx context.Context) error { return checkTCP(ctx, r) }, nil
 
 	case "log":
-		b, err := os.ReadFile(logPath)
+		return func(context.Context) error {
+			b, err := os.ReadFile(logPath)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(b), r.Log) {
+				return nil
+			}
+			return fmt.Errorf("log does not yet contain %q", r.Log)
+		}, nil
+
+	case "log_match":
+		re, err := regexp.Compile(r.LogMatch)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("ready.log_match: %w", err)
 		}
-		if strings.Contains(string(b), r.Log) {
-			return nil
-		}
-		return fmt.Errorf("log does not yet contain %q", r.Log)
+		return func(context.Context) error {
+			b, err := os.ReadFile(logPath)
+			if err != nil {
+				return err
+			}
+			// Against the whole file rather than line by line: a marker worth
+			// waiting for is occasionally spread over more than one line, and
+			// a caller that wants line anchors can ask for them with (?m).
+			if re.Match(b) {
+				return nil
+			}
+			return fmt.Errorf("log does not yet match %q", r.LogMatch)
+		}, nil
 
 	case "cmd":
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", r.Cmd)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-		}
+		return func(ctx context.Context) error {
+			cmd := exec.CommandContext(ctx, "/bin/sh", "-c", r.Cmd)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}, nil
+	}
+	return func(context.Context) error { return nil }, nil
+}
+
+func checkHTTP(ctx context.Context, r manifest.Ready) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.HTTP, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	want := r.Status
+	if want == 0 {
+		want = 200
+	}
+	// Treat any non-5xx as ready when the caller asked for the default 200
+	// but the app redirects (very common for Rails root paths).
+	if resp.StatusCode == want || (want == 200 && resp.StatusCode < 500) {
 		return nil
 	}
-	return nil
+	return fmt.Errorf("got status %d, want %d", resp.StatusCode, want)
+}
+
+func checkTCP(ctx context.Context, r manifest.Ready) error {
+	d := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", r.TCP)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
