@@ -192,7 +192,7 @@ type Feature struct {
 	// bar can list these apart from the features you can actually look at:
 	// they carry the same agent and git detail, but no slot number, because
 	// there is no workspace worth jumping to. Always paired with ws_slot 0.
-	Headless bool   `json:"headless,omitempty"`
+	Headless bool `json:"headless,omitempty"`
 	// Space marks a workspace with no project behind it — no repository, no
 	// worktree, no branch, just the windows and units its definition
 	// declares. Emitted for the same reason as Headless: a status bar wants
