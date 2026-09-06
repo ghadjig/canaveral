@@ -12,7 +12,7 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## v0.8.8 — 2026-09-06
+## v0.8.9 — 2026-09-06
 
 **Fixed**
 
@@ -62,6 +62,10 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   last sign of life rather than from the start of the work, so a long step
   stays visible for as long as something is advancing it and a step whose
   owner died is disbelieved exactly as promptly as before.
+
+## v0.8.8 — 2026-09-06
+
+**Fixed**
 
 - A progress bar no longer freezes on the last window when the run behind it
   dies.
