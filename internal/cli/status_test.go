@@ -486,7 +486,7 @@ func TestAgentSummaryLineOmitsPromptTimerWhenIdle(t *testing.T) {
 
 func TestRunStatusReportsNoFeaturesYet(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "no-features-yet"))
 
 	out := captureStdout(t, func() {
@@ -501,7 +501,7 @@ func TestRunStatusReportsNoFeaturesYet(t *testing.T) {
 
 func TestRunStatusJSONReportsNoFeaturesYetAsEmptyArray(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "no-features-json"))
 
 	out := captureStdout(t, func() {
@@ -516,7 +516,7 @@ func TestRunStatusJSONReportsNoFeaturesYetAsEmptyArray(t *testing.T) {
 
 func TestRunStatusListsANamedFeature(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "status-named", "small-fixes"))
 
 	out := captureStdout(t, func() {
@@ -531,7 +531,7 @@ func TestRunStatusListsANamedFeature(t *testing.T) {
 
 func TestRunStatusUnknownFeatureErrors(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "status-unknown"))
 
 	err := runStatus(context.Background(), []string{"does-not-exist"})
@@ -542,7 +542,7 @@ func TestRunStatusUnknownFeatureErrors(t *testing.T) {
 
 func TestResolveStatusTargetsDefaultsToTheWholeProject(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "status-targets", "a", "b"))
 
 	got, err := resolveStatusTargets(nil, false)
@@ -556,7 +556,7 @@ func TestResolveStatusTargetsDefaultsToTheWholeProject(t *testing.T) {
 
 func TestRunLsReportsNoFeaturesYet(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "ls-no-features"))
 
 	out := captureStdout(t, func() {
@@ -571,7 +571,7 @@ func TestRunLsReportsNoFeaturesYet(t *testing.T) {
 
 func TestRunLsNamesOnlyPrintsOneNamePerLine(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "ls-names", "small-fixes", "onboarding/step1"))
 
 	out := captureStdout(t, func() {
@@ -591,7 +591,7 @@ func TestRunLsNamesOnlyPrintsOneNamePerLine(t *testing.T) {
 
 func TestRunLsListsAFeatureWithItsPorts(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	root := completeProject(t, "ls-feature")
 	f := &state.Feature{
 		Project: "ls-feature", Name: "small-fixes", Root: root, Branch: "small-fixes",
@@ -618,7 +618,7 @@ func TestRunLsListsAFeatureWithItsPorts(t *testing.T) {
 
 func TestRunLsAllCoversEveryProject(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	completeProject(t, "ls-all-a", "one")
 	root := completeProject(t, "ls-all-b", "two")
 	t.Chdir(root)

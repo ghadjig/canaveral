@@ -12,7 +12,7 @@ import (
 func TestRestartTargetTreatsKnownServiceAsService(t *testing.T) {
 	// No feature state exists, so a named feature cannot resolve; the point
 	// is that "web" is recognised as a service and never tried as a feature.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 
 	m := &manifest.Manifest{
@@ -28,7 +28,7 @@ func TestRestartTargetTreatsKnownServiceAsService(t *testing.T) {
 }
 
 func TestRestartTargetUnknownFirstArgIsAFeature(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 
 	m := &manifest.Manifest{
@@ -58,7 +58,7 @@ func TestRestartTargetUnknownFirstArgIsAFeature(t *testing.T) {
 }
 
 func TestRestartTargetRefusesAmbiguousName(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 
 	m := &manifest.Manifest{
@@ -86,7 +86,7 @@ func TestRunRestartRequiresAtLeastOneService(t *testing.T) {
 
 func TestRunRestartPropagatesAnUnresolvableTarget(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "restart-unresolvable"))
 
 	// "does-not-exist" is neither a declared service (completeProject's

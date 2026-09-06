@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+// isolateDirs points both directories a command reads ambiently — state and
+// config — at empty scratch ones.
+//
+// Every test in this package needs both, not whichever one its own fixture
+// obviously touches. The suite runs inside a live canaveral worktree, so the
+// real XDG_STATE_HOME is full of the machine's features, stashes and launcher
+// history, and the real XDG_CONFIG_HOME is full of its spaces.
+//
+// Isolating them together is the point. Most of these tests set only
+// XDG_STATE_HOME, which was complete until `canaveral space` gave the config
+// directory a say in what a bare name resolves to; from then on
+// TestCompleteOffersHistoryAfterProjectsAtTheFirstWord passed or failed
+// depending on whether the developer running it happened to have defined a
+// space. One helper, so the next lookup added to a command cannot reach real
+// state either. See AGENTS.md.
+func isolateDirs(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
+
 func TestParseArgsInterspersed(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	url := fs.Bool("url", false, "")

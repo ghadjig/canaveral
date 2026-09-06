@@ -50,7 +50,7 @@ func kinds(c completion) map[string]string {
 }
 
 func TestCompleteFirstWordOffersCommandsAndExistingFeaturesOnly(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "small-fixes")
 
@@ -79,7 +79,7 @@ func TestCompleteFirstWordOffersCommandsAndExistingFeaturesOnly(t *testing.T) {
 }
 
 func TestCompleteNewOffersCreationAndNotExistingFeatures(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "small-fixes", "workflows/one")
 
@@ -107,7 +107,7 @@ func TestCompleteNewOffersCreationAndNotExistingFeatures(t *testing.T) {
 }
 
 func TestCompleteNewOffersNamespacesWithNoFeaturesLeft(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 
@@ -138,7 +138,7 @@ func TestCompleteNewOffersNamespacesWithNoFeaturesLeft(t *testing.T) {
 }
 
 func TestCompleteNewNarrowsIntoAFeaturelessNamespace(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 
@@ -176,7 +176,7 @@ func TestCompleteNewNarrowsIntoAFeaturelessNamespace(t *testing.T) {
 }
 
 func TestCompleteNewSlugsTheNameItWillActuallyCreate(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 
@@ -189,7 +189,7 @@ func TestCompleteNewSlugsTheNameItWillActuallyCreate(t *testing.T) {
 }
 
 func TestCompleteFeaturesOneNamespaceSegmentAtATime(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "flat", "workflows/one", "workflows/two")
 
@@ -223,7 +223,7 @@ func TestCompleteFeaturesOneNamespaceSegmentAtATime(t *testing.T) {
 }
 
 func TestCompleteMarksDestructiveCommands(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "flat")
 
@@ -236,7 +236,7 @@ func TestCompleteMarksDestructiveCommands(t *testing.T) {
 }
 
 func TestCompleteDoesNotCountFlagsAsPositionalArguments(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "flat")
 
@@ -249,7 +249,7 @@ func TestCompleteDoesNotCountFlagsAsPositionalArguments(t *testing.T) {
 }
 
 func TestCompleteOffersFlagsForAWordStartingWithDash(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 
@@ -263,7 +263,7 @@ func TestCompleteOffersFlagsForAWordStartingWithDash(t *testing.T) {
 }
 
 func TestCompleteSecondArgumentDependsOnTheCommand(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "flat")
 
@@ -282,7 +282,7 @@ func TestCompleteSecondArgumentDependsOnTheCommand(t *testing.T) {
 }
 
 func TestCompleteFallsBackToSubstringMatching(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "insurance-claims")
 
@@ -296,7 +296,7 @@ func TestCompleteFallsBackToSubstringMatching(t *testing.T) {
 }
 
 func TestCompleteReportsAnUnknownProjectInBand(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 
 	// A completer that fails mid-keystroke is useless to a UI, so the problem
@@ -311,7 +311,7 @@ func TestCompleteReportsAnUnknownProjectInBand(t *testing.T) {
 }
 
 func TestCompleteOffersHistoryAfterProjectsAtTheFirstWord(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 	if _, err := registry.Add(root); err != nil {
@@ -332,7 +332,7 @@ func TestCompleteOffersHistoryAfterProjectsAtTheFirstWord(t *testing.T) {
 }
 
 func TestCompleteHistoryVanishesOnceNothingMatchesWhatWasTyped(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 	if _, err := registry.Add(root); err != nil {
@@ -401,7 +401,7 @@ func stashFeature(t *testing.T, project, root, name string, stashedAt time.Time)
 }
 
 func TestCompletePopOffersStashesNewestFirst(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "running")
 	now := time.Now()
@@ -429,7 +429,7 @@ func TestCompletePopOffersStashesNewestFirst(t *testing.T) {
 }
 
 func TestCompleteFirstWordOffersStashesBecauseBareDispatchRestoresThem(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "running")
 	stashFeature(t, "norules", root, "parked", time.Now())
@@ -444,7 +444,7 @@ func TestCompleteNewOffersAStashRatherThanCreatingOverIt(t *testing.T) {
 	// `canaveral new <stashed>` restores rather than refusing, so completion
 	// has to say "this is parked" instead of "create this feature" — the
 	// latter would be describing something that is not going to happen.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 	stashFeature(t, "norules", root, "parked", time.Now())
@@ -463,7 +463,7 @@ func TestCompleteNewOffersAStashRatherThanCreatingOverIt(t *testing.T) {
 
 func TestCompleteRmOffersStashesToo(t *testing.T) {
 	// Stashing something must not be a way to make it undeletable.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "running")
 	stashFeature(t, "norules", root, "parked", time.Now())
@@ -479,7 +479,7 @@ func TestCompleteRmOffersStashesToo(t *testing.T) {
 }
 
 func TestCompleteStashOffersOnlyActiveFeatures(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules", "running")
 	stashFeature(t, "norules", root, "parked", time.Now())
@@ -493,7 +493,7 @@ func TestCompleteStashOffersOnlyActiveFeatures(t *testing.T) {
 func TestCompleteOffersANamespaceHoldingOnlyStashes(t *testing.T) {
 	// A namespace whose features are all parked is still one worth
 	// descending into — its shared skill and its stashes are both in there.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "")
 	root := completeProject(t, "norules")
 	stashFeature(t, "norules", root, "onboarding/step1", time.Now())

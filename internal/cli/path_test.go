@@ -42,7 +42,7 @@ func saveFeature(t *testing.T, project, name string) *state.Feature {
 }
 
 func TestFocusedFeatureFromWorkingDirectory(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	f := saveFeature(t, "norules", "small-fixes")
 
@@ -63,7 +63,7 @@ func TestFocusedFeatureFromWorkingDirectory(t *testing.T) {
 }
 
 func TestFocusedFeatureFromEnvironmentOutsideTheWorktree(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	saveFeature(t, "norules", "small-fixes")
 
@@ -84,7 +84,7 @@ func TestFocusedFeatureFromEnvironmentOutsideTheWorktree(t *testing.T) {
 }
 
 func TestFocusedFeaturePrefersTheDirectoryOverTheEnvironment(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	saveFeature(t, "norules", "from-env")
 	inDir := saveFeature(t, "norules", "from-dir")
@@ -106,7 +106,7 @@ func TestFocusedFeaturePrefersTheDirectoryOverTheEnvironment(t *testing.T) {
 }
 
 func TestFocusedFeatureFindsFeaturesOfAnyProject(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	saveFeature(t, "canaveral", "other")
 	f := saveFeature(t, "norules", "small-fixes")
@@ -125,7 +125,7 @@ func TestFocusedFeatureFindsFeaturesOfAnyProject(t *testing.T) {
 }
 
 func TestFocusedFeatureFailsWhenThereIsNoSignal(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	saveFeature(t, "norules", "small-fixes")
 	t.Chdir(t.TempDir())
@@ -136,7 +136,7 @@ func TestFocusedFeatureFailsWhenThereIsNoSignal(t *testing.T) {
 }
 
 func TestCurrentFeatureIgnoresAnotherProjectsEnvironment(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	saveFeature(t, "canaveral", "elsewhere")
 	t.Chdir(t.TempDir())
@@ -158,7 +158,7 @@ func manifestNamed(name string) *manifest.Manifest {
 }
 
 func TestFeatureFromArgsResolvesByName(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	f := saveFeature(t, "norules", "small-fixes")
 
@@ -172,7 +172,7 @@ func TestFeatureFromArgsResolvesByName(t *testing.T) {
 }
 
 func TestFeatureFromArgsFallsBackToCurrentFeatureWhenNoneNamed(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 	f := saveFeature(t, "norules", "small-fixes")
 	t.Chdir(f.Worktree)
@@ -187,7 +187,7 @@ func TestFeatureFromArgsFallsBackToCurrentFeatureWhenNoneNamed(t *testing.T) {
 }
 
 func TestFeatureFromArgsWrapsAnUnknownName(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	clearFeatureEnv(t)
 
 	_, err := featureFromArgs(manifestNamed("norules"), []string{"does-not-exist"})

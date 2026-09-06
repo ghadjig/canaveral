@@ -77,7 +77,7 @@ func TestOpenFeatureRejectsMultipleNames(t *testing.T) {
 
 func TestOpenFeatureRejectsAReservedName(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "open-reserved"))
 
 	err := openFeature(context.Background(), "new", []string{"status"}, true, false)

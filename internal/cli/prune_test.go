@@ -18,7 +18,7 @@ import (
 // covered directly in internal/unit.
 func TestRunPruneDryRunDoesNotStopAnything(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "prune-dry-run"))
 
 	if err := runPrune(context.Background(), []string{"--dry-run"}); err != nil {
@@ -33,7 +33,7 @@ func TestRunPruneDryRunDoesNotStopAnything(t *testing.T) {
 // internal/feature.
 func TestRunPruneDryRunListsAStuckRemovalWithoutFinishingIt(t *testing.T) {
 	clearFeatureEnv(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	t.Chdir(completeProject(t, "prune-stuck"))
 
 	f := &state.Feature{Project: "prune-stuck", Name: "abandoned", Root: t.TempDir()}

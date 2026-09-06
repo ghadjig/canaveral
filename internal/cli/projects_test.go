@@ -84,7 +84,7 @@ func TestPrintProjectsListTableFlagsAMissingRoot(t *testing.T) {
 func TestRunProjectsForgetReportsNotFoundForADerivedEntry(t *testing.T) {
 	// Mirrors registry.TestForgetADerivedEntryReportsItIsNotInTheFile: a
 	// name that was never recorded must warn, not error.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	out := captureStdout(t, func() {
 		if err := runProjectsForget(reporter{}, "never-recorded"); err != nil {
 			t.Fatal(err)
@@ -96,7 +96,7 @@ func TestRunProjectsForgetReportsNotFoundForADerivedEntry(t *testing.T) {
 }
 
 func TestRunProjectsPruneNoopWhenNothingIsDead(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	out := captureStdout(t, func() {
 		if err := runProjectsPrune(reporter{}); err != nil {
 			t.Fatal(err)
@@ -108,7 +108,7 @@ func TestRunProjectsPruneNoopWhenNothingIsDead(t *testing.T) {
 }
 
 func TestRunProjectsScanReportsNoneFoundUnderAnEmptyDir(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateDirs(t)
 	dir := t.TempDir()
 	out := captureStdout(t, func() {
 		if err := runProjectsScan(reporter{}, dir); err != nil {

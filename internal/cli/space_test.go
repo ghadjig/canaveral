@@ -10,15 +10,6 @@ import (
 	"github.com/bandito/canaveral/internal/state"
 )
 
-// isolateSpaces points both the config and the state directory at scratch
-// ones. Both matter: this suite runs inside a live canaveral worktree, where
-// the real ones are full of the machine's actual spaces and features.
-func isolateSpaces(t *testing.T) {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-}
-
 func TestSpaceNamesAreSlugged(t *testing.T) {
 	// `canaveral space new "3D Printing"` and `canaveral 3d-printing` have to
 	// agree about what was created, or the space is unopenable by the very
@@ -39,7 +30,7 @@ func TestSpaceNamesAreSlugged(t *testing.T) {
 // feature. Whichever it chose, the other would be unreachable by the form
 // actually typed.
 func TestResolveBareNameRefusesOnlyRealAmbiguity(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	m := &manifest.Manifest{Name: "norules"}
 
 	// Neither exists: free for whatever comes next to decide.
@@ -81,7 +72,7 @@ func TestResolveBareNameRefusesOnlyRealAmbiguity(t *testing.T) {
 // A stashed feature still occupies the name: popping it is what bare dispatch
 // would do, so a space must not shadow one.
 func TestResolveBareNameCountsAStashedFeature(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	m := &manifest.Manifest{Name: "norules"}
 	if _, err := space.Create("parked"); err != nil {
 		t.Fatal(err)
@@ -97,7 +88,7 @@ func TestResolveBareNameCountsAStashedFeature(t *testing.T) {
 }
 
 func TestSpaceRecordOnlyMatchesSpaces(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	// A project feature whose name happens to equal its project's must not be
 	// mistaken for a space; only the marker says which it is.
 	if err := state.Save(&state.Feature{Project: "notes", Name: "notes"}); err != nil {
@@ -139,7 +130,7 @@ func TestSplitWorkspaceName(t *testing.T) {
 }
 
 func TestUnknownSpaceSuggestsANearOne(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	if _, err := space.Create("3d-printing"); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +145,7 @@ func TestUnknownSpaceSuggestsANearOne(t *testing.T) {
 // pin the wire contract LauncherWindow.qml reads — completion.space is what
 // tells it to drop the -C and to treat a one-word line as runnable.
 func TestLauncherOffersSpacesAsAFirstWord(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	if _, err := space.Create("3d-printing"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +166,7 @@ func TestLauncherOffersSpacesAsAFirstWord(t *testing.T) {
 }
 
 func TestLauncherMarksAFullySpelledSpaceAsRunnable(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	if _, err := space.Create("3d-printing"); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +185,7 @@ func TestLauncherMarksAFullySpelledSpaceAsRunnable(t *testing.T) {
 
 // Past the first word only flags can follow, because the name was the verb.
 func TestLauncherCompletesFlagsAfterASpace(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	if _, err := space.Create("3d-printing"); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +212,7 @@ func TestLauncherCompletesFlagsAfterASpace(t *testing.T) {
 // empty — it does not use the registry at all, and the launcher is the main
 // way anyone opens one.
 func TestLauncherShowsSpacesWithNoProjectsRegistered(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	if _, err := space.Create("notes"); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +228,7 @@ func TestLauncherShowsSpacesWithNoProjectsRegistered(t *testing.T) {
 // Outside a project, tab completion has only two things it can honestly
 // offer: canaveral's own commands, and the spaces reachable from anywhere.
 func TestTerminalCompletionOutsideAProjectOffersCommandsAndSpaces(t *testing.T) {
-	isolateSpaces(t)
+	isolateDirs(t)
 	t.Setenv("CANAVERAL_ROOT", "") // or manifest.Find answers from the env
 	dir := t.TempDir()
 	cwd, err := os.Getwd()
