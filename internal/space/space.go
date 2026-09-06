@@ -191,7 +191,7 @@ func starter(name string) string {
 # Windows are opened on a Hyprland workspace of the same name. "run" executes
 # inside a terminal; "exec" launches a GUI application, which canaveral must be
 # able to recognise later — either by being told to adopt {{.Class}}, or, when
-# the application has no class flag at all, by naming the class it does carry:
+# the application will not take a class from you, by naming the one it carries:
 #
 #     [[window]]
 #     name = "slicer"
@@ -203,7 +203,12 @@ func starter(name string) string {
 
 [[window]]
 name = "browser"
-exec = "google-chrome --class={{.Class}} --new-window https://example.com"
+exec = "google-chrome --new-window https://example.com"
+# Chrome hands --new-window to the browser it already has running, so the
+# window is drawn by a process the workspace rule never saw and --class is
+# never read. Match the class it carries instead. Case-insensitive because
+# XWayland reports "Google-chrome" and native Wayland "google-chrome".
+match_class = "(?i)^google-chrome$"
 
 [[window]]
 name = "terminal"

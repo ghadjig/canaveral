@@ -566,7 +566,10 @@ run  = "canaveral logs {{.Feature}} web -f"
 
 [[window]]
 name = "chrome"
-exec = "google-chrome --class={{.Class}} --new-window {{.URL.web}}"
+exec = "google-chrome --new-window {{.URL.web}}"
+# Chrome hands --new-window to the browser it already has running, which never
+# reads --class, so match the class it carries instead.
+match_class = "(?i)^google-chrome$"
 `
 
 func runInit(ctx context.Context, args []string) error {

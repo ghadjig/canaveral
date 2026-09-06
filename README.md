@@ -266,7 +266,8 @@ checkout, because there is no checkout to put it in:
 
 [[window]]
 name = "onshape"
-exec = "google-chrome --class={{.Class}} --new-window https://cad.onshape.com"
+exec = "google-chrome --new-window https://cad.onshape.com"
+match_class = "(?i)^google-chrome$"
 
 [[window]]
 name = "slicer"
@@ -501,7 +502,7 @@ hold = true                 # keep the pane open if the command exits
 [[window]]
 name = "chrome"
 exec = "google-chrome --app={{.URL.web}}/"
-match_class = "^Google-chrome$"
+match_class = "(?i)^google-chrome$"
 
 [layout]
 order = ["chrome", "opencode", "terminal", "serverlogs"]
@@ -583,15 +584,18 @@ The reliable way is to tell the application what class to take, by passing
 
 ```toml
 [[window]]
-name = "chrome"
-exec = "google-chrome --class={{.Class}} --app={{.URL.web}}/"
+name = "spec"
+exec = "zathura --class={{.Class}} {{.Worktree}}/docs/spec.pdf"
 ```
 
 Plenty of applications cannot do that. Most GTK3 and wxWidgets programs have no
-class flag at all — and neither do the AppImages of them — while Chrome accepts
-`--class` but honours it only on X11, handing the request to an
-already-running browser process on Wayland. For those, name the class the
-application does carry:
+class flag at all, and neither do the AppImages of them. Chrome has one, but a
+class can only be given to a process that goes on to draw its own window, and a
+second `google-chrome` does not: it hands the request to the browser already
+running and exits. The flag is then read by nobody — as is the workspace
+canaveral asked Hyprland for, which is why such a window opens wherever you
+happen to be looking. For all of these, name the class the application does
+carry:
 
 ```toml
 [[window]]
