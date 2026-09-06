@@ -53,11 +53,18 @@ const (
 // Steps are wildly unequal — a readiness probe can take two minutes where a
 // window spawn takes milliseconds — so Step/Total measures work remaining and
 // never time remaining. A consumer should render it as such.
+//
+// Since is when the current step began, so a consumer can run its own live
+// timer against it; it does not move while a step is being waited out.
+// Detail, when set, is a short note on what that step is doing — whether the
+// service's log is still growing — which is the part that says whether a slow
+// step is working or wedged. Only the process running the step can see it.
 type Progress struct {
-	Label string    `json:"label,omitempty"`
-	Step  int       `json:"step"`
-	Total int       `json:"total"`
-	Since time.Time `json:"since"`
+	Label  string    `json:"label,omitempty"`
+	Step   int       `json:"step"`
+	Total  int       `json:"total"`
+	Since  time.Time `json:"since"`
+	Detail string    `json:"detail,omitempty"`
 }
 
 // rank orders statuses by urgency for sorting and for picking the single
@@ -367,10 +374,11 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			out.Status = StatusRemoving
 		}
 		out.Progress = &Progress{
-			Label: f.PhaseLabel,
-			Step:  f.PhaseStep,
-			Total: f.PhaseTotal,
-			Since: f.PhaseSince,
+			Label:  f.PhaseLabel,
+			Step:   f.PhaseStep,
+			Total:  f.PhaseTotal,
+			Since:  f.PhaseSince,
+			Detail: f.PhaseDetail,
 		}
 	}
 	switch {

@@ -52,9 +52,14 @@ func whileWaiting(r Reporter, prog *progress, what string, limit time.Duration, 
 			case <-done:
 				return
 			case <-t.C:
-				prog.beat()
+				// Sampled once and used twice: describe advances the watch's
+				// own baseline, so asking it a second time for the status bar
+				// would report "quiet" against the reading the terminal line
+				// had just consumed.
+				detail := w.describe()
+				prog.beat(detail)
 				r.Info("still waiting for %s: %s of %s · %s",
-					what, time.Since(start).Round(time.Second), limit, w.describe())
+					what, time.Since(start).Round(time.Second), limit, detail)
 			}
 		}
 	}()
