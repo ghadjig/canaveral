@@ -12,6 +12,25 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- The Chrome window scaffolded by `canaveral space new` and `canaveral init`
+  opened on whichever workspace was focused instead of the feature's own.
+
+  Both templates passed `--class={{.Class}}`, which Chrome cannot honour: a
+  second `google-chrome` hands the request to the browser already running and
+  exits, so the window is drawn by a process that never saw the flag — nor the
+  `[workspace name:...]` rule Hyprland attached to the one canaveral started.
+  The window was therefore never identified either, and a fresh copy was
+  spawned on every open. Both templates now drop `--class` and declare
+  `match_class = "(?i)^google-chrome$"`, which is the path that already places
+  AppImage windows correctly.
+
+  Existing space and project definitions are not rewritten; edit any window
+  running `google-chrome --class=...` the same way.
+
 ## v0.8.4 — 2026-09-06
 
 Identical to v0.8.3 in code. Retagged on `main` so the version is
