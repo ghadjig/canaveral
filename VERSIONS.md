@@ -12,6 +12,44 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `canaveral watch` now carries the service's most recent log line as
+  `progress.last_line`, so a status bar can show where a slow step has got to
+  rather than only that it is still moving.
+
+  `progress.detail` answers "is it alive?" — `log +751B`, `log quiet for 47s`.
+  This answers "doing what?", which during the silent stretches of a boot is
+  the more useful of the two:
+
+  ```
+  [info] Running bundle install...
+  Waiting for pod to become ready...
+  [2/5] Resolving packages...
+  ```
+
+  Stripped of ANSI escapes, which devspace writes on nearly every line and
+  which would reach a JSON consumer as literal garbage. Truncated to 160 runes,
+  because a single devspace log line can carry a whole cache key. Only the last
+  8 KiB of the log is read, so sampling stays cheap against the megabyte-plus a
+  boot produces. A line the service is still mid-way through writing is
+  ignored until its newline arrives, rather than shown in halves.
+
+**Changed**
+
+- The phase record is refreshed every 10 seconds instead of every 30, while the
+  terminal line stays at 30.
+
+  They were one ticker because they had the same job. They no longer do: the
+  record feeds a status bar that is glanced at and wants the freshest answer,
+  and at 30 seconds "where is it now" was answered by where it was half a
+  minute ago — during `bundle install`, a different phase of the boot. The
+  terminal line is scrolled through afterwards and wants to stay readable; at
+  10 seconds a thirty-minute wait would leave 180 near-identical lines behind
+  it.
+
 ## v0.8.11 — 2026-09-06
 
 **Added**

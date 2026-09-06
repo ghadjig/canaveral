@@ -116,13 +116,14 @@ func (p *progress) publish() {
 // step slow enough to outlast state.StalePhaseAfter is not mistaken for one
 // whose owner has died. See state.PhaseBeat.
 //
-// detail rides along so a reader that is not this process — the status bar —
-// can show what the step is doing, which it has no way to work out for itself.
-func (p *progress) beat(detail string) {
+// The note rides along so a reader that is not this process — the status bar —
+// can show what the step is doing and where its log has got to, neither of
+// which it has any way to work out for itself.
+func (p *progress) beat(n state.PhaseNote) {
 	if p == nil {
 		return
 	}
-	if err := p.f.BeatPhase(detail); err != nil {
+	if err := p.f.BeatPhase(n); err != nil {
 		p.warn("could not record progress: %v", err)
 	}
 }
