@@ -12,6 +12,58 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `ready.log_match` waits for a regular expression to match a service's log,
+  where `ready.log` only takes a literal substring.
+
+  For a marker that carries something variable in it — a port, a pod name, a
+  duration. Matched against the whole log rather than line by line, so `^` and
+  `$` mean start and end of file unless you ask for multi-line with `(?m)`.
+  Unlike `ready.http` and `ready.tcp` it is not rendered as a template: `{` and
+  `}` are repetition syntax in a regular expression, and `{{.Port.web}}` inside
+  one is ambiguous to a reader before it is ambiguous to a parser. Prefer plain
+  `ready.log` when a fixed string will do.
+
+  The pattern is compiled once per wait rather than per attempt, and an invalid
+  one is now reported before the first attempt instead of as a readiness
+  timeout after the last.
+
+**Changed**
+
+- Setting more than one readiness check is now an error naming both, instead of
+  silently using one of them.
+
+  `Ready` has documented "at most one check kind may be set" since it was
+  written, and nothing enforced it. `Kind()` returns the first field it finds,
+  so a service declaring both `ready.http` and `ready.log` waited on the http
+  one and gave no indication that the other line did nothing at all.
+
+**Fixed**
+
+- Documented that `ready.http` must not be pointed at a tunnelled port.
+
+  Not a code change — the behaviour is deliberate for local sockets, which is
+  what it is usually aimed at. But keep-alives are off, so every attempt is a
+  new connection, and through `kubectl port-forward` a connection is a stream
+  pair on one multiplexed session whether it succeeds or is refused because
+  nothing is listening yet. Retries start at 300ms and take about fifteen
+  seconds to reach their five second ceiling, so the probe is at its fastest
+  exactly when the tunnel is newest and the application is furthest from
+  answering.
+
+  Against devspace this exhausted the forwarder — `error creating error stream
+  for port 3055 -> 3000: Timeout occurred` — which takes the port down rather
+  than bringing it up, in two of five consecutive runs. In the clearest of them
+  the forward died before the initial file sync completed, when the probe was
+  necessarily the only client on the port.
+
+  Watching the log instead cost nothing and fixed it outright: zero restarts,
+  and the marker landed four seconds before the application served its first
+  request. The README now says so, and so does the doc comment on `Ready.HTTP`.
+
 ## v0.8.10 — 2026-09-06
 
 **Added**

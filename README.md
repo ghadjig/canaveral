@@ -516,6 +516,53 @@ terminal   = 0.2
 serverlogs = 0.2
 ```
 
+### Readiness
+
+A service can declare one readiness check, which gates everything after it —
+later services, agents and windows all wait for it.
+
+| Key | Waits for |
+| --- | --- |
+| `ready.http` | a URL to answer (`ready.status` to require something other than a non-5xx) |
+| `ready.tcp` | a port to accept a connection |
+| `ready.log` | a literal substring in the service's log |
+| `ready.log_match` | a regular expression to match the service's log |
+| `ready.cmd` | a shell command to exit zero |
+
+One of them, not several: a second is silently ignored, so it is rejected at
+parse time instead. `ready.timeout` bounds the wait (default 60s), and while
+it runs canaveral reports how long it has been waiting and whether the
+service's log is still growing, so a slow start can be told from a stuck one.
+
+**Do not point `ready.http` at a tunnelled port.** Keep-alives are off, so
+every attempt is a new connection, and through something like
+`kubectl port-forward` a connection is a stream pair on a single multiplexed
+session — whether it succeeds or is refused because nothing is listening yet.
+Retries start at 300ms and take about fifteen seconds to reach their five
+second ceiling, so the probe is fastest exactly when the tunnel is newest and
+the application is furthest from answering. Against devspace this exhausted
+the forwarder outright:
+
+```
+ports Restarting because: error creating error stream for port 3055 -> 3000: Timeout occurred
+```
+
+which takes the port down rather than bringing it up. Watch the log instead —
+the service is already writing one and canaveral is already capturing it, so
+reading it costs the tunnel nothing:
+
+```toml
+ready.log     = "Welcome to your remote development environment!"
+ready.timeout = "15m"
+```
+
+`ready.log_match` is the same thing for a marker with something variable in
+it. It matches against the whole log rather than line by line, so `^` and `$`
+mean start and end of file unless you ask for multi-line with `(?m)`, and
+unlike `ready.http` and `ready.tcp` it is not treated as a template — `{` and
+`}` are repetition syntax in a regular expression. Prefer plain `ready.log`
+when a fixed string will do.
+
 ### Placeholders
 
 Available in service and window commands, readiness probes, setup hooks, and

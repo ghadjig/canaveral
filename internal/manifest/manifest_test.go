@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,11 @@ func TestLoadRejects(t *testing.T) {
 			"match_class=\"^(Chrome$\"\n",
 		"run with profile":     "[[window]]\nname=\"w\"\nrun=\"\"\nprofile_source=\"~/.config/x\"\n",
 		"profile without seed": "[[window]]\nname=\"w\"\nexec=\"c --class={{.Class}}\"\nprofile_source=\"~/.config/x\"\n",
+
+		"two readiness checks": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"ready.http=\"http://x/\"\nready.log=\"up\"\n",
+		"ready.log_match will not compile": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
+			"ready.log_match=\"^(Listening\"\n",
 
 		"discover cmd and port together": "[[service]]\nname=\"a\"\ncmd=\"x\"\n" +
 			"discover.cmd=\"./ports\"\ndiscover.port.web='(\\d+)'\n",
@@ -654,5 +660,51 @@ func TestLoadSpaceTakesItsNameFromTheCaller(t *testing.T) {
 	}
 	if !m.Space || m.Branch != "" {
 		t.Errorf("Space = %v, Branch = %q; a space has no branch", m.Space, m.Branch)
+	}
+}
+
+// ready.log_match is the escape hatch for a marker with something variable in
+// it — a port, a pod name, a duration — where a fixed substring cannot reach.
+func TestReadyLogMatchIsAcceptedAndReportsItsOwnKind(t *testing.T) {
+	isolateAgentDefault(t)
+	dir := write(t, t.TempDir(), `
+[[service]]
+name = "web"
+cmd  = "bin/dev"
+ready.log_match = 'Listening on .*:(\d+)'
+`)
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	r := m.Services[0].Ready
+	if r.LogMatch != `Listening on .*:(\d+)` {
+		t.Errorf("LogMatch = %q", r.LogMatch)
+	}
+	if got := r.Kind(); got != "log_match" {
+		t.Errorf("Kind() = %q, want %q", got, "log_match")
+	}
+}
+
+// The "at most one check" rule was documented on Ready long before anything
+// enforced it, and Kind cannot: it returns the first field it finds, so the
+// losing line does nothing and says nothing about it.
+func TestTwoReadinessChecksNameBothInTheError(t *testing.T) {
+	isolateAgentDefault(t)
+	dir := write(t, t.TempDir(), `
+[[service]]
+name = "web"
+cmd  = "bin/dev"
+ready.http = "http://localhost:3000/up"
+ready.log  = "Listening on"
+`)
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("two readiness checks accepted")
+	}
+	for _, want := range []string{"ready.http", "ready.log"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
 	}
 }
