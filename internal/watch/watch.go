@@ -193,7 +193,16 @@ type Feature struct {
 	// they carry the same agent and git detail, but no slot number, because
 	// there is no workspace worth jumping to. Always paired with ws_slot 0.
 	Headless bool   `json:"headless,omitempty"`
-	Status   Status `json:"status"`
+	// Space marks a workspace with no project behind it — no repository, no
+	// worktree, no branch, just the windows and units its definition
+	// declares. Emitted for the same reason as Headless: a status bar wants
+	// to list these somewhere other than among the features, and every way
+	// of inferring it from the rest of the record is a guess about internals
+	// rather than an answer. A space's Project, Name and Key are all its
+	// bare name today, which makes the inference look easy and makes it
+	// break the moment any of those gains structure.
+	Space  bool   `json:"space,omitempty"`
+	Status Status `json:"status"`
 	// Since is when this feature entered its current Status. A consumer is
 	// expected to render the elapsed time itself and tick locally, which is
 	// why snapshots are emitted on change rather than on a timer.
@@ -285,6 +294,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		Workspace: f.HyprWorkspace(),
 		WSlot:     f.WSlot,
 		Headless:  f.Headless(),
+		Space:     f.Space,
 		CreatedAt: f.CreatedAt,
 	}
 

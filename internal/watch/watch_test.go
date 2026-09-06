@@ -329,3 +329,32 @@ func TestBootingAndRemovingDoNotDemandAttention(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCarriesSpaceThrough(t *testing.T) {
+	// The bar splits spaces out of the feature list and draws them among the
+	// workspaces, so this flag has to survive Build. Every way of inferring
+	// it from the rest of the record — a Key with no slash, a Workspace with
+	// no colon — reads an implementation detail rather than the answer, and
+	// this is the answer.
+	f := feat("3d")
+	f.Space = true
+	f.Project = "3d"
+
+	got := Build(f, nil, nil, time.Now())
+	if !got.Space {
+		t.Error("Space = false, want true for a space")
+	}
+	// A space is its own whole identity, with no project prefix anywhere.
+	if got.Workspace != "3d" {
+		t.Errorf("Workspace = %q, want %q", got.Workspace, "3d")
+	}
+}
+
+func TestBuildLeavesSpaceUnsetForAFeature(t *testing.T) {
+	// omitempty means an ordinary feature must not carry the key at all,
+	// which is what lets an older bar ignore it and a newer one trust it.
+	got := Build(feat("f"), nil, nil, time.Now())
+	if got.Space {
+		t.Error("Space = true, want false for an ordinary feature")
+	}
+}

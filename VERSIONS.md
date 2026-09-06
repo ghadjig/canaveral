@@ -12,6 +12,23 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- `watch` reports whether a workspace is a space, as `"space": true` on each
+  feature. It always knew — `Space` is on the state record and decides the
+  Hyprland workspace name and the key — but the watch view dropped it, so a
+  consumer could not tell a space from a feature and listed the two together.
+
+  Added for the status bar, which draws spaces among the workspaces rather
+  than among the features: a space is somewhere you go, not something being
+  built. Same reasoning as `headless`, and the same warning applies. A
+  space's `project`, `name` and `key` are all its bare name today, so the
+  inference (a key with no slash, a workspace with no colon) looks safe and
+  is only an accident of the current shape. `omitempty`, so an older
+  consumer sees nothing new.
+
 ## v0.8.1 — 2026-09-05
 
 ### Added
