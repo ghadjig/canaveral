@@ -3,6 +3,7 @@ package hypr
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,43 @@ func TestByClassKeepsFirstMatch(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("len = %d, want 2", len(got))
+	}
+}
+
+// The whole point of match_class is that the class alone is ambiguous: the
+// user's own copy of the same application carries it too. The workspace is
+// what disambiguates, since no two features share one.
+func TestMatchInWorkspaceIgnoresTheSameClassElsewhere(t *testing.T) {
+	re := regexp.MustCompile("^BambuStudio$")
+	cs := []Client{
+		{Address: "0xmine", Class: "BambuStudio"},
+		{Address: "0xtheirs", Class: "BambuStudio"},
+	}
+	cs[0].Workspace.Name = "other"
+	cs[1].Workspace.Name = "3d"
+
+	got, ok := MatchInWorkspace(cs, re, "3d")
+	if !ok {
+		t.Fatal("a matching window on the feature's workspace should be found")
+	}
+	if got.Address != "0xtheirs" {
+		t.Errorf("adopted %s, want the window on the feature's own workspace", got.Address)
+	}
+	if _, ok := MatchInWorkspace(cs, re, "empty"); ok {
+		t.Error("no window is on that workspace; nothing should be adopted")
+	}
+}
+
+func TestClassMatchesEitherClass(t *testing.T) {
+	re := regexp.MustCompile("^Google-chrome$")
+	if !ClassMatches(re, Client{Class: "Google-chrome", InitialClass: ""}) {
+		t.Error("the current class should match")
+	}
+	if !ClassMatches(re, Client{Class: "", InitialClass: "Google-chrome"}) {
+		t.Error("the initial class should match")
+	}
+	if ClassMatches(re, Client{Class: "chromium", InitialClass: "chromium"}) {
+		t.Error("an unrelated class must not match")
 	}
 }
 

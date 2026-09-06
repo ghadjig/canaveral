@@ -51,15 +51,19 @@ name = "main"
 func TestLoadRejects(t *testing.T) {
 	isolateAgentDefault(t)
 	cases := map[string]string{
-		"unknown key":          "nme = \"typo\"\n",
-		"duplicate service":    "[[service]]\nname=\"a\"\ncmd=\"x\"\n[[service]]\nname=\"a\"\ncmd=\"y\"\n",
-		"duplicate agent":      "[[agent]]\nname=\"a\"\n[[agent]]\nname=\"a\"\n",
-		"service without cmd":  "[[service]]\nname=\"a\"\n",
-		"bad isolation":        "isolation = \"nope\"\n",
-		"unsupported tool":     "[[agent]]\nname=\"a\"\ntool=\"nano-banana\"\n",
-		"bad name":             "name = \"has space\"\n",
-		"bad duration":         "[[service]]\nname=\"a\"\ncmd=\"x\"\nready.timeout=\"soon\"\n",
-		"exec without class":   "[[window]]\nname=\"w\"\nexec=\"chrome\"\n",
+		"unknown key":         "nme = \"typo\"\n",
+		"duplicate service":   "[[service]]\nname=\"a\"\ncmd=\"x\"\n[[service]]\nname=\"a\"\ncmd=\"y\"\n",
+		"duplicate agent":     "[[agent]]\nname=\"a\"\n[[agent]]\nname=\"a\"\n",
+		"service without cmd": "[[service]]\nname=\"a\"\n",
+		"bad isolation":       "isolation = \"nope\"\n",
+		"unsupported tool":    "[[agent]]\nname=\"a\"\ntool=\"nano-banana\"\n",
+		"bad name":            "name = \"has space\"\n",
+		"bad duration":        "[[service]]\nname=\"a\"\ncmd=\"x\"\nready.timeout=\"soon\"\n",
+		"exec without class":  "[[window]]\nname=\"w\"\nexec=\"chrome\"\n",
+		"match_class on a run window": "[[window]]\nname=\"w\"\nrun=\"\"\n" +
+			"match_class=\"^Alacritty$\"\n",
+		"match_class will not compile": "[[window]]\nname=\"w\"\nexec=\"chrome\"\n" +
+			"match_class=\"^(Chrome$\"\n",
 		"run with profile":     "[[window]]\nname=\"w\"\nrun=\"\"\nprofile_source=\"~/.config/x\"\n",
 		"profile without seed": "[[window]]\nname=\"w\"\nexec=\"c --class={{.Class}}\"\nprofile_source=\"~/.config/x\"\n",
 
@@ -83,6 +87,31 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("Load(%q) succeeded, want error", body)
 			}
 		})
+	}
+}
+
+// match_class is the escape hatch for an application that has no way to be
+// told what class to take — most GTK3 and wxWidgets programs, and the
+// AppImages of them — so declaring it must lift the {{.Class}} requirement
+// rather than being an extra hoop on top of it.
+func TestExecWithoutClassIsAcceptedWhenMatchClassIsDeclared(t *testing.T) {
+	isolateAgentDefault(t)
+	dir := write(t, t.TempDir(), `
+[[window]]
+name = "bambustudio"
+exec = "BambuStudio.AppImage"
+match_class = "^BambuStudio$"
+`)
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	w := m.Windows[0]
+	if w.MatchClass != "^BambuStudio$" {
+		t.Errorf("MatchClass = %q", w.MatchClass)
+	}
+	if w.IsTerminal() {
+		t.Error("an exec window must not be wrapped in a terminal")
 	}
 }
 

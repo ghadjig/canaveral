@@ -148,7 +148,7 @@ func TestBuildWindowSpecForAnAlreadyOpenWindow(t *testing.T) {
 	class := hypr.Class("p/f", "chrome")
 	open := map[string]hypr.Client{class: {}}
 
-	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, open, quietReporter{})
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, open, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuildWindowSpecForAMissingWindow(t *testing.T) {
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
 
-	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, map[string]hypr.Client{}, quietReporter{})
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]hypr.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
@@ -185,13 +185,67 @@ func TestBuildWindowSpecForAMissingWindow(t *testing.T) {
 	}
 }
 
+// An application that cannot be told to take our class is adopted by
+// match_class instead. Without this every open would spawn another copy,
+// which is what a slicer or a browser being reopened on every reset looks
+// like to the user.
+func TestBuildWindowSpecAdoptsAMatchClassWindowOnTheFeatureWorkspace(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := &manifest.Manifest{Root: "/p"}
+	f := &state.Feature{Space: true, Name: "3d", Worktree: "/home/u"}
+	w := manifest.Window{Name: "bambustudio", Exec: "BambuStudio.AppImage", MatchClass: "^BambuStudio$"}
+
+	c := hypr.Client{Address: "0xbambu", Class: "BambuStudio"}
+	c.Workspace.Name = f.HyprWorkspace()
+
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w,
+		tmpl.Vars{}, nil, []hypr.Client{c}, map[string]hypr.Client{}, quietReporter{})
+	if err != nil {
+		t.Fatalf("buildWindowSpec: %v", err)
+	}
+	if pending != nil {
+		t.Error("a matching window on the feature's workspace is already open; it must not be spawned again")
+	}
+	if rec.MatchClass != w.MatchClass {
+		t.Errorf("rec.MatchClass = %q, want %q — close has no other way to find the window", rec.MatchClass, w.MatchClass)
+	}
+}
+
+// The same class on someone else's workspace is one of the user's own
+// windows. Adopting it would mean never launching the application and then
+// dragging their window onto the feature's workspace instead.
+func TestBuildWindowSpecDoesNotAdoptAMatchClassWindowElsewhere(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := &manifest.Manifest{Root: "/p"}
+	f := &state.Feature{Space: true, Name: "3d", Worktree: "/home/u"}
+	w := manifest.Window{Name: "bambustudio", Exec: "BambuStudio.AppImage", MatchClass: "^BambuStudio$"}
+
+	c := hypr.Client{Address: "0xtheirs", Class: "BambuStudio"}
+	c.Workspace.Name = "2"
+
+	_, pending, err := buildWindowSpec(context.Background(), m, f, w,
+		tmpl.Vars{}, nil, []hypr.Client{c}, map[string]hypr.Client{}, quietReporter{})
+	if err != nil {
+		t.Fatalf("buildWindowSpec: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("a window of that class on another workspace is the user's own; ours must still be spawned")
+	}
+	if pending.match == nil || !pending.match.MatchString("BambuStudio") {
+		t.Error("the pending spawn must carry the compiled pattern, or the window it creates cannot be placed")
+	}
+	if pending.spec.IsTerminal {
+		t.Error("an exec window must not be wrapped in a terminal — that is the whole bug")
+	}
+}
+
 func TestBuildWindowSpecUsesADeclaredSubdir(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	m := &manifest.Manifest{Root: "/p"}
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "api", Exec: "app --class={{.Class}}", Dir: "api"}
 
-	rec, _, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, map[string]hypr.Client{}, quietReporter{})
+	rec, _, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]hypr.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/bandito/canaveral/internal/agent"
@@ -345,7 +346,20 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 		closed := 0
 		var self *hypr.Client
 		for _, w := range f.Windows {
-			if c, ok := open[w.Class]; ok {
+			c, ok := open[w.Class]
+			if w.MatchClass != "" {
+				// This window never carried our class, so it can only be
+				// found the way it was adopted: by pattern, on the feature's
+				// own workspace. A bad pattern in a hand-edited state file
+				// leaves the window alone rather than closing something at
+				// random — rehomeStrays below will still move it out.
+				re, reErr := regexp.Compile(w.MatchClass)
+				if reErr != nil {
+					continue
+				}
+				c, ok = hypr.MatchInWorkspace(clients, re, f.HyprWorkspace())
+			}
+			if ok {
 				if hypr.IsSelf(c) {
 					// Close our own window last of all, and after
 					// everything above has already returned
