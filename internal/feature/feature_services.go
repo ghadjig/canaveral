@@ -54,7 +54,7 @@ func reconcileServices(ctx context.Context, m *manifest.Manifest, f *state.Featu
 		// call in between must still be able to find it again.
 		res.launched = append(res.launched, rec.Unit)
 
-		started, err := startService(ctx, m, f, s, rec, base, vars, r)
+		started, err := startService(ctx, m, f, s, rec, base, vars, r, prog)
 		if err != nil {
 			return err
 		}
@@ -106,9 +106,12 @@ func serviceRecord(m *manifest.Manifest, f *state.Feature, s manifest.Service, l
 // Reports false, nil when an optional service failed: the caller must not
 // record it as running, but it is not an error either. A required service's
 // failure is returned.
+//
+// prog may be nil: RestartServices brings a service up outside any lifecycle
+// phase, and there is then no progress bar to keep alive.
 func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	s manifest.Service, rec state.Service, base map[string]string,
-	vars tmpl.Vars, r Reporter) (bool, error) {
+	vars tmpl.Vars, r Reporter, prog *progress) (bool, error) {
 
 	svcEnv, err := tmpl.RenderMap("service."+s.Name+".env", s.Env, vars)
 	if err != nil {
@@ -141,7 +144,7 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	// picks its own port has to be running before it can say which, and the
 	// probe is usually the first thing that needs to know.
 	if s.Discover.Enabled() {
-		if err := discoverPorts(ctx, m, f, s, rec, r); err != nil {
+		if err := discoverPorts(ctx, m, f, s, rec, r, prog); err != nil {
 			return stopAndReport(ctx, s, rec, r, err)
 		}
 		vars = varsFor(ctx, m, f, false, nil)
@@ -156,11 +159,15 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	}
 
 	if k := ready.Kind(); k != "" {
+		limit := ready.Timeout.Or(probe.DefaultTimeout)
 		// Say so before blocking. ready.timeout is routinely a minute or two
 		// for anything as slow to boot as a Rails server, and a terminal that
 		// goes silent for that long is indistinguishable from a hang.
-		r.Info("waiting for %s readiness probe, up to %s", k, ready.Timeout.Or(probe.DefaultTimeout))
-		if err := probe.Wait(ctx, ready, rec.Dir, rec.LogPath, aliveCheck(ctx, rec.Unit, rec.LogPath)); err != nil {
+		r.Info("waiting for %s readiness probe, up to %s", k, limit)
+		err := whileWaiting(r, prog, s.Name, limit, rec.LogPath, func() error {
+			return probe.Wait(ctx, ready, rec.Dir, rec.LogPath, aliveCheck(ctx, rec.Unit, rec.LogPath))
+		})
+		if err != nil {
 			// A dead process already reports its log through aliveCheck. A
 			// timeout is the other case: still running, still not ready, and
 			// its own output is then the only thing that says why — a Rails
@@ -182,11 +189,17 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 // them on the feature, so everything started afterwards — later services,
 // agents, windows, `canaveral exec` — addresses the port it actually bound.
 func discoverPorts(ctx context.Context, m *manifest.Manifest, f *state.Feature,
-	s manifest.Service, rec state.Service, r Reporter) error {
+	s manifest.Service, rec state.Service, r Reporter, prog *progress) error {
 
 	d := s.Discover
-	r.Info("discovering ports for %s, up to %s", s.Name, d.Timeout.Or(discover.DefaultTimeout))
-	found, err := discover.Ports(ctx, d, rec.LogPath, rec.Dir, aliveCheck(ctx, rec.Unit, rec.LogPath))
+	limit := d.Timeout.Or(discover.DefaultTimeout)
+	r.Info("discovering ports for %s, up to %s", s.Name, limit)
+	var found map[string]int
+	err := whileWaiting(r, prog, s.Name, limit, rec.LogPath, func() error {
+		var err error
+		found, err = discover.Ports(ctx, d, rec.LogPath, rec.Dir, aliveCheck(ctx, rec.Unit, rec.LogPath))
+		return err
+	})
 	if err != nil {
 		// Same reasoning as the readiness probe: on a timeout the service's
 		// own output is the only thing that can say why it never announced
@@ -304,7 +317,7 @@ func RestartServices(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		}
 		unit.Reset(ctx, rec.Unit)
 
-		started, err := startService(ctx, m, f, s, rec, base, vars, r)
+		started, err := startService(ctx, m, f, s, rec, base, vars, r, nil)
 		if err != nil {
 			return err
 		}

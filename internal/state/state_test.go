@@ -792,6 +792,101 @@ func TestInPhaseDisbelievesAStalePhaseEvenWithALivePID(t *testing.T) {
 	}
 }
 
+// The staleness bound used to be measured from the start of the step, which
+// made it a cap on how long any single step could take: yogurt's devspace
+// service allows its readiness probe thirty minutes and regularly needs ten,
+// so a boot that was going perfectly well lost its progress bar a third of
+// the way through. A step that keeps saying it is there must keep being
+// believed.
+func TestInPhaseBelievesASlowStepThatKeepsBeating(t *testing.T) {
+	f := &Feature{
+		Phase:      PhaseBooting,
+		PhaseLabel: "service devspace",
+		PhaseSince: time.Now().Add(-2 * StalePhaseAfter),
+		PhaseBeat:  time.Now(),
+		PhasePID:   os.Getpid(),
+	}
+	if !f.InPhase() {
+		t.Error("a long step with a recent heartbeat must be believed")
+	}
+}
+
+// The heartbeat is a claim about the owner, not about the step, so it cannot
+// rescue a phase whose owner stopped making it.
+func TestInPhaseDisbelievesAPhaseWhoseHeartbeatStopped(t *testing.T) {
+	f := &Feature{
+		Phase:      PhaseBooting,
+		PhaseSince: time.Now().Add(-3 * StalePhaseAfter),
+		PhaseBeat:  time.Now().Add(-2 * StalePhaseAfter),
+		PhasePID:   os.Getpid(),
+	}
+	if f.InPhase() {
+		t.Error("a heartbeat that has itself gone stale must not keep the phase alive")
+	}
+}
+
+func TestBeatPhaseRefreshesLivenessWithoutMovingTheStepsClock(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &Feature{Project: "p", Name: "f"}
+	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	since := f.PhaseSince
+
+	time.Sleep(2 * time.Millisecond)
+	if err := f.BeatPhase(); err != nil {
+		t.Fatalf("BeatPhase: %v", err)
+	}
+
+	if !f.PhaseSince.Equal(since) {
+		t.Error("PhaseSince moved; a reader renders it as how long this step has been going")
+	}
+	if !f.PhaseBeat.After(since) {
+		t.Error("PhaseBeat did not advance, so the phase still ages out mid-step")
+	}
+	// Durable, not just in memory: the process reading it is a different one.
+	got, err := Load("p", "f")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.PhaseBeat.Before(got.PhaseSince) {
+		t.Errorf("persisted PhaseBeat = %v, older than PhaseSince %v", got.PhaseBeat, got.PhaseSince)
+	}
+}
+
+// Nothing to keep alive outside a phase, and writing the record anyway would
+// resurrect one that ClearPhase had just settled.
+func TestBeatPhaseIsANoOpOutsideAPhase(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &Feature{Project: "p", Name: "f"}
+	if err := f.BeatPhase(); err != nil {
+		t.Fatalf("BeatPhase: %v", err)
+	}
+	if !f.PhaseBeat.IsZero() {
+		t.Error("BeatPhase recorded a heartbeat for a feature that is not in a phase")
+	}
+}
+
+func TestClearPhaseClearsTheHeartbeatToo(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &Feature{Project: "p", Name: "f"}
+	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	if err := f.BeatPhase(); err != nil {
+		t.Fatalf("BeatPhase: %v", err)
+	}
+	if err := f.ClearPhase(); err != nil {
+		t.Fatalf("ClearPhase: %v", err)
+	}
+	if !f.PhaseBeat.IsZero() {
+		t.Error("PhaseBeat survived ClearPhase")
+	}
+}
+
 func TestSetPhaseRecordsTheOwnerAndClearPhaseForgetsIt(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &Feature{Project: "p", Name: "f"}

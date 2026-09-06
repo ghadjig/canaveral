@@ -83,6 +83,18 @@ type Feature struct {
 	// and a progress bar frozen forever is worse than none. See InPhase.
 	PhaseSince time.Time `json:"phase_since,omitempty"`
 	PhasePID   int       `json:"phase_pid,omitempty"`
+	// PhaseBeat is when the owner last said it was still there, which is not
+	// the same question as when the step began.
+	//
+	// PhaseSince used to answer both, and could not: it is what a reader
+	// renders as "this step has been going for 5m", so refreshing it would
+	// reset that display, while *not* refreshing it made a step that outlived
+	// StalePhaseAfter read as abandoned. yogurt's devspace service allows its
+	// readiness probe thirty minutes and routinely takes ten, so a genuinely
+	// live boot lost its progress bar a third of the way in. Splitting the two
+	// lets the owner keep the record fresh without disturbing the clock a
+	// human is reading.
+	PhaseBeat time.Time `json:"phase_beat,omitempty"`
 	// Provisioned lists paths canaveral copied in; they are not user work and
 	// must not make the worktree look dirty at teardown.
 	Provisioned []string  `json:"provisioned,omitempty"`
@@ -593,10 +605,11 @@ const (
 // liveness check in InPhase.
 //
 // It only has to cover the case that check cannot: a pid recorded by an older
-// canaveral, or one that has been recycled by an unrelated process. Left at
-// ten minutes because a single step is allowed to be slow — a readiness probe
-// may be given twenty — and shortening it would start disbelieving boots that
-// are genuinely still going.
+// canaveral, or one that has been recycled by an unrelated process. Ten
+// minutes is measured from the last heartbeat, not from the start of the
+// step, so a slow step stays believed for as long as its owner keeps saying
+// so — see PhaseBeat. Without that split this bound was also, accidentally, a
+// cap on how long any single step could take.
 const StalePhaseAfter = 10 * time.Minute
 
 // InPhase reports whether the feature is in a live, believable phase.
@@ -612,10 +625,22 @@ func (f *Feature) InPhase() bool {
 	if f.Phase == "" {
 		return false
 	}
-	if time.Since(f.PhaseSince) >= StalePhaseAfter {
+	if time.Since(f.phaseFresh()) >= StalePhaseAfter {
 		return false
 	}
 	return phaseOwnerAlive(f.PhasePID)
+}
+
+// phaseFresh is the most recent sign of life from the phase's owner.
+//
+// PhaseBeat is absent on records written by a canaveral that did not have it,
+// and on phases whose steps all finished quickly enough never to need one, so
+// PhaseSince remains the floor.
+func (f *Feature) phaseFresh() time.Time {
+	if f.PhaseBeat.After(f.PhaseSince) {
+		return f.PhaseBeat
+	}
+	return f.PhaseSince
 }
 
 // phaseOwnerAlive reports whether the process that recorded a phase still
@@ -647,6 +672,21 @@ func phaseOwnerAlive(pid int) bool {
 func (f *Feature) SetPhase(phase, label string, step, total int) error {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = phase, label, step, total
 	f.PhaseSince = time.Now()
+	f.PhaseBeat = f.PhaseSince
+	f.PhasePID = os.Getpid()
+	return Save(f)
+}
+
+// BeatPhase refreshes the phase's liveness without moving the step's clock,
+// for a step slow enough to outlast StalePhaseAfter on its own.
+//
+// A no-op outside a phase, so a caller blocking on something that turned out
+// not to be part of one writes nothing.
+func (f *Feature) BeatPhase() error {
+	if f.Phase == "" {
+		return nil
+	}
+	f.PhaseBeat = time.Now()
 	f.PhasePID = os.Getpid()
 	return Save(f)
 }
@@ -656,8 +696,20 @@ func (f *Feature) ClearPhase() error {
 	if f.Phase == "" {
 		return nil
 	}
+	f.ResetPhase()
+	return Save(f)
+}
+
+// ResetPhase blanks every phase field without persisting, for a caller that
+// is about to write the record somewhere else — `stash`, which clears the
+// phase on the copy it saves rather than on the record it is deleting.
+//
+// Exported so that copy stays in step with ClearPhase: these fields have been
+// added to twice, and a second hand-rolled list of them is a field that gets
+// forgotten.
+func (f *Feature) ResetPhase() {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
 	f.PhaseSince = time.Time{}
+	f.PhaseBeat = time.Time{}
 	f.PhasePID = 0
-	return Save(f)
 }

@@ -112,6 +112,18 @@ func (p *progress) publish() {
 	}
 }
 
+// beat refreshes the current step's liveness without moving its clock, so a
+// step slow enough to outlast state.StalePhaseAfter is not mistaken for one
+// whose owner has died. See state.PhaseBeat.
+func (p *progress) beat() {
+	if p == nil {
+		return
+	}
+	if err := p.f.BeatPhase(); err != nil {
+		p.warn("could not record progress: %v", err)
+	}
+}
+
 func (p *progress) warn(format string, a ...any) {
 	if p.r == nil || p.warned {
 		return

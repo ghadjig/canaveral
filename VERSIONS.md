@@ -16,6 +16,40 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 **Fixed**
 
+- A step slow enough to matter now says so while it runs, instead of going
+  silent until it either finishes or times out.
+
+  `waiting for http readiness probe, up to 30m0s` was the last thing printed
+  before a devspace cold start that had eight minutes left to go. Nothing
+  followed it, and a boot working perfectly is indistinguishable from a wedged
+  one when neither says anything, so the run was killed two minutes short of
+  ready. Port discovery had the same shape.
+
+  Both now report every thirty seconds how long they have been waiting, out of
+  how long they are allowed, and — the part that actually answers the question
+  — whether the service's own log is still growing:
+
+  ```
+      still waiting for devspace: 5m0s of 30m0s · log +18.4K
+      still waiting for devspace: 5m30s of 30m0s · log quiet for 47s
+  ```
+
+  A log that is filling up says wait; one that has been quiet for four minutes
+  says go and look.
+
+- A progress bar no longer disappears part-way through a boot that is still
+  going.
+
+  Phase records were believed for ten minutes from the start of the current
+  step, which quietly made ten minutes the longest any single step could take.
+  A readiness probe given thirty — yogurt's devspace service needs it, and
+  regularly uses ten — aged out mid-wait, and the feature dropped off the
+  status bar while it was still coming up. The record now carries a heartbeat
+  separate from the step's own clock: the ten minutes is measured from the
+  last sign of life rather than from the start of the work, so a long step
+  stays visible for as long as something is advancing it and a step whose
+  owner died is disbelieved exactly as promptly as before.
+
 - A progress bar no longer freezes on the last window when the run behind it
   dies.
 
