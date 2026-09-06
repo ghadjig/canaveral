@@ -893,6 +893,15 @@ types `bin/rspec` themselves.
 agents start, and services start before them, so the value would depend on which
 phase asked; canaveral refuses it at startup instead.
 
+Values never appear on a command line. `/proc/<pid>/cmdline` is world-readable,
+so anything passed that way is legible to every process on the machine for as
+long as the process lives — which matters because `[env]` and the toolchain
+environment behind it are exactly where API keys and database credentials live.
+Windows read their environment from a file in `$XDG_RUNTIME_DIR`, mode 0600,
+which the spawned shell deletes as soon as it has sourced it; services and
+agents get theirs from systemd, by name rather than by value. Both end up in
+`/proc/<pid>/environ`, which is readable only by you.
+
 ### Configuring the application
 
 canaveral exports the isolation; the application has to read it. Nothing here is

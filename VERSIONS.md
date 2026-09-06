@@ -12,6 +12,39 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Environment values are no longer passed on any command line, where every
+  process on the machine could read them.
+
+  `/proc/<pid>/cmdline` is mode 444 — world-readable, unlike
+  `/proc/<pid>/environ` at 400 — so the `env K=V ...` prefix canaveral put in
+  front of every window published that window's entire environment for as long
+  as the window lived. On the machine this was found on that meant three
+  `sh -c env 'ANTHROPIC_API_KEY=...' alacritty` processes per feature, and
+  because a toolchain's environment is included wholesale, `mise` handed over
+  API keys for three providers, an OAuth client secret and a set of production
+  database credentials. Anything that can run `ps` could read them, as could
+  anything that scrapes it: screenshots, screen recordings, pasted bug
+  reports.
+
+  Windows now get their environment from a file in `$XDG_RUNTIME_DIR`
+  (tmpfs, mode 0700, cleared with the session) written at 0600, which the
+  spawned shell sources and immediately deletes. Only the path reaches the
+  command line, and nothing is left at rest. Hyprland's exec-time workspace
+  rule binds to the process hyprctl starts, so it could not be given up.
+
+  Services and agents had the same problem more briefly: `systemd-run
+  --setenv=NAME=VALUE` puts values in that process's arguments too. They are
+  now passed as `--setenv=NAME`, which tells systemd to read the value from
+  systemd-run's own environment.
+
+  **Windows and units started before this release keep the old command lines
+  until they are restarted.** `canaveral reset <feature>` respawns them; a
+  credential that was exposed this way should be treated as exposed.
+
 ## v0.8.6 — 2026-09-06
 
 **Changed**

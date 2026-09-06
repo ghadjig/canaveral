@@ -119,7 +119,7 @@ func TestBuildArgvTerminal(t *testing.T) {
 	got, err := buildArgv(SpawnSpec{
 		Class: "canaveral-p-f-logs", Title: "f · logs",
 		Dir: "/wt/f", IsTerminal: true, Cmd: "canaveral logs f web -f",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("buildArgv: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestBuildArgvTerminal(t *testing.T) {
 
 func TestBuildArgvPlainShell(t *testing.T) {
 	// run = "" means a bare shell: no -e flag at all.
-	got, err := buildArgv(SpawnSpec{Class: "c", Dir: "/wt", IsTerminal: true, Cmd: ""})
+	got, err := buildArgv(SpawnSpec{Class: "c", Dir: "/wt", IsTerminal: true, Cmd: ""}, "")
 	if err != nil {
 		t.Fatalf("buildArgv: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestBuildArgvPlainShell(t *testing.T) {
 }
 
 func TestBuildArgvHoldKeepsPaneOpen(t *testing.T) {
-	got, err := buildArgv(SpawnSpec{Class: "c", IsTerminal: true, Cmd: "false", Hold: true})
+	got, err := buildArgv(SpawnSpec{Class: "c", IsTerminal: true, Cmd: "false", Hold: true}, "")
 	if err != nil {
 		t.Fatalf("buildArgv: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestBuildArgvHoldKeepsPaneOpen(t *testing.T) {
 func TestBuildArgvExecGUI(t *testing.T) {
 	got, err := buildArgv(SpawnSpec{
 		Class: "c", Dir: "/wt", Cmd: "google-chrome --new-window http://localhost:3001",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("buildArgv: %v", err)
 	}
@@ -172,37 +172,91 @@ func TestBuildArgvExecGUI(t *testing.T) {
 }
 
 func TestBuildArgvRejectsEmptyExec(t *testing.T) {
-	if _, err := buildArgv(SpawnSpec{Class: "c"}); err == nil {
+	if _, err := buildArgv(SpawnSpec{Class: "c"}, ""); err == nil {
 		t.Error("empty exec command should error")
 	}
 }
 
 func TestBuildArgvRequiresClass(t *testing.T) {
-	if _, err := buildArgv(SpawnSpec{IsTerminal: true}); err == nil {
+	if _, err := buildArgv(SpawnSpec{IsTerminal: true}, ""); err == nil {
 		t.Error("missing class should error")
 	}
 }
 
-func TestBuildArgvEnvIsDeterministic(t *testing.T) {
-	spec := SpawnSpec{
-		Class: "c", IsTerminal: true, Cmd: "true",
-		Env: map[string]string{"B": "2", "A": "1", "C": "3"},
+// The leak this guards against: /proc/<pid>/cmdline is mode 444, so anything
+// on a spawned window's command line is readable by every process on the
+// machine for as long as that window lives. An `env K=V` prefix put API keys
+// and database credentials there.
+func TestBuildArgvKeepsEnvValuesOutOfTheCommandLine(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	secret := "sk-ant-not-a-real-key"
+	env := map[string]string{"ANTHROPIC_API_KEY": secret, "CANAVERAL_ROOT": "/r"}
+
+	path, err := writeEnvFile(env)
+	if err != nil {
+		t.Fatalf("writeEnvFile: %v", err)
 	}
-	first, err := buildArgv(spec)
+	for _, spec := range []SpawnSpec{
+		{Class: "c", IsTerminal: true, Cmd: "true", Dir: "/wt", Env: env},
+		{Class: "c", Cmd: "google-chrome --new-window http://x", Dir: "/wt", Env: env},
+	} {
+		got, err := buildArgv(spec, path)
+		if err != nil {
+			t.Fatalf("buildArgv: %v", err)
+		}
+		if strings.Contains(got, secret) {
+			t.Errorf("secret leaked into argv:\n%s", got)
+		}
+		if strings.Contains(got, "ANTHROPIC_API_KEY=") {
+			t.Errorf("env assignment leaked into argv:\n%s", got)
+		}
+		if !strings.Contains(got, path) {
+			t.Errorf("argv should reference the env file:\n%s", got)
+		}
+	}
+}
+
+func TestEnvFileIsPrivateSortedAndSelfDeleting(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	path, err := writeEnvFile(map[string]string{"B": "2", "A": "1", "C": "it's"})
+	if err != nil {
+		t.Fatalf("writeEnvFile: %v", err)
+	}
+	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		again, err := buildArgv(spec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if again != first {
-			t.Fatalf("argv is not deterministic:\n%s\n%s", first, again)
-		}
+	// Owner-only: the whole point is that this is less readable than the
+	// command line it replaces.
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("env file mode = %o, want 600", perm)
 	}
-	if strings.Index(first, "A=1") > strings.Index(first, "B=2") {
-		t.Errorf("env should be sorted: %s", first)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "A='1'\nB='2'\nC='it'\\''s'\n"
+	if string(b) != want {
+		t.Errorf("env file =\n%q\nwant\n%q", b, want)
+	}
+	// The spawned shell, not canaveral, is what removes it — canaveral has
+	// returned long before the shell runs.
+	if pre := envPrefix(path); !strings.Contains(pre, "rm -f") || !strings.Contains(pre, "set -a") {
+		t.Errorf("env prefix should export and then delete: %s", pre)
+	}
+}
+
+func TestWriteEnvFileSkipsAnEmptyEnvironment(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	path, err := writeEnvFile(nil)
+	if err != nil {
+		t.Fatalf("writeEnvFile: %v", err)
+	}
+	if path != "" {
+		t.Errorf("path = %q, want empty", path)
+	}
+	if envPrefix("") != "" {
+		t.Errorf("empty path should produce no prefix")
 	}
 }
 

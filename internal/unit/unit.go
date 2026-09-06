@@ -85,9 +85,15 @@ func Start(ctx context.Context, s Spec) error {
 	// which is what we want for supervisors like foreman that spawn children.
 	args = append(args, "-p", "KillMode=mixed", "-p", "TimeoutStopSec=15")
 
+	// Names only, no values. `--setenv=NAME` tells systemd to take the value
+	// from systemd-run's own environment, which is set below — passing
+	// NAME=VALUE instead would publish every one of them in
+	// /proc/<pid>/cmdline, which is world-readable, for as long as
+	// systemd-run runs. Short, but these are API keys and database
+	// credentials, and a race is not a defence.
 	env := inheritEnv(s.Env)
 	for _, k := range sortedKeys(env) {
-		args = append(args, "--setenv="+k+"="+env[k])
+		args = append(args, "--setenv="+k)
 	}
 	// A non-login shell is deliberate: `sh -l` re-sources /etc/profile, which
 	// overwrites the PATH we inject and hides version-manager toolchains.
@@ -101,6 +107,12 @@ func Start(ctx context.Context, s Spec) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "systemd-run", args...)
+	// The values behind the --setenv names above. os/exec keeps the last of
+	// any duplicate, so these win over whatever canaveral inherited.
+	cmd.Env = os.Environ()
+	for _, k := range sortedKeys(env) {
+		cmd.Env = append(cmd.Env, k+"="+env[k])
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

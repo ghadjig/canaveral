@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -130,8 +131,16 @@ var TerminalBin = "alacritty"
 
 // Spawn launches a window on its feature's workspace without stealing focus.
 func Spawn(ctx context.Context, s SpawnSpec) error {
-	argv, err := buildArgv(s)
+	// Written before the dispatch and removed by the shell that reads it, so
+	// nothing of the environment appears in any process's arguments. See
+	// writeEnvFile.
+	envFile, err := writeEnvFile(s.Env)
 	if err != nil {
+		return fmt.Errorf("spawn %s: %w", s.Class, err)
+	}
+	argv, err := buildArgv(s, envFile)
+	if err != nil {
+		removeEnvFile(envFile)
 		return err
 	}
 
@@ -145,16 +154,102 @@ func Spawn(ctx context.Context, s SpawnSpec) error {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		removeEnvFile(envFile)
 		return fmt.Errorf("spawn %s: %w: %s", s.Class, err, strings.TrimSpace(stderr.String()))
 	}
 	if res := strings.TrimSpace(string(out)); res != "" && res != "ok" {
+		removeEnvFile(envFile)
 		return fmt.Errorf("spawn %s: hyprctl said %q", s.Class, res)
 	}
 	return nil
 }
 
+// removeEnvFile cleans up an environment file the spawned shell will now
+// never read, because the spawn did not happen. On the success path the shell
+// deletes it instead.
+func removeEnvFile(path string) {
+	if path != "" {
+		_ = os.Remove(path)
+	}
+}
+
 // buildArgv renders the shell command hyprctl should execute.
-func buildArgv(s SpawnSpec) (string, error) {
+// runtimeDir is the private, per-user directory environment files are written
+// to. $XDG_RUNTIME_DIR is tmpfs, mode 0700, and cleared when the session ends,
+// so a value written there never reaches persistent storage. Falling back to
+// the temp dir keeps this working off a login session, where the file's own
+// 0600 has to carry it instead.
+func runtimeDir() string {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, "canaveral")
+	}
+	return filepath.Join(os.TempDir(), "canaveral")
+}
+
+// writeEnvFile writes env as a shell fragment and returns its path, or ""
+// when there is nothing to write.
+//
+// The point is to keep values out of any command line. /proc/<pid>/cmdline is
+// world-readable — mode 444, not 400 like /proc/<pid>/environ — so an `env
+// K=V` prefix publishes every variable a window is given to every process on
+// the machine, for as long as that window lives. Measured on this setup: three
+// `sh -c env 'ANTHROPIC_API_KEY=...' alacritty` processes, one per window of a
+// single feature, readable by anyone. A toolchain that exports API keys and
+// database credentials (mise does) hands them straight out.
+//
+// A file is the way out that keeps Hyprland's exec-time workspace rule, which
+// binds to the process hyprctl starts and so cannot be given up. The spawned
+// shell sources it and deletes it immediately, leaving only a path on the
+// command line and nothing at rest.
+func writeEnvFile(env map[string]string) (string, error) {
+	if len(env) == 0 {
+		return "", nil
+	}
+	dir := runtimeDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("env dir: %w", err)
+	}
+	f, err := os.CreateTemp(dir, "env-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("env file: %w", err)
+	}
+	defer f.Close()
+	// CreateTemp is already 0600; stated rather than assumed, since the whole
+	// point of this file is that nothing else can read it.
+	if err := f.Chmod(0o600); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("env file: %w", err)
+	}
+	var b strings.Builder
+	for _, kv := range sortedEnv(env) {
+		k, v, _ := strings.Cut(kv, "=")
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(shellQuote(v))
+		b.WriteString("\n")
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("env file: %w", err)
+	}
+	return f.Name(), nil
+}
+
+// envPrefix is the shell that loads an environment file and then removes it.
+//
+// `set -a` exports what the file assigns, so plain `K=v` lines become part of
+// the environment rather than shell-local variables. The delete is here, in
+// the spawned shell, rather than in canaveral: canaveral has already returned
+// by the time the shell runs, and deleting from there would race the read.
+func envPrefix(path string) string {
+	if path == "" {
+		return ""
+	}
+	q := shellQuote(path)
+	return "set -a; . " + q + "; set +a; rm -f " + q + "; "
+}
+
+func buildArgv(s SpawnSpec, envFile string) (string, error) {
 	if s.Class == "" {
 		return "", errors.New("spawn: class is required")
 	}
@@ -162,25 +257,23 @@ func buildArgv(s SpawnSpec) (string, error) {
 	// Environment is applied to the terminal itself rather than to the inner
 	// command, so an interactive shell started with no command still inherits
 	// CANAVERAL_ROOT and friends.
-	var prefix strings.Builder
-	if len(s.Env) > 0 {
-		prefix.WriteString("env ")
-		for _, kv := range sortedEnv(s.Env) {
-			prefix.WriteString(shellQuote(kv))
-			prefix.WriteString(" ")
-		}
-	}
+	prefix := envPrefix(envFile)
 
 	if !s.IsTerminal {
 		if strings.TrimSpace(s.Cmd) == "" {
 			return "", fmt.Errorf("window %s: exec command is empty", s.Class)
 		}
 		// GUI applications set their own class; the command is used verbatim.
-		inner := prefix.String() + s.Cmd
+		//
+		// The prefix goes before the cd rather than between it and the
+		// command, so that `cd && cmd` still means "only run cmd if the
+		// directory was there" — threading a `;`-separated preamble through
+		// that && would quietly break it.
+		inner := s.Cmd
 		if s.Dir != "" {
 			inner = fmt.Sprintf("cd %s && %s", shellQuote(s.Dir), inner)
 		}
-		return "sh -c " + shellQuote(inner), nil
+		return "sh -c " + shellQuote(prefix+inner), nil
 	}
 
 	term := s.Terminal
@@ -210,7 +303,7 @@ func buildArgv(s SpawnSpec) (string, error) {
 	for i, p := range parts {
 		quoted[i] = shellQuote(p)
 	}
-	return prefix.String() + strings.Join(quoted, " "), nil
+	return prefix + strings.Join(quoted, " "), nil
 }
 
 func sortedEnv(m map[string]string) []string {

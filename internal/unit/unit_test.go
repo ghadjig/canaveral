@@ -203,3 +203,26 @@ func TestStopSurvivesACancelledContext(t *testing.T) {
 		t.Fatal("cancelled context unexpectedly ran the command")
 	}
 }
+
+// Start builds a systemd-run command line. The values behind --setenv must
+// not be on it: /proc/<pid>/cmdline is world-readable, and these are API keys
+// and database credentials.
+func TestStartPassesEnvNamesWithoutValues(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-not-a-real-key"}
+	var args []string
+	for _, k := range sortedKeys(inheritEnv(env)) {
+		args = append(args, "--setenv="+k)
+	}
+	line := strings.Join(args, " ")
+	if strings.Contains(line, "sk-ant-not-a-real-key") {
+		t.Errorf("secret leaked into systemd-run arguments: %s", line)
+	}
+	if !strings.Contains(line, "--setenv=ANTHROPIC_API_KEY") {
+		t.Errorf("name should still be passed: %s", line)
+	}
+	// Bare NAME means "take the value from systemd-run's own environment",
+	// which Start sets via cmd.Env.
+	if strings.Contains(line, "--setenv=ANTHROPIC_API_KEY=") {
+		t.Errorf("name should be passed without a value: %s", line)
+	}
+}
