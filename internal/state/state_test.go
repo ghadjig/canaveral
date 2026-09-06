@@ -511,6 +511,81 @@ func names(fs []*Feature) []string {
 	return out
 }
 
+// A space is reached by letter, from a sequence of its own, so it must not
+// consume a feature's number. Two spaces sharing this pool pushed the next
+// feature to slot 5 while 3 and 4 answered to nothing a feature could press.
+func TestEnsureWSlotsSkipsSpaces(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	base := time.Now().Add(-time.Hour)
+	mk := func(project, name string, age time.Duration, space bool) {
+		f := newFeature(project, name, 0)
+		f.CreatedAt = base.Add(age)
+		f.Space = space
+		if err := Save(f); err != nil {
+			t.Fatalf("Save %s: %v", name, err)
+		}
+	}
+	// Both spaces are created FIRST and are not headless — they have windows,
+	// which is the whole point: nothing but Space itself can keep them out of
+	// the sequence. If they took part, the features below would be 3 and 4.
+	mk("3d", "3d", 0, true)
+	mk("audio", "audio", time.Minute, true)
+	mk("norules", "real-one", 2*time.Minute, false)
+	mk("norules", "real-two", 3*time.Minute, false)
+
+	got, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	want := map[string]int{"3d": 0, "audio": 0, "real-one": 1, "real-two": 2}
+	for _, f := range got {
+		if f.WSlot != want[f.Name] {
+			t.Errorf("%s has slot %d, want %d", f.Name, f.WSlot, want[f.Name])
+		}
+	}
+}
+
+// A space carrying a number allocated before spaces left the sequence has to
+// give it back, and give it back ON DISK — an in-memory zero would be re-read
+// as a live claim by the next process to load the file, and the slot would
+// stay unreachable.
+func TestEnsureWSlotsReleasesASpacesExistingSlot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	held := newFeature("3d", "3d", 0)
+	held.Space = true
+	held.WSlot = 1
+	if err := Save(held); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureWSlots(); err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	reloaded, err := Load("3d", "3d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.WSlot != 0 {
+		t.Errorf("space slot not released on disk: got %d, want 0", reloaded.WSlot)
+	}
+
+	// And the number it was sitting on goes to a real feature.
+	next := newFeature("norules", "fresh", 0)
+	if err := Save(next); err != nil {
+		t.Fatal(err)
+	}
+	all, err := EnsureWSlots()
+	if err != nil {
+		t.Fatalf("EnsureWSlots: %v", err)
+	}
+	for _, f := range all {
+		if f.Name == "fresh" && f.WSlot != 1 {
+			t.Errorf("released slot not reused: fresh got %d, want 1", f.WSlot)
+		}
+	}
+}
+
 func TestEnsureWSlotsReassignsDuplicates(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 

@@ -12,6 +12,19 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Spaces no longer consume feature widget slots. A space is jumped to by
+  letter, from a sequence of its own, so a number it holds is a number no
+  keybind presses — and every feature after it was pushed one further along.
+  With two spaces open, a third feature opened as slot 5 while 3 and 4
+  answered to nothing. Spaces now sit at slot 0 alongside headless features,
+  and a space holding a slot from an earlier version gives it back on the next
+  `ws-slot`. Slot 0 now means "outside the feature number sequence" rather
+  than "headless".
+
 ## v0.8.4 — 2026-09-06
 
 Identical to v0.8.3 in code. Retagged on `main` so the version is

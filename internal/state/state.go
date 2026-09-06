@@ -490,6 +490,17 @@ func AllocateSlot(project, feature string) (int, error) {
 // number. A slot exists to be jumped to, and there is nothing to jump to: the
 // number would be a keybind onto an empty workspace, and every real feature
 // after it would be pushed one further from the key it used to answer to.
+//
+// Spaces are left at slot 0 for the second of those reasons. They are very
+// much somewhere to jump to, but they are not jumped to by NUMBER: a space is
+// reached by letter (super+ctrl+A, S, D...), from a sequence of its own that
+// is ordered by name. Sharing this pool meant two spaces pushed the next
+// feature to slot 5 while slots 3 and 4 answered to nothing a feature could
+// use — the exact displacement described above, for numbers that were never
+// pressed.
+//
+// Slot 0 therefore means "not in the feature number sequence", which covers
+// both cases, rather than "headless" specifically.
 func EnsureWSlots() ([]*Feature, error) {
 	all, err := LoadAll()
 	if err != nil {
@@ -498,11 +509,12 @@ func EnsureWSlots() ([]*Feature, error) {
 	used := map[int]bool{}
 	var missing []*Feature
 	for _, f := range all {
-		if f.Headless() {
+		if f.Headless() || f.Space {
 			// Persist the release, not just the in-memory zero: a feature
 			// that had windows and was later rebuilt without them is holding
 			// a number that nothing can reach, and it stays held until the
-			// state file itself says otherwise.
+			// state file itself says otherwise. The same applies to a space
+			// carrying a slot allocated before spaces left this sequence.
 			if f.WSlot != 0 {
 				f.WSlot = 0
 				if err := Save(f); err != nil {
@@ -535,8 +547,9 @@ func EnsureWSlots() ([]*Feature, error) {
 			return nil, fmt.Errorf("assign widget slot to %s: %w", f.Key(), err)
 		}
 	}
-	// Slot 0 now means "headless", not "not numbered yet", so those sort to
-	// the end instead of ahead of slot 1.
+	// Slot 0 now means "outside the feature number sequence" — headless, or a
+	// space, which is reached by letter instead — rather than "not numbered
+	// yet", so those sort to the end instead of ahead of slot 1.
 	sort.Slice(all, func(i, j int) bool {
 		a, b := all[i].WSlot, all[j].WSlot
 		if (a == 0) != (b == 0) {
