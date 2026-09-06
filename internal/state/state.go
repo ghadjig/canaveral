@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -76,10 +77,12 @@ type Feature struct {
 	PhaseStep  int    `json:"phase_step,omitempty"`
 	PhaseTotal int    `json:"phase_total,omitempty"`
 	PhaseLabel string `json:"phase_label,omitempty"`
-	// PhaseSince dates the phase so a reader can disbelieve it. A hard kill
-	// leaves the phase set with nobody advancing it, and a progress bar frozen
-	// forever is worse than none.
+	// PhaseSince dates the phase, and PhasePID names the process advancing it.
+	// Between them a reader can decide whether to believe the phase at all:
+	// nothing updates a state file on behalf of a process that has been killed,
+	// and a progress bar frozen forever is worse than none. See InPhase.
 	PhaseSince time.Time `json:"phase_since,omitempty"`
+	PhasePID   int       `json:"phase_pid,omitempty"`
 	// Provisioned lists paths canaveral copied in; they are not user work and
 	// must not make the worktree look dirty at teardown.
 	Provisioned []string  `json:"provisioned,omitempty"`
@@ -586,21 +589,54 @@ const (
 	PhaseStashing = "stashing"
 )
 
-// StalePhaseAfter bounds how long a phase is believed.
+// StalePhaseAfter bounds how long a phase is believed, as a backstop to the
+// liveness check in InPhase.
 //
-// Nothing updates a state file on behalf of a process that has been killed
-// outright, so an interrupted run leaves its phase set for good. Readers treat
-// anything older than this as settled: a feature that has genuinely been
-// booting for ten minutes has failed in some way this record cannot describe,
-// and a progress bar frozen forever is worse than no progress bar.
+// It only has to cover the case that check cannot: a pid recorded by an older
+// canaveral, or one that has been recycled by an unrelated process. Left at
+// ten minutes because a single step is allowed to be slow — a readiness probe
+// may be given twenty — and shortening it would start disbelieving boots that
+// are genuinely still going.
 const StalePhaseAfter = 10 * time.Minute
 
 // InPhase reports whether the feature is in a live, believable phase.
+//
+// Two questions, because neither alone is enough. Is anyone still working on
+// this — nothing updates a state file on behalf of a process that has been
+// killed, so a phase whose owner has exited is finished whatever it says, and
+// waiting out a timeout to admit that leaves a progress bar frozen over a
+// feature that is visibly up and working. And is it recent — because a pid
+// can be recycled, and records written before pids were recorded have none to
+// check.
 func (f *Feature) InPhase() bool {
 	if f.Phase == "" {
 		return false
 	}
-	return time.Since(f.PhaseSince) < StalePhaseAfter
+	if time.Since(f.PhaseSince) >= StalePhaseAfter {
+		return false
+	}
+	return phaseOwnerAlive(f.PhasePID)
+}
+
+// phaseOwnerAlive reports whether the process that recorded a phase still
+// exists.
+//
+// A pid of zero means the record predates PhasePID, so there is nothing to
+// ask and the staleness bound is all there is; saying "alive" leaves those
+// records behaving exactly as they did before.
+func phaseOwnerAlive(pid int) bool {
+	if pid <= 0 {
+		return true
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return true
+	}
+	// The documented way to test for existence: signal 0 delivers nothing and
+	// only reports whether the pid could be signalled. EPERM — live, but owned
+	// by another user — counts as gone, since it cannot then be the canaveral
+	// run that wrote this record.
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // SetPhase records progress and persists it.
@@ -611,6 +647,7 @@ func (f *Feature) InPhase() bool {
 func (f *Feature) SetPhase(phase, label string, step, total int) error {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = phase, label, step, total
 	f.PhaseSince = time.Now()
+	f.PhasePID = os.Getpid()
 	return Save(f)
 }
 
@@ -621,5 +658,6 @@ func (f *Feature) ClearPhase() error {
 	}
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
 	f.PhaseSince = time.Time{}
+	f.PhasePID = 0
 	return Save(f)
 }

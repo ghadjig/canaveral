@@ -1,7 +1,9 @@
 package feature
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -341,5 +343,132 @@ func TestIsStaleFalseWhenTheAgentHasNoURL(t *testing.T) {
 	c := clientRunning(t, "opencode attach http://127.0.0.1:38259 --dir /wt")
 	if isStale(c, "opencode attach  --dir /wt", []state.Agent{{Name: "main"}}) {
 		t.Error("an agent with no URL gives nothing to compare and must not close a window")
+	}
+}
+
+// installSpawnRecordingHyprctl puts a fake `hyprctl` on PATH that appends the
+// feature's state record to a log every time a window is dispatched, so a
+// test can ask what the progress bar was saying at the moment each window was
+// actually created — which is the thing the counting got wrong.
+func installSpawnRecordingHyprctl(t *testing.T, log string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+  clients) printf '%s' "${CANAVERAL_TEST_CLIENTS:-[]}" ;;
+  dispatch) cat "$CANAVERAL_TEST_RECORD" >> "$CANAVERAL_TEST_LOG"; printf 'ok' ;;
+  version|keyword) : ;;
+  *) exit 1 ;;
+esac
+`
+	path := filepath.Join(dir, "hyprctl")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("CANAVERAL_TEST_LOG", log)
+}
+
+// The step announced for a window has to be the spawn, not the template
+// render that precedes it.
+//
+// Counting the spec-building loop reported every window finished before the
+// first one existed, so a two-window feature published "window terminal, 1 of
+// 2" and then went quiet for the whole of the part that actually takes time
+// and can fail. When a boot died anywhere after that — which is exactly what
+// happened — the row it left behind named the last window and a count one
+// short of full, describing a feature stuck on its terminal when in fact
+// every window was up.
+func TestReconcileWindowsCountsTheSpawnNotTheSpecBuild(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	record := filepath.Join(stateHome, "canaveral", "features", "p", "f.json")
+	t.Setenv("CANAVERAL_TEST_RECORD", record)
+	log := filepath.Join(t.TempDir(), "spawns.log")
+	installSpawnRecordingHyprctl(t, log)
+
+	// No [layout]: the free path spawns without waiting on the compositor to
+	// map anything, which is all this test needs to observe.
+	run := "true"
+	m := &manifest.Manifest{Root: "/p", Terminal: "alacritty", Windows: []manifest.Window{
+		{Name: "opencode", Run: &run},
+		{Name: "terminal", Run: &run},
+	}}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
+
+	err := reconcileWindows(context.Background(), m, f, tmpl.Vars{}, nil,
+		&Result{}, quietReporter{}, "", prog)
+	if err != nil {
+		t.Fatalf("reconcileWindows: %v", err)
+	}
+
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read spawn log: %v", err)
+	}
+	var snapshots []state.Feature
+	dec := json.NewDecoder(bytes.NewReader(b))
+	for {
+		var snap state.Feature
+		if err := dec.Decode(&snap); err != nil {
+			break
+		}
+		snapshots = append(snapshots, snap)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("recorded %d spawns, want 2", len(snapshots))
+	}
+	for i, want := range []struct {
+		label string
+		step  int
+	}{{"window opencode", 0}, {"window terminal", 1}} {
+		if snapshots[i].PhaseLabel != want.label || snapshots[i].PhaseStep != want.step {
+			t.Errorf("at spawn %d the record said %q %d/%d, want %q %d/2",
+				i, snapshots[i].PhaseLabel, snapshots[i].PhaseStep,
+				snapshots[i].PhaseTotal, want.label, want.step)
+		}
+	}
+	if prog.step != 2 {
+		t.Errorf("step = %d after both windows, want 2 (a boot that finished must read as finished)", prog.step)
+	}
+}
+
+// A window that is already open is never spawned, so its step has to be
+// counted where it is decided instead — otherwise the bar stops one short for
+// every window a reconcile finds already up, which is the common case for
+// `reset` on a live feature.
+func TestReconcileWindowsCountsAWindowThatNeedsNoSpawn(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("CANAVERAL_TEST_RECORD", filepath.Join(stateHome, "canaveral", "features", "p", "f.json"))
+	log := filepath.Join(t.TempDir(), "spawns.log")
+	installSpawnRecordingHyprctl(t, log)
+
+	run := "true"
+	m := &manifest.Manifest{Root: "/p", Terminal: "alacritty", Windows: []manifest.Window{
+		{Name: "terminal", Run: &run},
+	}}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
+
+	// hyprctl reports the window as already open, so buildWindowSpec adopts it.
+	class := hypr.Class(f.Key(), "terminal")
+	clients, err := json.Marshal([]hypr.Client{{Address: "0x1", Class: class, InitialClass: class}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CANAVERAL_TEST_CLIENTS", string(clients))
+
+	if err := reconcileWindows(context.Background(), m, f, tmpl.Vars{}, nil,
+		&Result{}, quietReporter{}, "", prog); err != nil {
+		t.Fatalf("reconcileWindows: %v", err)
+	}
+
+	if _, err := os.Stat(log); err == nil {
+		t.Error("an already-open window must not be respawned")
+	}
+	if prog.step != 1 {
+		t.Errorf("step = %d, want 1: an adopted window is still a step done", prog.step)
 	}
 }

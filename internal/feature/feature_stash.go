@@ -41,7 +41,7 @@ func Stash(ctx context.Context, f *state.Feature, r Reporter) (*state.Stash, err
 	// enough that a status bar should say so. A phase of its own, not
 	// PhaseRemoving: see state.PhaseStashing for what reusing that would
 	// cost.
-	prog := newProgress(f, state.PhaseStashing, 3)
+	prog := newProgress(f, r, state.PhaseStashing, 3)
 
 	prog.start("saving sessions")
 	sessions := recordSessions(ctx, f)
@@ -74,6 +74,7 @@ func Stash(ctx context.Context, f *state.Feature, r Reporter) (*state.Stash, err
 	// that reads as mid-teardown forever would be picked up by Reap.
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
 	f.PhaseSince = time.Time{}
+	f.PhasePID = 0
 	if err := state.SaveStash(s); err != nil {
 		return nil, fmt.Errorf("save stash: %w", err)
 	}

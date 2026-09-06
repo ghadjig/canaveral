@@ -12,6 +12,39 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- A progress bar no longer freezes on the last window when the run behind it
+  dies.
+
+  Two things went wrong together, and a feature that had opened perfectly sat
+  under a bar reading `window terminal  3 / 4` for ten minutes while its agent
+  answered questions two centimetres below.
+
+  The window step was counted around the wrong work. `prog.start("window X")`
+  bracketed the template render that builds a spawn spec — microseconds — and
+  every window was reported finished before the first one had been created.
+  The spawning itself, which waits on the compositor, moves the workspace
+  between monitors and restores the user's focus, published nothing at all. So
+  the last thing any successful boot ever wrote was the final window's name at
+  one step short of full, and that is what a reader was left holding. Each
+  window is now announced and counted where it is actually spawned, or, when
+  it turns out to be open already, where that is decided.
+
+  And nothing ever settled a phase except the process that set it. Readers had
+  only a ten-minute staleness bound to fall back on, which cannot be shortened
+  because a single readiness probe is allowed to take twenty. The record now
+  names the process advancing it, so a phase whose owner has exited is
+  disbelieved at once rather than on a timer. `canaveral prune` gets the same
+  benefit: an interrupted teardown is reapable as soon as the `rm` that
+  abandoned it is gone.
+
+  Progress writes were also discarded errors, silently, including the one that
+  clears the phase — the write whose failure leaves exactly this symptom. They
+  now warn, once.
+
 ## v0.8.7 — 2026-09-06
 
 **Fixed**

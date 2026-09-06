@@ -3,6 +3,7 @@ package state
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -725,5 +726,87 @@ func TestSpaceIdentityDropsTheProjectPrefix(t *testing.T) {
 	}
 	if got, want := s.HyprWorkspace(), "3d-printing"; got != want {
 		t.Errorf("space HyprWorkspace() = %q, want %q", got, want)
+	}
+}
+
+// deadPID returns a pid that is certainly not running: a child that has been
+// started and reaped. Recycling could in principle hand it to something else,
+// but not within the microseconds this test needs it for.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run throwaway process: %v", err)
+	}
+	return cmd.Process.Pid
+}
+
+// The bug this exists for: a boot that got all the way to its last window,
+// then had its process killed between the final save and the clear. Every
+// window was up and the agent was answering questions, and the row above them
+// still read "booting, window terminal, 3 of 4" — for the ten minutes it took
+// the staleness bound to expire. Nobody was advancing that phase and the
+// record said who would have been, so there was no need to guess.
+func TestInPhaseDisbelievesAPhaseWhoseProcessIsGone(t *testing.T) {
+	f := &Feature{
+		Phase:      PhaseBooting,
+		PhaseLabel: "window terminal",
+		PhaseSince: time.Now(),
+		PhasePID:   deadPID(t),
+	}
+	if f.InPhase() {
+		t.Error("a phase whose owner has exited must not be believed")
+	}
+}
+
+func TestInPhaseBelievesAPhaseThisProcessOwns(t *testing.T) {
+	f := &Feature{Phase: PhaseBooting, PhaseSince: time.Now(), PhasePID: os.Getpid()}
+	if !f.InPhase() {
+		t.Error("a fresh phase owned by a live process must be believed")
+	}
+}
+
+// Records written before PhasePID existed have nobody to ask about, so the
+// staleness bound has to keep working on its own for them.
+func TestInPhaseFallsBackToTheStalenessBoundWithoutAPID(t *testing.T) {
+	fresh := &Feature{Phase: PhaseBooting, PhaseSince: time.Now()}
+	if !fresh.InPhase() {
+		t.Error("a fresh phase with no pid must still be believed")
+	}
+	old := &Feature{Phase: PhaseBooting, PhaseSince: time.Now().Add(-2 * StalePhaseAfter)}
+	if old.InPhase() {
+		t.Error("a phase past the staleness bound must not be believed, pid or not")
+	}
+}
+
+// The bound is a backstop for a recycled pid, so it has to outrank a live
+// one rather than the other way round.
+func TestInPhaseDisbelievesAStalePhaseEvenWithALivePID(t *testing.T) {
+	f := &Feature{
+		Phase:      PhaseBooting,
+		PhaseSince: time.Now().Add(-2 * StalePhaseAfter),
+		PhasePID:   os.Getpid(),
+	}
+	if f.InPhase() {
+		t.Error("a stale phase must not be rescued by a pid that happens to be alive")
+	}
+}
+
+func TestSetPhaseRecordsTheOwnerAndClearPhaseForgetsIt(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	f := &Feature{Project: "p", Name: "f"}
+
+	if err := f.SetPhase(PhaseBooting, "worktree", 0, 3); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	if f.PhasePID != os.Getpid() {
+		t.Errorf("PhasePID = %d, want this process (%d)", f.PhasePID, os.Getpid())
+	}
+
+	if err := f.ClearPhase(); err != nil {
+		t.Fatalf("ClearPhase: %v", err)
+	}
+	if f.PhasePID != 0 {
+		t.Errorf("PhasePID = %d, want it cleared with the rest of the phase", f.PhasePID)
 	}
 }

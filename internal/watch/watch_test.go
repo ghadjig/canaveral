@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"os/exec"
 	"testing"
 	"time"
 
@@ -356,5 +357,34 @@ func TestBuildLeavesSpaceUnsetForAFeature(t *testing.T) {
 	got := Build(feat("f"), nil, nil, time.Now())
 	if got.Space {
 		t.Error("Space = true, want false for an ordinary feature")
+	}
+}
+
+// The report this was written for: a boot whose process died between spawning
+// the last window and clearing the phase. Every window was up and the agent
+// was answering, and the row still read "booting, window terminal, 3 of 4" —
+// for the ten minutes the staleness bound took to expire. The record names the
+// process that was advancing it, so there is nothing to wait for.
+func TestBuildDisbelievesAPhaseWhoseProcessHasExited(t *testing.T) {
+	dead := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := dead.Run(); err != nil {
+		t.Fatalf("run throwaway process: %v", err)
+	}
+	f := &state.Feature{
+		Project: "canaveral", Name: "devspace/service-timeout",
+		Agents:     []state.Agent{{Name: "main", URL: "http://127.0.0.1:1"}},
+		Phase:      state.PhaseBooting,
+		PhaseLabel: "window terminal",
+		PhaseStep:  3, PhaseTotal: 4,
+		PhaseSince: time.Now(),
+		PhasePID:   dead.Process.Pid,
+	}
+	got := Build(f, map[string]agent.Health{"main": {Reachable: true}}, nil, time.Now())
+
+	if got.Status == StatusBooting {
+		t.Error("a feature whose boot process is gone must not still read as booting")
+	}
+	if got.Progress != nil {
+		t.Errorf("progress = %+v, want none once nobody is advancing it", got.Progress)
 	}
 }

@@ -191,7 +191,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	// Progress is published from here on. The record already exists, so a
 	// watcher has a row to put it on; everything below this point is slow
 	// enough to be worth reporting.
-	prog := newProgress(f, state.PhaseBooting, reconcileSteps(m, opt))
+	prog := newProgress(f, r, state.PhaseBooting, reconcileSteps(m, opt))
 	defer prog.finish()
 
 	prog.start("worktree")

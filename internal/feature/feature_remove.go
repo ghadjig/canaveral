@@ -169,10 +169,12 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// status bar should say so. Four steps — sessions, units, worktree, state —
 	// counted rather than named individually, since unlike creation the work is
 	// fixed and does not vary with the manifest.
-	prog := newProgress(f, state.PhaseRemoving, 4)
+	prog := newProgress(f, r, state.PhaseRemoving, 4)
 	// No deferred finish: the state file is deleted below, so there is nothing
 	// left to clear on the way out. A failure before that point does leave the
-	// phase set, which the staleness bound in state.InPhase covers.
+	// phase set, which state.InPhase covers — the phase names the process
+	// advancing it, so an abandoned teardown reads as abandoned the moment
+	// that process is gone.
 	prog.start("saving session")
 	recordNamespaceSession(ctx, f)
 
@@ -231,10 +233,13 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 // interrupted run leaves it behind with Phase still set to "removing"
 // forever, and nothing before this ever came back to finish the job.
 //
-// Only stale records are touched: state.InPhase's ten-minute bound is what
-// tells a genuinely-in-progress removal (running right now, on another
-// terminal) apart from an abandoned one, and reaping the former out from
-// under it would race a live `rm`.
+// Only abandoned records are touched: state.InPhase is what tells a
+// genuinely-in-progress removal (running right now, on another terminal)
+// apart from one nobody is coming back to, and reaping the former out from
+// under it would race a live `rm`. It answers that by asking whether the
+// process named in the record still exists, so an interrupted teardown is
+// reapable at once rather than after a timeout long enough to be safe for a
+// slow one.
 //
 // force is passed through unconditionally. It only relaxes the dirty-worktree
 // guard and the refusal to touch an unmerged branch, both of which the

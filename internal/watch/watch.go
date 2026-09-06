@@ -347,9 +347,9 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 	// probes — offline — is exactly the wrong thing to show someone who just
 	// asked for this feature and is watching it appear.
 	//
-	// InPhase disbelieves a phase older than its staleness bound: nothing
-	// updates a state file on behalf of a process that was killed outright,
-	// and a progress bar frozen forever is worse than none.
+	// InPhase disbelieves a phase nobody is advancing: nothing updates a state
+	// file on behalf of a process that was killed, and a progress bar frozen
+	// over a feature whose agent is answering questions is worse than none.
 	if f.InPhase() {
 		switch f.Phase {
 		case state.PhaseBooting:

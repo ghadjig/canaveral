@@ -1,6 +1,8 @@
 package feature
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bandito/canaveral/internal/manifest"
@@ -67,7 +69,7 @@ func TestProgressMethodsAreNilSafe(t *testing.T) {
 func TestProgressStartPublishesTheStepIntoState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &state.Feature{Project: "p", Name: "f"}
-	prog := newProgress(f, state.PhaseBooting, 3)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 3)
 
 	prog.start("worktree")
 
@@ -82,7 +84,7 @@ func TestProgressStartPublishesTheStepIntoState(t *testing.T) {
 func TestProgressDoneAdvancesTheStepForTheNextStart(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &state.Feature{Project: "p", Name: "f"}
-	prog := newProgress(f, state.PhaseBooting, 2)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
 
 	prog.start("worktree")
 	prog.done()
@@ -93,9 +95,65 @@ func TestProgressDoneAdvancesTheStepForTheNextStart(t *testing.T) {
 	}
 }
 
+// done() has to reach the file, not just the counter. Whatever was written
+// last is what a reader is left staring at when the run dies before it can
+// clear the phase, and a final step counted only in memory made a boot that
+// had finished everything read as one wedged on its last step.
+func TestProgressDonePublishesTheCountToTheRecord(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	f := &state.Feature{Project: "p", Name: "f"}
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
+
+	prog.start("worktree")
+	prog.done()
+	prog.start("window terminal")
+	prog.done()
+
+	stored, err := state.Load("p", "f")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.PhaseStep != 2 || stored.PhaseTotal != 2 {
+		t.Errorf("stored step/total = %d/%d, want 2/2", stored.PhaseStep, stored.PhaseTotal)
+	}
+}
+
+// A record that cannot be written is a record that will sit on whatever it
+// last said, so the failure has to be sayable even though it is not fatal.
+func TestProgressWarnsOnceWhenItCannotWrite(t *testing.T) {
+	// A state home that is a file, not a directory, so every Save fails.
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", blocked)
+
+	var warns int
+	prog := newProgress(&state.Feature{Project: "p", Name: "f"},
+		countingReporter{warn: func() { warns++ }}, state.PhaseBooting, 2)
+
+	prog.start("worktree")
+	prog.done()
+	prog.start("window terminal")
+	prog.done()
+	prog.finish()
+
+	if warns != 1 {
+		t.Errorf("warnings = %d, want exactly 1 (said once, not once per step)", warns)
+	}
+}
+
+type countingReporter struct{ warn func() }
+
+func (countingReporter) Step(string, ...any)   {}
+func (countingReporter) OK(string, ...any)     {}
+func (countingReporter) Info(string, ...any)   {}
+func (c countingReporter) Warn(string, ...any) { c.warn() }
+
 func TestProgressDoneNeverExceedsTotal(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	prog := newProgress(&state.Feature{Project: "p", Name: "f"}, state.PhaseBooting, 1)
+	prog := newProgress(&state.Feature{Project: "p", Name: "f"}, quietReporter{}, state.PhaseBooting, 1)
 
 	prog.done()
 	prog.done()
@@ -112,7 +170,7 @@ func TestProgressDoneNeverExceedsTotal(t *testing.T) {
 func TestProgressFinishClearsThePhase(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &state.Feature{Project: "p", Name: "f"}
-	prog := newProgress(f, state.PhaseBooting, 1)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
 	prog.start("worktree")
 
 	prog.finish()

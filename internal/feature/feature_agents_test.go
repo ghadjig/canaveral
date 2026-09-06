@@ -211,7 +211,7 @@ func agentFakeServer(t *testing.T, sessions, messages string) *httptest.Server {
 
 func TestReconcileAgentsNoopWithoutDeclaredAgents(t *testing.T) {
 	f := &state.Feature{Project: "p", Name: "reconcile-agents-noop"}
-	prog := newProgress(f, state.PhaseBooting, 0)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 0)
 	res := &Result{}
 	err := reconcileAgents(context.Background(), &manifest.Manifest{}, f, tmpl.Vars{}, nil, res, quietReporter{}, prog)
 	if err != nil {
@@ -261,7 +261,7 @@ func TestReconcileAgentsAdoptsAnAlreadyRunningUnit(t *testing.T) {
 	}
 
 	m := &manifest.Manifest{Agents: []manifest.Agent{{Name: "main", Tool: "opencode", Dir: "."}}}
-	prog := newProgress(f, state.PhaseBooting, 1)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
 	res := &Result{}
 	if err := reconcileAgents(ctx, m, f, tmpl.Vars{}, nil, res, quietReporter{}, prog); err != nil {
 		t.Fatalf("reconcileAgents: %v", err)
@@ -299,7 +299,7 @@ func TestReconcileAgentsRecordsAnUnsupervisedAgentWithoutAUnit(t *testing.T) {
 	root := t.TempDir()
 	f := &state.Feature{Project: "unsupervised-test", Name: "main", Root: root, Worktree: t.TempDir()}
 	m := &manifest.Manifest{Root: root, Agents: []manifest.Agent{{Name: "main", Tool: "claude", Dir: "."}}}
-	prog := newProgress(f, state.PhaseBooting, 1)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
 	res := &Result{}
 
 	if err := reconcileAgents(context.Background(), m, f, tmpl.Vars{}, nil, res, quietReporter{}, prog); err != nil {
@@ -328,7 +328,7 @@ func TestReconcileAgentsFailsOnAnUnknownTool(t *testing.T) {
 
 	f := &state.Feature{Project: "unknown-tool-test", Name: "main", Worktree: t.TempDir()}
 	m := &manifest.Manifest{Agents: []manifest.Agent{{Name: "main", Tool: "nano-banana", Dir: "."}}}
-	prog := newProgress(f, state.PhaseBooting, 1)
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
 
 	err := reconcileAgents(context.Background(), m, f, tmpl.Vars{}, nil, &Result{}, quietReporter{}, prog)
 	if err == nil {

@@ -49,10 +49,16 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	pendingByName := map[string]pendingSpawn{}
 
 	for _, w := range m.Windows {
-		// Counted here rather than at spawn: this is the only loop that visits
-		// every declared window exactly once (spawning is split between the
-		// layout and free paths), and seeding a browser profile here is the
-		// slow part regardless.
+		// Announced here because this is the only loop that visits every
+		// declared window exactly once, and seeding a browser profile in
+		// buildWindowSpec is slow enough to be worth a label of its own.
+		//
+		// Counted here only when the window turns out to need no spawn. The
+		// spawn is the part that takes the time and the part that can hang,
+		// so it carries its own step; counting the build as the whole of a
+		// window's work reported every one of them as finished before the
+		// first had been created, which left the bar sitting on the last
+		// window's name for the entire operation.
 		prog.start("window " + w.Name)
 		rec, pending, err := buildWindowSpec(ctx, m, f, w, vars, base, clients, open, r)
 		if err != nil {
@@ -61,14 +67,15 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		records = append(records, rec)
 		if pending != nil {
 			pendingByName[w.Name] = *pending
+		} else {
+			prog.done()
 		}
-		prog.done()
 	}
 
-	spawnFreeWindows(ctx, m, pendingByName, res, r)
+	spawnFreeWindows(ctx, m, pendingByName, res, r, prog)
 
 	if m.Layout.Enabled() {
-		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, isLayoutFresh(m, pendingByName), res, r, originalWS); err != nil {
+		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, isLayoutFresh(m, pendingByName), res, r, originalWS, prog); err != nil {
 			return fmt.Errorf("layout: %w", err)
 		}
 	}
@@ -255,7 +262,7 @@ func replaceStale(ctx context.Context, c hypr.Client, name string, r Reporter) b
 
 // spawnFreeWindows spawns every pending window not managed by [layout]
 // exactly as before: independently, in manifest order, no chaining.
-func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName map[string]pendingSpawn, res *Result, r Reporter) {
+func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName map[string]pendingSpawn, res *Result, r Reporter, prog *progress) {
 	inOrder := map[string]bool{}
 	for _, name := range m.Layout.Order {
 		inOrder[name] = true
@@ -265,13 +272,27 @@ func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName m
 		if !isPending || inOrder[w.Name] {
 			continue
 		}
-		if _, err := spawnWindow(ctx, p, false); err != nil {
+		if _, err := spawnTracked(ctx, p, false, prog); err != nil {
 			r.Warn("window %s: %v", w.Name, err)
 			continue
 		}
 		r.OK("window %s", w.Name)
 		res.SpawnedWindow = append(res.SpawnedWindow, w.Name)
 	}
+}
+
+// spawnTracked spawns a pending window as a counted step, so the progress a
+// watcher sees names the window actually being created and advances when it
+// is up — rather than reporting every window finished before the first one
+// exists, which is what counting the spec-building loop alone did.
+//
+// The step is marked finished either way. A window that failed to spawn is
+// not going to be attempted again in this pass, and leaving its step open
+// would strand the bar one short of full for the rest of the run.
+func spawnTracked(ctx context.Context, p pendingSpawn, locate bool, prog *progress) (string, error) {
+	prog.start("window " + p.name)
+	defer prog.done()
+	return spawnWindow(ctx, p, locate)
 }
 
 // classWait is how long a window carrying canaveral's own class is given to
@@ -459,7 +480,7 @@ func waitForMatch(ctx context.Context, re *regexp.Regexp, seen map[string]bool, 
 // windows. It is bounded and it is put back, which is the most that can be
 // had while Hyprland requires focus to lay windows out at all.
 func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
-	pending map[string]pendingSpawn, layoutFresh bool, res *Result, r Reporter, originalWS string) error {
+	pending map[string]pendingSpawn, layoutFresh bool, res *Result, r Reporter, originalWS string, prog *progress) error {
 
 	var missing []string
 	for _, name := range m.Layout.Order {
@@ -482,21 +503,21 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 	defer restore()
 
 	if !layoutFresh {
-		spawnMissingIndependently(ctx, missing, pending, res, r)
+		spawnMissingIndependently(ctx, missing, pending, res, r, prog)
 		return nil
 	}
 
-	return spawnLayoutChain(ctx, m, hyprWorkspace, pending, res, r)
+	return spawnLayoutChain(ctx, m, hyprWorkspace, pending, res, r, prog)
 }
 
 // spawnMissingIndependently spawns each still-missing layout window on its
 // own, without the preselect chaining that builds an exact-ratio layout —
 // used when the layout is not "fresh" (see reconcileLayoutWindows' doc for
 // why a partial chain cannot be reliably re-derived).
-func spawnMissingIndependently(ctx context.Context, missing []string, pending map[string]pendingSpawn, res *Result, r Reporter) {
+func spawnMissingIndependently(ctx context.Context, missing []string, pending map[string]pendingSpawn, res *Result, r Reporter, prog *progress) {
 	for _, name := range missing {
 		p := pending[name]
-		if _, err := spawnWindow(ctx, p, false); err != nil {
+		if _, err := spawnTracked(ctx, p, false, prog); err != nil {
 			r.Warn("window %s: %v", name, err)
 			continue
 		}
@@ -510,7 +531,7 @@ func spawnMissingIndependently(ctx context.Context, missing []string, pending ma
 // the result is a single left-to-right dwindle split, then the exact
 // ratios from splitRatioChain are applied.
 func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
-	pending map[string]pendingSpawn, res *Result, r Reporter) error {
+	pending map[string]pendingSpawn, res *Result, r Reporter, prog *progress) error {
 
 	// Runs before reconcileLayoutWindows' own focus restore, which is
 	// registered earlier and so fires later: this monitor has to be showing
@@ -533,7 +554,7 @@ func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace s
 				return err
 			}
 		}
-		addr, err := spawnWindow(ctx, p, true)
+		addr, err := spawnTracked(ctx, p, true, prog)
 		if err != nil {
 			return fmt.Errorf("window %q: %w", name, err)
 		}
