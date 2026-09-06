@@ -12,6 +12,57 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.8.9 — 2026-09-06
+
+**Fixed**
+
+- Closing the terminal a launch is running in now tears down what that launch
+  had started, instead of orphaning it.
+
+  canaveral caught SIGINT and SIGTERM but not SIGHUP, so closing the window
+  killed it outright — no deferred cleanup, and the services it had already
+  started stayed up holding the feature's ports with nothing left that knew
+  about them. Ctrl-C had always handled this correctly; the difference between
+  the two was invisible from the outside and easy to hit, since a launch slow
+  enough to walk away from is exactly the one whose terminal gets closed.
+
+  SIGHUP already ignored on entry is left alone, so `nohup canaveral new ...`
+  still means what it says.
+
+- A step slow enough to matter now says so while it runs, instead of going
+  silent until it either finishes or times out.
+
+  `waiting for http readiness probe, up to 30m0s` was the last thing printed
+  before a devspace cold start that had eight minutes left to go. Nothing
+  followed it, and a boot working perfectly is indistinguishable from a wedged
+  one when neither says anything, so the run was killed two minutes short of
+  ready. Port discovery had the same shape.
+
+  Both now report every thirty seconds how long they have been waiting, out of
+  how long they are allowed, and — the part that actually answers the question
+  — whether the service's own log is still growing:
+
+  ```
+      still waiting for devspace: 5m0s of 30m0s · log +18.4K
+      still waiting for devspace: 5m30s of 30m0s · log quiet for 47s
+  ```
+
+  A log that is filling up says wait; one that has been quiet for four minutes
+  says go and look.
+
+- A progress bar no longer disappears part-way through a boot that is still
+  going.
+
+  Phase records were believed for ten minutes from the start of the current
+  step, which quietly made ten minutes the longest any single step could take.
+  A readiness probe given thirty — yogurt's devspace service needs it, and
+  regularly uses ten — aged out mid-wait, and the feature dropped off the
+  status bar while it was still coming up. The record now carries a heartbeat
+  separate from the step's own clock: the ten minutes is measured from the
+  last sign of life rather than from the start of the work, so a long step
+  stays visible for as long as something is advancing it and a step whose
+  owner died is disbelieved exactly as promptly as before.
+
 ## v0.8.8 — 2026-09-06
 
 **Fixed**

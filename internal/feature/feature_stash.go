@@ -72,9 +72,7 @@ func Stash(ctx context.Context, f *state.Feature, r Reporter) (*state.Stash, err
 	// The phase is cleared on the copy being written, not left at
 	// "removing": nothing is going to come back and advance it, and a stash
 	// that reads as mid-teardown forever would be picked up by Reap.
-	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
-	f.PhaseSince = time.Time{}
-	f.PhasePID = 0
+	f.ResetPhase()
 	if err := state.SaveStash(s); err != nil {
 		return nil, fmt.Errorf("save stash: %w", err)
 	}
