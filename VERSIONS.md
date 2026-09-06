@@ -12,6 +12,22 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.8.4 — 2026-09-06
+
+Identical to v0.8.3 in code. Retagged on `main` so the version is
+unambiguous.
+
+v0.8.3 was tagged on the feature branch, which is how earlier releases were
+done, and `main` then picked it up through a merge commit. That leaves the
+tag one commit behind `main`'s tip, so `git describe` — and therefore
+`--version` on anything built from `main` — reported `v0.8.3-1-g4eb3c1d`.
+Legitimate, and documented at the top of this file, but it reads like a
+build between releases rather than the release itself, and there is no
+useful way to tell the two apart by eye.
+
+Releases from here should tag `main` after the merge, not the branch before
+it.
+
 ## v0.8.3 — 2026-09-06
 
 ### Added
