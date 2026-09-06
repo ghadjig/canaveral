@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -53,7 +54,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		// layout and free paths), and seeding a browser profile here is the
 		// slow part regardless.
 		prog.start("window " + w.Name)
-		rec, pending, err := buildWindowSpec(ctx, m, f, w, vars, base, open, r)
+		rec, pending, err := buildWindowSpec(ctx, m, f, w, vars, base, clients, open, r)
 		if err != nil {
 			return err
 		}
@@ -105,11 +106,15 @@ func isLayoutFresh(m *manifest.Manifest, pending map[string]pendingSpawn) bool {
 // buildWindowSpec resolves a single declared window's spawn spec (rendering
 // its command template, seeding a browser profile if configured) and the
 // state record to persist for it. pending is nil when the window is already
-// open and still current — detection is purely by the class canaveral
-// assigns; matching anything looser risks adopting one of the user's own
-// windows.
+// open and still current.
+//
+// Detection is by the class canaveral assigns; matching anything looser
+// risks adopting one of the user's own windows. A window declaring
+// match_class cannot carry that class, so it is instead looked for on the
+// feature's own workspace, which no other feature shares — see
+// hypr.MatchInWorkspace.
 func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
-	vars tmpl.Vars, base map[string]string, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
+	vars tmpl.Vars, base map[string]string, clients []hypr.Client, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
 
 	class := hypr.Class(f.Key(), w.Name)
 
@@ -129,10 +134,24 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		dir = serviceDir(f, m, w.Dir)
 	}
 	rec := state.Window{
-		Name: w.Name, Class: class, Cmd: cmd, Dir: dir, Workspace: f.HyprWorkspace(),
+		Name: w.Name, Class: class, Cmd: cmd, Dir: dir,
+		MatchClass: w.MatchClass, Workspace: f.HyprWorkspace(),
 	}
 
-	if c, alive := open[class]; alive {
+	// Compiled rather than trusted: the manifest already rejected a bad
+	// pattern, but a state file edited by hand reaches here too.
+	var match *regexp.Regexp
+	if w.MatchClass != "" {
+		if match, err = regexp.Compile(w.MatchClass); err != nil {
+			return rec, nil, fmt.Errorf("window %q: match_class: %w", w.Name, err)
+		}
+	}
+
+	c, alive := open[class]
+	if match != nil {
+		c, alive = hypr.MatchInWorkspace(clients, match, f.HyprWorkspace())
+	}
+	if alive {
 		if !isStale(c, cmd, f.Agents) {
 			return rec, nil, nil
 		}
@@ -163,7 +182,7 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		Hold:       w.Hold,
 		Env:        base,
 	}
-	return rec, &pendingSpawn{name: w.Name, spec: spec}, nil
+	return rec, &pendingSpawn{name: w.Name, spec: spec, match: match}, nil
 }
 
 // isStale reports whether an already-open window is still attached to an
@@ -220,10 +239,13 @@ func replaceStale(ctx context.Context, c hypr.Client, name string, r Reporter) b
 		r.Warn("window %s is stale but could not be closed: %v", name, err)
 		return false
 	}
-	// Spawning before the old window is gone would leave two of the same
-	// class briefly, and waitForClass would then be free to pick the dying
-	// one and chain the layout onto an address about to disappear.
-	if err := waitForClassGone(ctx, c.InitialClass, 5*time.Second); err != nil {
+	// Spawning before the old window is gone would leave two candidates
+	// briefly, and the search that follows a spawn would then be free to pick
+	// the dying one and chain the layout onto an address about to disappear.
+	// Waited on by address rather than by class: a match_class window shares
+	// its class with the user's own windows of the same application, and
+	// waiting for all of those to close would simply time out.
+	if err := waitForAddressGone(ctx, c.Address, 5*time.Second); err != nil {
 		r.Warn("window %s: %v", name, err)
 		return false
 	}
@@ -243,12 +265,171 @@ func spawnFreeWindows(ctx context.Context, m *manifest.Manifest, pendingByName m
 		if !isPending || inOrder[w.Name] {
 			continue
 		}
-		if err := hypr.Spawn(ctx, p.spec); err != nil {
+		if _, err := spawnWindow(ctx, p, false); err != nil {
 			r.Warn("window %s: %v", w.Name, err)
 			continue
 		}
 		r.OK("window %s", w.Name)
 		res.SpawnedWindow = append(res.SpawnedWindow, w.Name)
+	}
+}
+
+// classWait is how long a window carrying canaveral's own class is given to
+// appear. matchWait is much longer, because a match_class window is by
+// definition an application canaveral cannot instrument, and those are the
+// slow ones: a 230MB AppImage mounts and decompresses its own squashfs before
+// a toolkit is loaded, which measured about a second with the file in page
+// cache and the better part of a minute cold. Erring short is the worse
+// mistake — the window then opens on whatever workspace the user is looking
+// at and is spawned again on the next open — so this is set well past the
+// slow case rather than near it.
+//
+// matchSettle is how long a window that has just been placed must survive
+// before the application is believed to have finished; see placeMatched.
+const (
+	classWait   = 5 * time.Second
+	matchWait   = 90 * time.Second
+	matchSettle = 6 * time.Second
+)
+
+// spawnWindow spawns a pending window and returns the address of the window
+// it produced, or "" when nothing needed to be located.
+//
+// locate asks for the address even for an ordinary window, which the layout
+// chain needs and the free path does not. A match_class window is always
+// located regardless of locate: the application does not carry the class
+// Hyprland's exec-time workspace rule was attached to, so unless the window
+// is found and moved here it opens wherever the user happens to be looking.
+func spawnWindow(ctx context.Context, p pendingSpawn, locate bool) (string, error) {
+	// Snapshotted before the spawn, because a match_class pattern cannot
+	// distinguish the window we are about to create from the user's own
+	// windows of the same application. Whichever one is new is ours.
+	var seen map[string]bool
+	if p.match != nil {
+		clients, err := hypr.Clients(ctx)
+		if err != nil {
+			return "", err
+		}
+		seen = make(map[string]bool, len(clients))
+		for _, c := range clients {
+			seen[c.Address] = true
+		}
+	}
+
+	if err := hypr.Spawn(ctx, p.spec); err != nil {
+		return "", err
+	}
+
+	if p.match == nil {
+		if !locate {
+			return "", nil
+		}
+		return waitForClass(ctx, p.spec.Class, classWait)
+	}
+	return placeMatched(ctx, p.match, seen, p.spec.Workspace)
+}
+
+// placeMatched finds the window a match_class spawn produced and keeps it on
+// the feature's workspace until the application settles.
+//
+// Placing it once is not enough. An application that cannot be told its class
+// also cannot be told to stop replacing its own window, and the ones that
+// need match_class do exactly that: BambuStudio maps a loading window,
+// canaveral moves it, and some four seconds later that window is gone and the
+// real one has mapped on whatever workspace the user was looking at. Measured
+// on Hyprland 0.50.1 — the loading window survived 3.7s.
+//
+// So every window found is moved and then watched. If it disappears, whatever
+// replaces it is moved too; once one has survived matchSettle the application
+// is done and so is this. The whole thing is bounded by matchWait, and the
+// cost in the ordinary case is matchSettle, paid once when a space is opened.
+func placeMatched(ctx context.Context, re *regexp.Regexp, seen map[string]bool, workspace string) (string, error) {
+	deadline := time.Now().Add(matchWait)
+
+	// The first window gets the full budget: this is where a cold AppImage
+	// spends its time. A replacement gets much less, since the application
+	// has demonstrably started by then, and waiting the full budget for a
+	// replacement that is never coming would hang the open.
+	addr, err := waitForMatch(ctx, re, seen, deadline)
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		seen[addr] = true
+		if err := hypr.MoveWindowToNamedWorkspace(ctx, addr, workspace); err != nil {
+			return addr, err
+		}
+		if survived, err := outlives(ctx, addr, matchSettle, deadline); err != nil || survived {
+			return addr, err
+		}
+		next, err := waitForMatch(ctx, re, seen, earliest(time.Now().Add(matchSettle), deadline))
+		if err != nil {
+			// Nothing replaced it. The application closed its own window
+			// rather than swapping it, which is its business, not an error.
+			return addr, nil
+		}
+		addr = next
+	}
+}
+
+func earliest(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// outlives reports whether a window is still open after d, which is how a
+// window that is here to stay is told from one about to be swapped out. A
+// window still present when the overall deadline passes counts as settled:
+// there is no budget left to do anything else with it.
+func outlives(ctx context.Context, address string, d time.Duration, deadline time.Time) (bool, error) {
+	until := earliest(time.Now().Add(d), deadline)
+	for {
+		if time.Now().After(until) {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+		clients, err := hypr.Clients(ctx)
+		if err != nil {
+			continue
+		}
+		if !slices.ContainsFunc(clients, func(c hypr.Client) bool { return c.Address == address }) {
+			return false, nil
+		}
+	}
+}
+
+// waitForMatch polls until a window matching re that is not already in seen
+// appears, returning its address.
+//
+// The set difference is what identifies it. Matching on the pattern alone
+// would be free to return a window the user opened themselves — and the
+// caller goes on to drag whatever comes back onto the feature's workspace,
+// so being wrong here is not a cosmetic failure.
+func waitForMatch(ctx context.Context, re *regexp.Regexp, seen map[string]bool, deadline time.Time) (string, error) {
+	for {
+		clients, err := hypr.Clients(ctx)
+		if err == nil {
+			for _, c := range clients {
+				if !seen[c.Address] && hypr.ClassMatches(re, c) {
+					return c.Address, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("no new window matching %s appeared in time", re)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
@@ -312,7 +493,7 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 func spawnMissingIndependently(ctx context.Context, missing []string, pending map[string]pendingSpawn, res *Result, r Reporter) {
 	for _, name := range missing {
 		p := pending[name]
-		if err := hypr.Spawn(ctx, p.spec); err != nil {
+		if _, err := spawnWindow(ctx, p, false); err != nil {
 			r.Warn("window %s: %v", name, err)
 			continue
 		}
@@ -337,16 +518,12 @@ func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace s
 				return err
 			}
 		}
-		if err := hypr.Spawn(ctx, p.spec); err != nil {
+		addr, err := spawnWindow(ctx, p, true)
+		if err != nil {
 			return fmt.Errorf("window %q: %w", name, err)
 		}
 		r.OK("window %s", name)
 		res.SpawnedWindow = append(res.SpawnedWindow, name)
-
-		addr, err := waitForClass(ctx, p.spec.Class, 5*time.Second)
-		if err != nil {
-			return fmt.Errorf("window %q: %w", name, err)
-		}
 		addresses[name] = addr
 
 		if i == 0 {
@@ -433,20 +610,20 @@ func waitForClass(ctx context.Context, class string, timeout time.Duration) (str
 	}
 }
 
-// waitForClassGone polls until no window of the given class is left, the
+// waitForAddressGone polls until a particular window is gone, the
 // counterpart to waitForClass for a close that has been dispatched but not
 // yet acted on by the compositor.
-func waitForClassGone(ctx context.Context, class string, timeout time.Duration) error {
+func waitForAddressGone(ctx context.Context, address string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		clients, err := hypr.Clients(ctx)
 		if err == nil && !slices.ContainsFunc(clients, func(c hypr.Client) bool {
-			return c.InitialClass == class
+			return c.Address == address
 		}) {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("window with class %q did not close within %s", class, timeout)
+			return fmt.Errorf("window %s did not close within %s", address, timeout)
 		}
 		select {
 		case <-ctx.Done():

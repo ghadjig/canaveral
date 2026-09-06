@@ -79,6 +79,31 @@ func ByClass(cs []Client) map[string]Client {
 	return m
 }
 
+// ClassMatches reports whether a window's class satisfies a match_class
+// pattern. Both the current and the initial class are tried: an application
+// that renames its class after mapping should still be recognisable, and
+// which of the two a given toolkit populates is not something the user
+// writing the pattern can be expected to know.
+func ClassMatches(re *regexp.Regexp, c Client) bool {
+	return re.MatchString(c.Class) || re.MatchString(c.InitialClass)
+}
+
+// MatchInWorkspace finds a window matching re on the named workspace.
+//
+// This is how an application that will not carry canaveral's class is
+// identified. Its class alone is ambiguous — the user's own browser has the
+// same one, and adopting that would move it out from under them — but a
+// window of that class on a workspace a single feature owns exclusively can
+// only be the one canaveral opened there.
+func MatchInWorkspace(cs []Client, re *regexp.Regexp, workspace string) (Client, bool) {
+	for _, c := range cs {
+		if c.Workspace.Name == workspace && ClassMatches(re, c) {
+			return c, true
+		}
+	}
+	return Client{}, false
+}
+
 // SpawnSpec describes a window to launch.
 type SpawnSpec struct {
 	// Class is the window class used for later reconciliation.
@@ -641,3 +666,22 @@ func MoveWindowToWorkspace(ctx context.Context, address string, workspace int) e
 // NextFreeWorkspaceID is the exported form of nextFreeWorkspaceID, for
 // callers that need somewhere guaranteed empty to put windows.
 func NextFreeWorkspaceID(ctx context.Context) (int, error) { return nextFreeWorkspaceID(ctx) }
+
+// MoveWindowToNamedWorkspace moves a window onto a named workspace without
+// following it there.
+//
+// Needed because Spawn's exec-time `[workspace name:...]` rule binds to the
+// process hyprctl starts, and an application that hands the request off to an
+// already-running instance of itself — or re-execs, as an AppImage does once
+// it has mounted its own payload — draws its window from a process that rule
+// never saw. Such a window has to be found afterwards and moved by hand.
+func MoveWindowToNamedWorkspace(ctx context.Context, address, workspace string) error {
+	cmd := exec.CommandContext(ctx, "hyprctl", "dispatch", "movetoworkspacesilent",
+		fmt.Sprintf("name:%s,address:%s", workspace, address))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("move window %s to workspace %s: %w: %s", address, workspace, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}

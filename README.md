@@ -574,15 +574,53 @@ container and `db:prepare` with nothing pending are both no-ops.
 application. Terminal windows are tagged with a canaveral class, which is how
 `reset` knows whether they are still open.
 
-**GUI applications need `match_class`.** Chrome ignores `--class` on Wayland
-(it is X11-only) and hands the request to an already-running browser process, so
-Hyprland's exec-time workspace rule may not apply either. Its title is no help
-because it follows the page as you browse. canaveral therefore identifies such a
-window as *a window of this class on this feature's workspace*, which is
-unambiguous because every feature owns a private workspace. To place it,
-canaveral snapshots the open windows, spawns, finds the new one by difference
-and moves it. Declaring `match_class` is required for `exec` windows; without it
-every `reset` would spawn another copy.
+**A GUI application must be identifiable.** canaveral has to know whether the
+window it opened last time is still there, or every `reset` spawns another copy.
+There are two ways to arrange that, and an `exec` window must use one of them.
+
+The reliable way is to tell the application what class to take, by passing
+`{{.Class}}`:
+
+```toml
+[[window]]
+name = "chrome"
+exec = "google-chrome --class={{.Class}} --app={{.URL.web}}/"
+```
+
+Plenty of applications cannot do that. Most GTK3 and wxWidgets programs have no
+class flag at all — and neither do the AppImages of them — while Chrome accepts
+`--class` but honours it only on X11, handing the request to an
+already-running browser process on Wayland. For those, name the class the
+application does carry:
+
+```toml
+[[window]]
+name = "bambustudio"
+exec = "BambuStudio.AppImage"
+match_class = "^BambuStudio$"      # a regular expression; hyprctl clients will tell you
+```
+
+canaveral then identifies the window as *a window of this class on this
+feature's workspace*, which is unambiguous because every feature owns a private
+one — your own copy of the same application, open elsewhere, is never touched.
+Placing it takes the same care: Hyprland's exec-time workspace rule binds to the
+process hyprctl started, and an application that re-execs (as an AppImage does
+once it has mounted its payload) or defers to a running instance draws its
+window from a process that rule never saw. So canaveral snapshots the open
+windows, spawns, waits for a matching one that is new, and moves that.
+
+It then holds on until the application settles, because such an application is
+also prone to replacing its own window: BambuStudio maps a loading window,
+canaveral moves it, and about four seconds later that window is gone and the
+real one has mapped wherever you were looking. So each window found is moved
+and then watched, and whatever replaces it is moved too. This costs a few
+seconds, once, when the space is opened.
+
+Because such an application is by definition one canaveral cannot instrument,
+it is given ninety seconds to appear rather than the five a window carrying our
+own class gets. A large AppImage decompresses its own payload before it loads a
+toolkit, and giving up early is the worse mistake: the window then opens
+wherever you happen to be looking, and is launched again the next time.
 
 Point browser windows at the application root, not at a readiness endpoint:
 `/up` is a machine-facing health check that Rails renders as a blank green page.

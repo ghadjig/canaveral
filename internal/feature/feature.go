@@ -114,6 +114,10 @@ func (res *Result) abort(ctx context.Context, r Reporter) {
 type pendingSpawn struct {
 	name string
 	spec hypr.SpawnSpec
+	// match is set for a window declaring match_class: the application will
+	// not carry spec.Class, so the window it produces has to be found by
+	// pattern and placed by hand rather than by Hyprland's exec-time rule.
+	match *regexp.Regexp
 }
 
 var slugRe = regexp.MustCompile(`[^a-zA-Z0-9]+`)

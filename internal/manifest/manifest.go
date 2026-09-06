@@ -278,6 +278,13 @@ type Window struct {
 	Run *string `toml:"run"`
 	// Exec launches a GUI application without a terminal.
 	Exec string `toml:"exec"`
+	// MatchClass identifies an exec window that cannot be told to adopt
+	// {{.Class}}, by regular expression against the class it does carry.
+	// Such a window is recognised as a window of that class on the
+	// feature's own workspace. Use it for applications with no class flag
+	// at all (most GTK3 and wxWidgets programs, and AppImages of them) and
+	// for ones that ignore it, as Chrome does on Wayland.
+	MatchClass string `toml:"match_class"`
 	// Dir overrides the working directory, which defaults to the worktree.
 	Dir string `toml:"dir"`
 	// Hold keeps the terminal open after Run exits, for inspecting output.
@@ -701,8 +708,8 @@ func (m *Manifest) normalizeWindows() (map[string]bool, error) {
 }
 
 // validate checks a single [[windows]] entry's own fields, independent of
-// any other window: exactly one of run/exec, an exec command that adopts
-// canaveral's window class, and profile_source/profile_seed used together.
+// any other window: exactly one of run/exec, an exec command canaveral can
+// identify the window of, and profile_source/profile_seed used together.
 func (w Window) validate() error {
 	if w.Run != nil && w.Exec != "" {
 		return fmt.Errorf("window %q: set either run or exec, not both", w.Name)
@@ -710,11 +717,23 @@ func (w Window) validate() error {
 	if w.Run == nil && w.Exec == "" {
 		return fmt.Errorf("window %q: one of run or exec is required", w.Name)
 	}
-	// An exec window must adopt the class canaveral assigns, otherwise there
-	// is no safe way to tell whether it is already open.
-	if w.Exec != "" && !strings.Contains(w.Exec, "{{.Class}}") {
-		return fmt.Errorf("window %q: exec command must pass {{.Class}} to the "+
-			"application (for example --class={{.Class}}) so canaveral can "+
+	if w.Run != nil && w.MatchClass != "" {
+		return fmt.Errorf("window %q: match_class applies to exec windows only; "+
+			"a terminal window always carries the class canaveral gives it", w.Name)
+	}
+	if w.MatchClass != "" {
+		if _, err := regexp.Compile(w.MatchClass); err != nil {
+			return fmt.Errorf("window %q: match_class is not a valid regular expression: %w", w.Name, err)
+		}
+	}
+	// An exec window must be identifiable, otherwise there is no way to tell
+	// whether it is already open and every reset would spawn another copy.
+	// Carrying our class is the reliable way; match_class is for the
+	// applications that cannot.
+	if w.Exec != "" && w.MatchClass == "" && !strings.Contains(w.Exec, "{{.Class}}") {
+		return fmt.Errorf("window %q: exec command must either pass {{.Class}} to the "+
+			"application (for example --class={{.Class}}) or declare match_class "+
+			"(for example match_class = \"^BambuStudio$\") so canaveral can "+
 			"identify the window it created", w.Name)
 	}
 	if w.Run != nil && w.ProfileSource != "" {

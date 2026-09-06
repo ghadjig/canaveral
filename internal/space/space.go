@@ -189,8 +189,14 @@ func starter(name string) string {
 #     canaveral %s
 #
 # Windows are opened on a Hyprland workspace of the same name. "run" executes
-# inside a terminal; "exec" launches a GUI application, which must be told to
-# adopt {{.Class}} so canaveral can recognise the window later.
+# inside a terminal; "exec" launches a GUI application, which canaveral must be
+# able to recognise later — either by being told to adopt {{.Class}}, or, when
+# the application has no class flag at all, by naming the class it does carry:
+#
+#     [[window]]
+#     name = "slicer"
+#     exec = "BambuStudio.AppImage"
+#     match_class = "^BambuStudio$"    # see: hyprctl clients
 
 # Where windows, services and agents open. Defaults to your home directory.
 # dir = "~/models"

@@ -12,6 +12,63 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.8.3 — 2026-09-06
+
+### Added
+
+- `match_class` on a window, so an `exec` window can launch an application
+  that cannot be told what class to take. Until now every `exec` command had
+  to contain `{{.Class}}`, which ruled out most GTK3 and wxWidgets programs
+  and the AppImages of them — they have no class flag at all. The only way to
+  get such an application onto a workspace was `run`, and `run` means *in a
+  terminal*: you got a slicer with a terminal sitting behind it. A trailing
+  `&` does not help, because the `&` is interpreted by a shell canaveral
+  started inside the terminal it had already opened.
+
+  ```toml
+  [[window]]
+  name = "bambustudio"
+  exec = "BambuStudio.AppImage"
+  match_class = "^BambuStudio$"    # the class it does carry; hyprctl clients
+  ```
+
+  Such a window is recognised as *a window of this class on this feature's
+  workspace*. The class alone would be ambiguous — your own copy of the same
+  application carries it too — but no two features share a workspace, so
+  within one it is not. A window of that class anywhere else is yours and is
+  left alone.
+
+  Placing it needs the same care. Hyprland's exec-time workspace rule binds
+  to the process hyprctl started, and an application that re-execs — as an
+  AppImage does once it has mounted its payload — or defers to an
+  already-running instance draws its window from a process that rule never
+  saw. So canaveral snapshots the open windows, spawns, waits for a matching
+  one that is *new*, and moves that. It waits ninety seconds for that
+  window rather than the five a window carrying our own class gets: a large
+  AppImage decompresses its own payload before it loads a toolkit.
+
+  Moving it once turned out not to be enough. An application that cannot be
+  told its class also cannot be told to stop replacing its own window, and
+  BambuStudio does exactly that: it maps a loading window, which canaveral
+  duly moves, and 3.7 seconds later that window is gone and the real one has
+  mapped on whatever workspace the user was looking at. So each window found
+  is moved and then watched, and whatever replaces it is moved too, until one
+  of them stays put.
+
+  `close` knows about these windows too, and closes them rather than leaving
+  them to be rehomed as strays.
+
+  The README has documented `match_class` since spaces landed, and the state
+  file has carried a field for it. Neither was ever true.
+
+### Fixed
+
+- Replacing a window whose agent has moved now waits for that window to
+  close, rather than for every window of its class. Only ever one window
+  carried a canaveral class, so nothing was broken — but a `match_class`
+  window shares its class with the user's own, and waiting for all of them
+  would simply have timed out.
+
 ## v0.8.2 — 2026-09-06
 
 ### Added
