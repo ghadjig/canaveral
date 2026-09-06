@@ -95,6 +95,16 @@ type Feature struct {
 	// lets the owner keep the record fresh without disturbing the clock a
 	// human is reading.
 	PhaseBeat time.Time `json:"phase_beat,omitempty"`
+	// PhaseDetail is a short, human-facing note about what the current step is
+	// doing — "log +18.4K", "log quiet for 47s" — refreshed with PhaseBeat.
+	//
+	// The step label says what is being waited on and the step count says how
+	// much is left, and between them they still cannot answer the only
+	// question anyone actually has in front of a slow boot: is it working?
+	// That is answered by whether the service is still producing output, which
+	// only the process holding the log can see. A reader that is not that
+	// process — the status bar — has no way to derive it, so it is carried.
+	PhaseDetail string `json:"phase_detail,omitempty"`
 	// Provisioned lists paths canaveral copied in; they are not user work and
 	// must not make the worktree look dirty at teardown.
 	Provisioned []string  `json:"provisioned,omitempty"`
@@ -673,20 +683,26 @@ func (f *Feature) SetPhase(phase, label string, step, total int) error {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = phase, label, step, total
 	f.PhaseSince = time.Now()
 	f.PhaseBeat = f.PhaseSince
+	// Cleared, not carried: the detail belongs to the step that produced it,
+	// and "log quiet for 4m" left over the top of the next step would be a
+	// statement about the wrong thing.
+	f.PhaseDetail = ""
 	f.PhasePID = os.Getpid()
 	return Save(f)
 }
 
 // BeatPhase refreshes the phase's liveness without moving the step's clock,
-// for a step slow enough to outlast StalePhaseAfter on its own.
+// for a step slow enough to outlast StalePhaseAfter on its own. detail is a
+// short note on what the step is doing, or empty to leave it unsaid.
 //
 // A no-op outside a phase, so a caller blocking on something that turned out
 // not to be part of one writes nothing.
-func (f *Feature) BeatPhase() error {
+func (f *Feature) BeatPhase(detail string) error {
 	if f.Phase == "" {
 		return nil
 	}
 	f.PhaseBeat = time.Now()
+	f.PhaseDetail = detail
 	f.PhasePID = os.Getpid()
 	return Save(f)
 }
@@ -711,5 +727,6 @@ func (f *Feature) ResetPhase() {
 	f.Phase, f.PhaseLabel, f.PhaseStep, f.PhaseTotal = "", "", 0, 0
 	f.PhaseSince = time.Time{}
 	f.PhaseBeat = time.Time{}
+	f.PhaseDetail = ""
 	f.PhasePID = 0
 }

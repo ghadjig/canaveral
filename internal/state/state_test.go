@@ -835,7 +835,7 @@ func TestBeatPhaseRefreshesLivenessWithoutMovingTheStepsClock(t *testing.T) {
 	since := f.PhaseSince
 
 	time.Sleep(2 * time.Millisecond)
-	if err := f.BeatPhase(); err != nil {
+	if err := f.BeatPhase("log +4.0K"); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 
@@ -861,7 +861,7 @@ func TestBeatPhaseIsANoOpOutsideAPhase(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	f := &Feature{Project: "p", Name: "f"}
-	if err := f.BeatPhase(); err != nil {
+	if err := f.BeatPhase("log +4.0K"); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 	if !f.PhaseBeat.IsZero() {
@@ -876,7 +876,7 @@ func TestClearPhaseClearsTheHeartbeatToo(t *testing.T) {
 	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
 		t.Fatalf("SetPhase: %v", err)
 	}
-	if err := f.BeatPhase(); err != nil {
+	if err := f.BeatPhase("log +4.0K"); err != nil {
 		t.Fatalf("BeatPhase: %v", err)
 	}
 	if err := f.ClearPhase(); err != nil {
@@ -884,6 +884,50 @@ func TestClearPhaseClearsTheHeartbeatToo(t *testing.T) {
 	}
 	if !f.PhaseBeat.IsZero() {
 		t.Error("PhaseBeat survived ClearPhase")
+	}
+	if f.PhaseDetail != "" {
+		t.Errorf("PhaseDetail = %q, want it cleared with the phase", f.PhaseDetail)
+	}
+}
+
+func TestBeatPhaseCarriesTheDetailToReadersThatCannotSeeIt(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &Feature{Project: "p", Name: "f"}
+	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	if err := f.BeatPhase("log +18.4K"); err != nil {
+		t.Fatalf("BeatPhase: %v", err)
+	}
+
+	// The status bar is a different process; in memory is not good enough.
+	got, err := Load("p", "f")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.PhaseDetail != "log +18.4K" {
+		t.Errorf("persisted PhaseDetail = %q, want %q", got.PhaseDetail, "log +18.4K")
+	}
+}
+
+// A detail describes the step that produced it. Carried into the next step it
+// would be a confident statement about the wrong thing.
+func TestSetPhaseDropsThePreviousStepsDetail(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	f := &Feature{Project: "p", Name: "f"}
+	if err := f.SetPhase(PhaseBooting, "service devspace", 2, 8); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	if err := f.BeatPhase("log quiet for 4m0s"); err != nil {
+		t.Fatalf("BeatPhase: %v", err)
+	}
+	if err := f.SetPhase(PhaseBooting, "agent main", 3, 8); err != nil {
+		t.Fatalf("SetPhase: %v", err)
+	}
+	if f.PhaseDetail != "" {
+		t.Errorf("PhaseDetail = %q, want the new step to start with nothing said about it", f.PhaseDetail)
 	}
 }
 

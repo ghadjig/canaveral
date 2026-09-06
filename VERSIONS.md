@@ -12,6 +12,36 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `canaveral watch` now reports what a lifecycle step is doing, not just which
+  one it is, as `progress.detail` on the wire.
+
+  The label says what is being waited on and the count says how much is left,
+  and between them they still cannot answer the question anyone actually has
+  in front of a slow boot: is it working? A status bar showing
+  `service devspace  2 / 8` for eight minutes says exactly as little as a
+  terminal that has gone quiet — which is the bug fixed in v0.8.9, still
+  unfixed everywhere except the terminal.
+
+  The answer is whether the service is still producing output, and only the
+  process running the step can see it. It rides along with the heartbeat, so
+  a consumer gets `log +18.4K` or `log quiet for 47s` beside the step:
+
+  ```json
+  {"label": "service devspace", "step": 2, "total": 8,
+   "since": "2026-09-06T19:29:54+03:00", "detail": "log quiet for 47s"}
+  ```
+
+  It refreshes every thirty seconds with the beat, where `since` is an instant
+  a consumer can tick against live — worth keeping in mind before rendering
+  the two next to each other and wondering why one stutters.
+
+  `since` was already emitted and is unchanged. A consumer that ignores
+  `detail` behaves exactly as before.
+
 ## v0.8.9 — 2026-09-06
 
 **Fixed**
