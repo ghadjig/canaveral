@@ -711,3 +711,89 @@ func revParse(ctx context.Context, dir, rev string) (string, error) {
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", rev).Output()
 	return strings.TrimSpace(string(out)), err
 }
+
+// A feature must fork from the branch it will eventually be merged back into,
+// not from whatever the main checkout happens to have checked out.
+//
+// The bug this pins: `canaveral new cogent/phase2` was run in a repo sitting
+// on an old topic branch, so the feature inherited that branch's tree — 4434
+// commits behind master, and five weeks older than a script the feature's own
+// service invoked. The service could not start, and because the branch was
+// unmerged `rm` refused too, leaving `--force` as the only way out.
+func TestEnsureStartsANewBranchFromTheDefaultBranchNotTheCheckedOutOne(t *testing.T) {
+	repo := newStatusRepo(t)
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// An old topic branch, then more work on main after it forked.
+	run("checkout", "-q", "-b", "stale")
+	commit(t, repo, "stale.txt", "old\n", "work on stale")
+	run("checkout", "-q", "main")
+	commit(t, repo, "new.txt", "fresh\n", "work on main")
+	// Leave the checkout standing somewhere unhelpful, as a person would.
+	run("checkout", "-q", "stale")
+
+	ctx := context.Background()
+	base, err := BaseRef(ctx, repo)
+	if err != nil {
+		t.Fatalf("BaseRef: %v", err)
+	}
+	if base != "main" {
+		t.Fatalf("BaseRef = %q, want main", base)
+	}
+
+	dir := filepath.Join(t.TempDir(), "wt")
+	if _, err := Ensure(ctx, repo, dir, "feature/x", base); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// The commit made on main after stale forked must be present, and the one
+	// made on stale must not.
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); err != nil {
+		t.Error("the feature did not start from main: work committed to main is missing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stale.txt")); err == nil {
+		t.Error("the feature started from the checked-out branch, inheriting its work")
+	}
+}
+
+// origin/HEAD can name a branch that refs/heads does not have, so there is a
+// remote-tracking ref to fork from and no local branch.
+func TestBaseRefFallsBackToTheRemoteBranch(t *testing.T) {
+	origin := newStatusRepo(t)
+	clone := filepath.Join(t.TempDir(), "clone")
+	if out, err := exec.Command("git", "clone", "-q", origin, clone).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", clone}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Detach so the branch can go, leaving only origin/main behind.
+	run("checkout", "-q", "--detach")
+	run("branch", "-q", "-D", "main")
+
+	ctx := context.Background()
+	if branchExists(ctx, clone, "main") {
+		t.Fatal("precondition: local main should be gone")
+	}
+	base, err := BaseRef(ctx, clone)
+	if err != nil {
+		t.Fatalf("BaseRef: %v", err)
+	}
+	if base != "origin/main" {
+		t.Errorf("BaseRef = %q, want origin/main", base)
+	}
+	// And it has to actually work as a start point.
+	dir := filepath.Join(t.TempDir(), "wt")
+	if _, err := Ensure(ctx, clone, dir, "feature/y", base); err != nil {
+		t.Fatalf("Ensure with %q: %v", base, err)
+	}
+}

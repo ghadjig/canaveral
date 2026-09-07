@@ -14,6 +14,32 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+**Changed**
+
+- A new feature branch now starts from the project's default branch, not from
+  whatever the main checkout happens to have checked out.
+
+  `git worktree add -b` forks from the current HEAD when given no start point,
+  and that is what canaveral had been passing. So a feature created while the
+  checkout sat on an old topic branch silently inherited that branch's tree.
+
+  The run that prompted this: `cogent/phase2` was cut while yogurt sat on
+  `brands`, forked from master five weeks earlier and 4434 commits behind. Its
+  `bin/devspace` predated the `dev-branch` subcommand its own service invoked,
+  so the service could not start — and no amount of `canaveral reset` could
+  help, because nothing about the workspace was wrong. `rm` then refused
+  because the branch was unmerged, `merge` would have refused because the
+  worktree looked dirty, and `--force` was the only remaining exit.
+
+  The default branch is already the ref `merge` merges into and the one `rm`
+  checks a feature against before deleting it. A feature now forks from, and
+  lands back on, the same place. Where there is no local copy of it — a fresh
+  clone that has only ever had `origin/HEAD` — the remote-tracking branch is
+  used instead.
+
+  `--base` still overrides, and `--base HEAD` restores the old behaviour for
+  the case where branching off the current checkout really is what you want.
+
 **Fixed**
 
 - Treat CPU counters too large for a duration as unavailable instead of

@@ -94,7 +94,7 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 		noServices = fs.Bool("no-services", false, "skip starting services")
 		noAgents   = fs.Bool("no-agents", false, "skip starting agents")
 		focus      = fs.Bool("focus", false, "switch to the workspace once everything is ready")
-		base       = fs.String("base", "", "base ref for a new feature branch (default: current HEAD)")
+		base       = fs.String("base", "", "base ref for a new feature branch (default: the project's default branch)")
 	)
 	pos, err := parseArgs(fs, args)
 	if err != nil {

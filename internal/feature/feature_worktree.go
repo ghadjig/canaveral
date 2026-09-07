@@ -29,7 +29,24 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	if !worktree.IsRepo(ctx, m.Root) {
 		return fmt.Errorf("%s is not a git repository; canaveral needs one to create feature worktrees", m.Root)
 	}
-	res, err := worktree.Ensure(ctx, m.Root, f.Worktree, f.Branch, opt.Base)
+	// Where a *new* branch starts. Ignored when the branch already exists, so
+	// resolving it here costs a couple of git calls on a path that is about to
+	// run several.
+	//
+	// Left empty, `git worktree add -b` forks from the main checkout's current
+	// HEAD, which is whatever the user last happened to check out there and
+	// almost never what they meant. Falling back to that on a repo whose
+	// default branch cannot be named is still better than refusing to open,
+	// but it is worth saying out loud, because the resulting feature looks
+	// fine until something in its tree turns out to be months old.
+	base := opt.Base
+	var baseErr error
+	if base == "" {
+		if base, baseErr = worktree.BaseRef(ctx, m.Root); baseErr != nil {
+			base = ""
+		}
+	}
+	res, err := worktree.Ensure(ctx, m.Root, f.Worktree, f.Branch, base)
 	if err != nil {
 		return err
 	}
@@ -38,6 +55,9 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 			r.Info("reusing existing worktree %s", f.Worktree)
 		}
 		return nil
+	}
+	if baseErr != nil {
+		r.Warn("%v; %s starts from the current HEAD of %s", baseErr, f.Branch, m.Root)
 	}
 	r.OK("worktree %s on %s", f.Worktree, f.Branch)
 

@@ -240,6 +240,45 @@ func DefaultBranch(ctx context.Context, repo string) (string, error) {
 	return "", errors.New("could not determine the default branch; pass --into explicitly")
 }
 
+// BaseRef resolves the ref a new feature branch should start from: the local
+// default branch, or its remote-tracking counterpart when there is no local
+// copy of it.
+//
+// This exists because the alternative is whatever the main checkout happens to
+// have checked out, which is what `git worktree add -b` uses when given no
+// start point, and which is nobody's intention. A feature cut while the
+// checkout sat on an old topic branch inherited that branch's tree: in the
+// case that prompted this, 4434 commits behind master and five weeks older
+// than a script the feature's own service needed, so the service could not
+// start and no amount of `canaveral reset` would have helped.
+//
+// DefaultBranch names the branch that `merge` merges into and that `rm`
+// checks a feature against before deleting it. Starting there means a feature
+// forks from, and lands back on, the same place.
+//
+// The remote fallback covers a fresh clone that has never checked the default
+// branch out locally: origin/HEAD names it, but refs/heads does not have it
+// yet.
+func BaseRef(ctx context.Context, repo string) (string, error) {
+	name, err := DefaultBranch(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	if branchExists(ctx, repo, name) {
+		return name, nil
+	}
+	if remote := "origin/" + name; refExists(ctx, repo, remote) {
+		return remote, nil
+	}
+	return "", fmt.Errorf("default branch %q exists neither locally nor on origin", name)
+}
+
+// refExists reports whether any ref — branch, tag, remote-tracking — resolves.
+func refExists(ctx context.Context, repo, ref string) bool {
+	return exec.CommandContext(ctx, "git", "-C", repo,
+		"rev-parse", "--verify", "--quiet", ref+"^{commit}").Run() == nil
+}
+
 // HasRemote reports whether the repository has a remote of the given name.
 func HasRemote(ctx context.Context, dir, remote string) bool {
 	return exec.CommandContext(ctx, "git", "-C", dir,
