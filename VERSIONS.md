@@ -12,7 +12,7 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.9.0 — 2026-09-08
 
 **Changed**
 
