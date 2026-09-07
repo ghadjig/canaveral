@@ -80,7 +80,7 @@ func runRebase(ctx context.Context, args []string) error {
 	}
 	r.OK("rebased onto %s", target)
 
-	if st, err := worktree.Status(ctx, f.Worktree); err == nil {
+	if st, err := worktree.Status(ctx, f.Worktree, f.Provisioned); err == nil {
 		r.Info("%s", st.Label())
 	}
 	return nil

@@ -58,7 +58,7 @@ func TestStatusUpToDate(t *testing.T) {
 	dir := newStatusRepo(t)
 	checkout(t, dir, "-q", "-b", "feature")
 
-	s, err := Status(context.Background(), dir)
+	s, err := Status(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestStatusAhead(t *testing.T) {
 	checkout(t, dir, "-q", "-b", "feature")
 	commit(t, dir, "g.txt", "b\nc\n", "add g")
 
-	s, err := Status(context.Background(), dir)
+	s, err := Status(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestStatusBehind(t *testing.T) {
 	commit(t, dir, "h.txt", "x\n", "advance main")
 	checkout(t, dir, "-q", "feature")
 
-	s, err := Status(context.Background(), dir)
+	s, err := Status(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestStatusDiverged(t *testing.T) {
 	commit(t, dir, "main.txt", "m\n", "main work")
 	checkout(t, dir, "-q", "feature")
 
-	s, err := Status(context.Background(), dir)
+	s, err := Status(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDefaultBranchFallsBackToMaster(t *testing.T) {
 	run("commit", "-q", "--allow-empty", "-m", "init")
 	checkout(t, dir, "-q", "-b", "feature")
 
-	s, err := Status(context.Background(), dir)
+	s, err := Status(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestDefaultBranchNoneFound(t *testing.T) {
 	run("config", "user.name", "t")
 	run("commit", "-q", "--allow-empty", "-m", "init")
 
-	if _, err := Status(context.Background(), dir); err == nil {
+	if _, err := Status(context.Background(), dir, nil); err == nil {
 		t.Error("expected an error when neither main nor master exists")
 	}
 }

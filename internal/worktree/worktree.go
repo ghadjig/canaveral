@@ -141,6 +141,20 @@ func Remove(ctx context.Context, repo, path string, force bool, ignore []string)
 // every worktree permanently dirty, so teardown would always demand --force and
 // the check could no longer protect real work.
 func IsDirty(ctx context.Context, dir string, ignore []string) (bool, error) {
+	changed, err := changedPaths(ctx, dir, ignore)
+	return len(changed) > 0, err
+}
+
+// CountDirty is IsDirty's count, for a display that wants "3 uncommitted"
+// rather than a yes or no.
+func CountDirty(ctx context.Context, dir string, ignore []string) (int, error) {
+	changed, err := changedPaths(ctx, dir, ignore)
+	return len(changed), err
+}
+
+// changedPaths lists the worktree-relative paths git reports as changed,
+// minus anything canaveral provisioned.
+func changedPaths(ctx context.Context, dir string, ignore []string) ([]string, error) {
 	// --untracked-files=all is required, not just the default: git otherwise
 	// collapses an entirely-untracked directory into one line for its
 	// container (e.g. "?? .claude/" instead of "?? .claude/skills/onboarding"),
@@ -148,34 +162,79 @@ func IsDirty(ctx context.Context, dir string, ignore []string) (bool, error) {
 	// it, and get misreported as dirty.
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain", "--untracked-files=all").Output()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+
 	skip := make(map[string]bool, len(ignore))
+	// real holds the same entries resolved through any symlink on the way to
+	// them, keyed by the absolute path the filesystem actually reaches.
+	//
+	// The literal comparison below is not enough on its own, because the name
+	// canaveral wrote and the name git reports back need not be the same one.
+	// A repo that symlinks .claude/skills to .agents/skills takes a link
+	// created at ".claude/skills/<ns>" and reports it as
+	// "?? .agents/skills/<ns>" — same inode, different string, no match. The
+	// skills symlink then counted as the user's own work, so `merge` and
+	// `rebase` refused over a file canaveral had put there itself, and `rm`
+	// demanded --force. Resolving both sides asks the question that was meant
+	// all along: is this the same file?
+	real := make(map[string]bool, len(ignore))
 	for _, p := range ignore {
-		skip[strings.TrimSuffix(filepath.Clean(p), "/")] = true
+		c := strings.TrimSuffix(filepath.Clean(p), "/")
+		skip[c] = true
+		if r, ok := resolve(dir, c); ok {
+			real[r] = true
+		}
 	}
+
+	var changed []string
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if len(line) < 4 {
 			continue
 		}
 		path := strings.TrimSpace(line[2:])
 		path = strings.Trim(path, "\"")
-		if skip[strings.TrimSuffix(filepath.Clean(path), "/")] {
+		// A rename reads "old -> new"; the destination is the path on disk.
+		if i := strings.Index(path, " -> "); i >= 0 {
+			path = path[i+4:]
+		}
+		if covered(skip, strings.TrimSuffix(filepath.Clean(path), "/")) {
 			continue
 		}
-		// git reports untracked directories with a trailing slash.
-		covered := false
-		for ig := range skip {
-			if strings.HasPrefix(path, ig+"/") {
-				covered = true
-				break
-			}
+		// Only worth resolving once the cheap comparison has failed. A path
+		// that no longer exists — a provisioned file the user deleted — will
+		// not resolve, and is correctly left counted as a change.
+		if r, ok := resolve(dir, path); ok && covered(real, r) {
+			continue
 		}
-		if !covered {
-			return true, nil
+		changed = append(changed, path)
+	}
+	return changed, nil
+}
+
+// covered reports whether p is in set, or lies beneath something in it. git
+// reports untracked directories with a trailing slash, and an ignored entry
+// that is a real directory has its contents listed individually.
+func covered(set map[string]bool, p string) bool {
+	if set[p] {
+		return true
+	}
+	for entry := range set {
+		if strings.HasPrefix(p, entry+"/") {
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// resolve gives the absolute path rel actually reaches from dir, following
+// symlinks, or false when there is nothing there to follow.
+func resolve(dir, rel string) (string, bool) {
+	p, err := filepath.EvalSymlinks(filepath.Join(dir, rel))
+	if err != nil {
+		return "", false
+	}
+	return p, true
 }
 
 // Prune removes administrative files for worktrees whose directories are gone.

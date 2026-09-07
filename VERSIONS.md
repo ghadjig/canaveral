@@ -12,6 +12,38 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- A path canaveral provisioned is recognised as its own even when the repository
+  reaches it by another name, so `merge`, `rebase` and `rm` no longer refuse
+  over a file canaveral put there itself.
+
+  The exclusion list was compared against git's output as strings, and the two
+  need not agree. yogurt symlinks `.claude/skills` to `.agents/skills`:
+  canaveral creates its namespace skill link at `.claude/skills/<ns>` and
+  records that, git canonicalises and reports `?? .agents/skills/<ns>`. Same
+  inode, different string, no match — so canaveral's own symlink counted as the
+  user's uncommitted work.
+
+  The consequence was a workspace with no way out. `merge` refused ("has
+  uncommitted changes"), which meant the branch stayed unmerged, which meant
+  `rm` refused too, leaving `--force` as the only exit. Both sides are now
+  resolved through the filesystem before being compared, which asks the
+  question that was meant all along: is this the same file? Anything canaveral
+  did not provision still counts, and an entry that cannot be resolved falls
+  back to the literal comparison.
+
+- The uncommitted count on the status bar no longer includes files canaveral
+  provisioned.
+
+  Every yogurt feature read `1 uncommitted` permanently, over a skills symlink
+  canaveral had created and would delete again itself. It is not the reader's
+  work and there is nothing they could do about it. `worktree.Status` now takes
+  the provisioned list, like the dirty check it should have agreed with all
+  along.
+
 ## v0.9.0 — 2026-09-08
 
 **Changed**

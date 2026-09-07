@@ -50,7 +50,11 @@ func (s BranchStatus) Label() string {
 
 // Status computes dir's branch status against the project's default branch,
 // auto-detected from dir.
-func Status(ctx context.Context, dir string) (BranchStatus, error) {
+//
+// provisioned lists paths canaveral put in the worktree itself; they are not
+// the user's work and are left out of the Uncommitted count. Pass nil for a
+// plain repo.
+func Status(ctx context.Context, dir string, provisioned []string) (BranchStatus, error) {
 	base, err := defaultBranch(ctx, dir)
 	if err != nil {
 		return BranchStatus{}, err
@@ -76,12 +80,16 @@ func Status(ctx context.Context, dir string) (BranchStatus, error) {
 		s.FilesChanged, s.Insertions, s.Deletions = parseShortstat(diff)
 	}
 
-	// --porcelain gives one line per changed path, which is stable across
-	// git versions in a way the human output is not. Untracked files count:
-	// "nothing committed yet" and "committed, but three files still lying
-	// around" are different situations to a person reading a status bar.
-	if st, err := gitOutput(ctx, dir, "status", "--porcelain"); err == nil && st != "" {
-		s.Uncommitted = strings.Count(st, "\n") + 1
+	// Untracked files count: "nothing committed yet" and "committed, but three
+	// files still lying around" are different situations to a person reading a
+	// status bar.
+	//
+	// Minus what canaveral provisioned, which is nobody's work and which the
+	// reader can do nothing about. Counting it made every yogurt feature read
+	// "1 uncommitted" forever, over a skills symlink canaveral had created and
+	// would delete again itself.
+	if n, err := CountDirty(ctx, dir, provisioned); err == nil {
+		s.Uncommitted = n
 	}
 	return s, nil
 }

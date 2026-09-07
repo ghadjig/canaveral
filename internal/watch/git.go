@@ -27,7 +27,7 @@ type gitCache struct {
 	byKey map[string]*Git
 
 	// status is swappable so tests do not need real git repositories.
-	status func(ctx context.Context, dir string) (worktree.BranchStatus, error)
+	status func(ctx context.Context, dir string, provisioned []string) (worktree.BranchStatus, error)
 }
 
 func newGitCache() *gitCache {
@@ -67,7 +67,7 @@ func (c *gitCache) refresh(ctx context.Context, features []*state.Feature) bool 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, err := c.status(ctx, f.Worktree)
+			s, err := c.status(ctx, f.Worktree, f.Provisioned)
 			if err != nil {
 				// Leave the previous value in place rather than blanking the
 				// card: a transient git failure (an index.lock during a

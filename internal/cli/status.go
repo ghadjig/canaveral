@@ -532,7 +532,7 @@ func collectBranchStatus(ctx context.Context, features []*state.Feature) map[str
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, err := worktree.Status(ctx, f.Worktree)
+			s, err := worktree.Status(ctx, f.Worktree, f.Provisioned)
 			if err != nil {
 				return
 			}

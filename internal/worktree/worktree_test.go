@@ -797,3 +797,122 @@ func TestBaseRefFallsBackToTheRemoteBranch(t *testing.T) {
 		t.Fatalf("Ensure with %q: %v", base, err)
 	}
 }
+
+// A provisioned path must be recognised as canaveral's own even when the repo
+// reaches it by another name.
+//
+// yogurt symlinks .claude/skills to .agents/skills. canaveral creates its
+// namespace skill link at ".claude/skills/<ns>" and records that string, but
+// git canonicalises and reports "?? .agents/skills/<ns>" — same inode,
+// different name. Compared as strings the two never matched, so canaveral's
+// own symlink counted as the user's uncommitted work: `merge` and `rebase`
+// refused over it, `rm` demanded --force, and every affected feature read
+// "1 uncommitted" on the status bar permanently.
+func TestIsDirtyIgnoresAProvisionedPathReachedThroughASymlink(t *testing.T) {
+	repo := newStatusRepo(t)
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// .agents/skills is the real directory and .claude/skills points at it,
+	// both committed — as they are in the repo this came from. Only what
+	// canaveral adds afterwards is untracked.
+	if err := os.MkdirAll(filepath.Join(repo, ".agents", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".agents", "skills", ".gitkeep"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", ".agents", "skills"), filepath.Join(repo, ".claude", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "skills layout")
+
+	// The namespace skill link canaveral creates: written through .claude,
+	// and recorded under that name.
+	if err := os.Symlink(t.TempDir(), filepath.Join(repo, ".claude", "skills", "ns")); err != nil {
+		t.Fatal(err)
+	}
+	provisioned := []string{filepath.Join(".claude", "skills", "ns")}
+
+	// Precondition: git reports it under the other name, which is the whole
+	// problem. If a future git stops doing that, this test is moot and should
+	// say so rather than silently passing.
+	out, err := exec.Command("git", "-C", repo, "status", "--porcelain", "-uall").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), ".agents/skills/ns") {
+		t.Skipf("git no longer canonicalises through the symlink; got:\n%s", out)
+	}
+
+	ctx := context.Background()
+	dirty, err := IsDirty(ctx, repo, provisioned)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if dirty {
+		t.Errorf("worktree reported dirty over canaveral's own symlink; git says:\n%s", out)
+	}
+
+	n, err := CountDirty(ctx, repo, provisioned)
+	if err != nil {
+		t.Fatalf("CountDirty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountDirty = %d, want 0", n)
+	}
+}
+
+// The exclusion must not become a blanket amnesty: real work next to a
+// provisioned path still counts.
+func TestIsDirtyStillSeesRealWorkBesideASymlinkedProvisionedPath(t *testing.T) {
+	repo := newStatusRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, ".agents", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", ".agents", "skills"), filepath.Join(repo, ".claude", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(repo, ".claude", "skills", "ns")); err != nil {
+		t.Fatal(err)
+	}
+	// A second link the user made, which canaveral never recorded.
+	if err := os.Symlink(t.TempDir(), filepath.Join(repo, ".claude", "skills", "mine")); err != nil {
+		t.Fatal(err)
+	}
+
+	dirty, err := IsDirty(context.Background(), repo, []string{filepath.Join(".claude", "skills", "ns")})
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if !dirty {
+		t.Error("a path canaveral did not provision was treated as if it had")
+	}
+}
+
+// A provisioned path that no longer exists cannot be resolved through the
+// filesystem, so the literal comparison has to keep working on its own.
+func TestIsDirtyStillMatchesAProvisionedPathThatIsGone(t *testing.T) {
+	repo := newStatusRepo(t)
+	// Untracked and then removed: nothing for EvalSymlinks to follow, and
+	// nothing for git to report either.
+	dirty, err := IsDirty(context.Background(), repo, []string{"never-existed"})
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if dirty {
+		t.Error("a clean worktree reported dirty because an ignore entry could not be resolved")
+	}
+}

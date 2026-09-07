@@ -16,7 +16,7 @@ func gitFeature(project, name, dir string) *state.Feature {
 func TestGitCacheRefreshReportsChange(t *testing.T) {
 	c := newGitCache()
 	stat := worktree.BranchStatus{Base: "origin/main", Ahead: 2, Insertions: 10, Deletions: 3}
-	c.status = func(ctx context.Context, dir string) (worktree.BranchStatus, error) {
+	c.status = func(ctx context.Context, dir string, _ []string) (worktree.BranchStatus, error) {
 		return stat, nil
 	}
 	fs := []*state.Feature{gitFeature("p", "f", "/tmp/x")}
@@ -48,7 +48,7 @@ func TestGitCacheRefreshReportsChange(t *testing.T) {
 func TestGitCacheKeepsLastGoodOnError(t *testing.T) {
 	c := newGitCache()
 	fail := false
-	c.status = func(ctx context.Context, dir string) (worktree.BranchStatus, error) {
+	c.status = func(ctx context.Context, dir string, _ []string) (worktree.BranchStatus, error) {
 		if fail {
 			return worktree.BranchStatus{}, errors.New("index.lock exists")
 		}
@@ -71,7 +71,7 @@ func TestGitCacheKeepsLastGoodOnError(t *testing.T) {
 func TestGitCacheSkipsFeaturesWithoutWorktree(t *testing.T) {
 	c := newGitCache()
 	called := 0
-	c.status = func(ctx context.Context, dir string) (worktree.BranchStatus, error) {
+	c.status = func(ctx context.Context, dir string, _ []string) (worktree.BranchStatus, error) {
 		called++
 		return worktree.BranchStatus{}, nil
 	}
@@ -88,7 +88,7 @@ func TestGitCacheSkipsFeaturesWithoutWorktree(t *testing.T) {
 // distinguishable from "not measured".
 func TestGitCacheZeroIsDistinctFromUnmeasured(t *testing.T) {
 	c := newGitCache()
-	c.status = func(ctx context.Context, dir string) (worktree.BranchStatus, error) {
+	c.status = func(ctx context.Context, dir string, _ []string) (worktree.BranchStatus, error) {
 		return worktree.BranchStatus{Base: "main"}, nil
 	}
 	if c.get("p/f") != nil {
