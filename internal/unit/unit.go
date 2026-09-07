@@ -264,7 +264,8 @@ func Query(ctx context.Context, name string) (Status, error) {
 	if v, err := strconv.ParseUint(props["MemoryCurrent"], 10, 64); err == nil {
 		st.Memory = v
 	}
-	if v, err := strconv.ParseUint(props["CPUUsageNSec"], 10, 64); err == nil {
+	// time.Duration is signed; unrepresentable counters are unavailable.
+	if v, err := strconv.ParseUint(props["CPUUsageNSec"], 10, 63); err == nil {
 		st.CPU = time.Duration(v)
 	}
 	if st.CGroup != "" {

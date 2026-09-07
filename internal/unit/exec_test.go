@@ -218,6 +218,34 @@ func TestQueryParsesAnActiveUnit(t *testing.T) {
 	}
 }
 
+func TestQueryCPUUsageRange(t *testing.T) {
+	installFakeSystemd(t)
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"0", 0},
+		{"2500000000", 2500 * time.Millisecond},
+		{"9223372036854775807", time.Duration(1<<63 - 1)},
+		{"9223372036854775808", 0},
+		{"18446744073709551615", 0},
+		{"[not set]", 0},
+		{"invalid", 0},
+		{"-1", 0},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("FAKE_SYSTEMCTL_SHOW_OUTPUT", "LoadState=loaded\nCPUUsageNSec="+tc.value+"\n")
+			st, err := Query(context.Background(), "canaveral-x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.CPU != tc.want {
+				t.Errorf("CPU = %s, want %s", st.CPU, tc.want)
+			}
+		})
+	}
+}
+
 func TestQueryReturnsErrNotFoundWhenNotLoaded(t *testing.T) {
 	installFakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_SHOW_OUTPUT", "LoadState=not-found\nActiveState=inactive\nSubState=dead\n")

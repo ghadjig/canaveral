@@ -128,10 +128,18 @@ func TestSpawnSucceedsOnOKResponse(t *testing.T) {
 
 func TestSpawnFailsOnNonOKResponse(t *testing.T) {
 	installFakeHyprctl(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("FAKE_HYPRCTL_DISPATCH_STDOUT", "some hyprctl error")
-	err := Spawn(context.Background(), SpawnSpec{Class: "c", Workspace: "norules:f", Cmd: "true"})
+	err := Spawn(context.Background(), SpawnSpec{Class: "c", Workspace: "norules:f", Cmd: "true", Env: map[string]string{"A": "1"}})
 	if err == nil || !strings.Contains(err.Error(), "some hyprctl error") {
 		t.Errorf("err = %v, want it to surface hyprctl's response", err)
+	}
+	entries, err := os.ReadDir(runtimeDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("failed spawn left environment files: %v", entries)
 	}
 }
 

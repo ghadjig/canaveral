@@ -534,7 +534,7 @@ func completeArgs(m *manifest.Manifest, done []string, prefix string) completion
 	case argFeatureOrStash:
 		return finish(prefix, featureCandidates(m, prefix, scopeRestorable), base)
 	case argStashed:
-		return finish(prefix, stashCandidates(m, prefix), base)
+		return finish(prefix, stashCandidates(m), base)
 	case argFeatureOrService:
 		return finish(prefix, append(featureCandidates(m, prefix, scopeActive), serviceCandidates(m, false)...), base)
 	case argService:
@@ -706,7 +706,7 @@ func featureCandidates(m *manifest.Manifest, prefix string, scope featureScope) 
 // Flat, unlike featureCandidates: there are rarely many stashes, and a stash
 // under a namespace is reached by naming it in full rather than by descending
 // into a namespace that may hold nothing else.
-func stashCandidates(m *manifest.Manifest, prefix string) []candidate {
+func stashCandidates(m *manifest.Manifest) []candidate {
 	stashes, err := state.LoadStashes(m.Name)
 	if err != nil {
 		return nil
