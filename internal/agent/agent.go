@@ -156,16 +156,6 @@ func lookPathIn(name, path string) (string, bool) {
 	return "", false
 }
 
-// resetShellPATHCacheForTest clears ShellPATH's cache. Only meant to be
-// called between tests that set up different PATH/HOME/SHELL fixtures —
-// production code always wants the first, cached answer.
-func resetShellPATHCacheForTest() {
-	shellPATH = struct {
-		once  sync.Once
-		value string
-	}{}
-}
-
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

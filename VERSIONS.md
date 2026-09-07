@@ -12,6 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Treat CPU counters too large for a duration as unavailable instead of
+  displaying negative CPU usage.
+- Report environment-file close failures before launching a window, and
+  remove the incomplete file.
+
 ## v0.8.12 — 2026-09-06
 
 **Added**

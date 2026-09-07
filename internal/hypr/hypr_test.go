@@ -2,7 +2,9 @@ package hypr
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -244,6 +246,16 @@ func TestEnvFileIsPrivateSortedAndSelfDeleting(t *testing.T) {
 	if pre := envPrefix(path); !strings.Contains(pre, "rm -f") || !strings.Contains(pre, "set -a") {
 		t.Errorf("env prefix should export and then delete: %s", pre)
 	}
+	out, err := exec.Command("/bin/sh", "-c", envPrefix(path)+`exec /bin/sh -c 'printf "%s\n" "$A" "$B" "$C"'`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("source env file: %v: %s", err, out)
+	}
+	if string(out) != "1\n2\nit's\n" {
+		t.Errorf("exported environment = %q", out)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("env file should be removed, stat error = %v", err)
+	}
 }
 
 func TestWriteEnvFileSkipsAnEmptyEnvironment(t *testing.T) {
@@ -263,34 +275,6 @@ func TestWriteEnvFileSkipsAnEmptyEnvironment(t *testing.T) {
 func TestShellQuoteEscapesQuotes(t *testing.T) {
 	if got := shellQuote("it's"); got != `'it'\''s'` {
 		t.Errorf("shellQuote = %s", got)
-	}
-}
-
-func TestMonitorAt(t *testing.T) {
-	monitors := []Monitor{
-		{Name: "eDP-1", X: 6560, Y: 0, Width: 1920, Height: 1200},
-		{Name: "DP-3", X: 8480, Y: 0, Width: 5120, Height: 1440},
-	}
-	cases := []struct {
-		x, y int
-		want string
-		ok   bool
-	}{
-		{7000, 500, "eDP-1", true},
-		{9000, 500, "DP-3", true},
-		{8480, 0, "DP-3", true},   // top-left corner is inclusive
-		{13600, 0, "DP-3", false}, // exactly at the right edge is exclusive
-		{0, 0, "", false},         // nowhere near either monitor
-	}
-	for _, c := range cases {
-		m, ok := MonitorAt(monitors, c.x, c.y)
-		if ok != c.ok {
-			t.Errorf("MonitorAt(%d,%d) ok=%v, want %v", c.x, c.y, ok, c.ok)
-			continue
-		}
-		if ok && m.Name != c.want {
-			t.Errorf("MonitorAt(%d,%d) = %q, want %q", c.x, c.y, m.Name, c.want)
-		}
 	}
 }
 
@@ -361,7 +345,7 @@ func TestWorkspaceArgKeepsNumericAndNamedApart(t *testing.T) {
 		{"0", "0"},
 		{"-3", "-3"},
 		{"norules:small-fixes", "name:norules:small-fixes"},
-		{"3d", "name:3d"},          // starts with a digit but is not one
+		{"3d", "name:3d"}, // starts with a digit but is not one
 		{"3d-printing", "name:3d-printing"},
 		{"", "name:"},
 	}

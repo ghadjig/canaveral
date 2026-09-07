@@ -144,7 +144,7 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 	// picks its own port has to be running before it can say which, and the
 	// probe is usually the first thing that needs to know.
 	if s.Discover.Enabled() {
-		if err := discoverPorts(ctx, m, f, s, rec, r, prog); err != nil {
+		if err := discoverPorts(ctx, f, s, rec, r, prog); err != nil {
 			return stopAndReport(ctx, s, rec, r, err)
 		}
 		vars = varsFor(ctx, m, f, false, nil)
@@ -188,7 +188,7 @@ func startService(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 // discoverPorts resolves the ports a service chose for itself and records
 // them on the feature, so everything started afterwards — later services,
 // agents, windows, `canaveral exec` — addresses the port it actually bound.
-func discoverPorts(ctx context.Context, m *manifest.Manifest, f *state.Feature,
+func discoverPorts(ctx context.Context, f *state.Feature,
 	s manifest.Service, rec state.Service, r Reporter, prog *progress) error {
 
 	d := s.Discover

@@ -9,9 +9,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// resetShellPATHCacheForTest must only run between tests, never while
+// ShellPATH is being called concurrently.
+func resetShellPATHCacheForTest() {
+	shellPATH = struct {
+		once  sync.Once
+		value string
+	}{}
+}
 
 // asst builds one assistant message in the real wire shape: a
 // {"info": {...}} entry, with "role" and "modelID", returned in a bare

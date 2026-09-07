@@ -213,11 +213,11 @@ func writeEnvFile(env map[string]string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("env file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// CreateTemp is already 0600; stated rather than assumed, since the whole
 	// point of this file is that nothing else can read it.
 	if err := f.Chmod(0o600); err != nil {
-		os.Remove(f.Name())
+		removeEnvFile(f.Name())
 		return "", fmt.Errorf("env file: %w", err)
 	}
 	var b strings.Builder
@@ -229,8 +229,12 @@ func writeEnvFile(env map[string]string) (string, error) {
 		b.WriteString("\n")
 	}
 	if _, err := f.WriteString(b.String()); err != nil {
-		os.Remove(f.Name())
+		removeEnvFile(f.Name())
 		return "", fmt.Errorf("env file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		removeEnvFile(f.Name())
+		return "", fmt.Errorf("close env file: %w", err)
 	}
 	return f.Name(), nil
 }
@@ -427,19 +431,6 @@ func MoveWorkspaceToMonitor(ctx context.Context, workspace, monitor string) erro
 		return fmt.Errorf("move workspace %s to %s: %w: %s", workspace, monitor, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
-}
-
-// MonitorAt returns whichever monitor's rectangle contains the point (x, y),
-// which is how a window's own monitor is found without assuming it is on
-// whichever one currently has focus (it usually is not, by the time you have
-// switched away from its workspace).
-func MonitorAt(ms []Monitor, x, y int) (Monitor, bool) {
-	for _, m := range ms {
-		if x >= m.X && x < m.X+m.Width && y >= m.Y && y < m.Y+m.Height {
-			return m, true
-		}
-	}
-	return Monitor{}, false
 }
 
 // ReleaseWorkspace switches any monitor currently displaying the named
