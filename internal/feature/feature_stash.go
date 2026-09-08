@@ -80,6 +80,10 @@ func Stash(ctx context.Context, f *state.Feature, r Reporter) (*state.Stash, err
 		return nil, err
 	}
 	closeFeatureWindows(ctx, f, r)
+	// A stashed feature's agents are stopped too, so a client left pointing
+	// at one is in exactly the state Remove's is: attached to nothing. See
+	// closeAgentClients.
+	closeAgentClients(ctx, f, r)
 	// Stopped last, after the stash record is durable — see Remove for the
 	// full reasoning. `canaveral stash` run from the feature's own terminal
 	// or as a tool call from its own agent kills this very process, and if

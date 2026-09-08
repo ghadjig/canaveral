@@ -12,6 +12,43 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Tearing down a feature now closes agent clients started by hand, not just the
+  windows canaveral opened itself.
+
+  `canaveral attach` in a terminal of your own leaves a client canaveral has no
+  record of: `closeFeatureWindows` walks the windows it opened, and
+  `rehomeStrays` deliberately moves a window you opened aside rather than
+  closing it. So `rm` stopped the agent and left the client attached to a port
+  nothing was listening on, which is not a state these exit on. One found on a
+  live machine had been reconnecting to a deleted feature for a day and a half:
+  250MB resident, a third of a core sustained, twelve hours of CPU time spent.
+
+  Clients are matched on the agent's URL, which carries the feature's own
+  randomly allocated port and so cannot name anyone else's, and are signalled
+  in the same late slot as the windows and for the same reason — a teardown is
+  very often run from inside the feature it is tearing down, and the process
+  hosting that terminal must not be killed until everything durable has been
+  written. This process and its ancestors are never candidates.
+
+- Environment files left behind by a spawn that never started are swept.
+
+  Every error path already deleted its own file and the spawned shell deletes it
+  on the way in, which leaves the case neither covers: a dispatch Hyprland
+  accepted that produced no process. Those accumulated for the life of the
+  session, each holding a full window environment — for a project whose
+  toolchain exports credentials, exactly what writing them to a file instead of
+  a command line was meant to stop leaving lying around. Anything older than
+  five minutes was never going to be read, and is now removed the next time a
+  window is spawned.
+
+- Tests no longer write environment files into the developer's own runtime
+  directory. Fifty had collected there. `internal/hypr` already isolated
+  `XDG_RUNTIME_DIR`; the window tests in `internal/feature` did not.
+
 ## v0.9.1 — 2026-09-08
 
 **Fixed**

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClassIsSanitised(t *testing.T) {
@@ -353,5 +355,56 @@ func TestWorkspaceArgKeepsNumericAndNamedApart(t *testing.T) {
 		if got := workspaceArg(c.name); got != c.want {
 			t.Errorf("workspaceArg(%q) = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// Every error path in Spawn deletes its own file and the shell deletes it on
+// the happy path, so what accumulates is the case neither covers: a dispatch
+// the compositor accepted that produced no process. Fifty of those were found
+// in a live session, each holding a full window environment.
+func TestWriteEnvFileSweepsAbandonedFiles(t *testing.T) {
+	runtime := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+	dir := filepath.Join(runtime, "canaveral")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := filepath.Join(dir, "env-stale.sh")
+	if err := os.WriteFile(stale, []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * envFileTTL)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// A file young enough to still be on its way to a shell, and one that is
+	// not ours at all: neither may be touched.
+	fresh := filepath.Join(dir, "env-fresh.sh")
+	if err := os.WriteFile(fresh, []byte("K=v\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "something-else")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(other, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := writeEnvFile(map[string]string{"A": "b"})
+	if err != nil {
+		t.Fatalf("writeEnvFile: %v", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("an abandoned env file must be swept")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("a file young enough to still be read must be left alone")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("only canaveral's own env files may be swept")
 	}
 }

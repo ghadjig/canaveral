@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrUnavailable indicates Hyprland is not running or hyprctl is missing.
@@ -173,7 +174,6 @@ func removeEnvFile(path string) {
 	}
 }
 
-// buildArgv renders the shell command hyprctl should execute.
 // runtimeDir is the private, per-user directory environment files are written
 // to. $XDG_RUNTIME_DIR is tmpfs, mode 0700, and cleared when the session ends,
 // so a value written there never reaches persistent storage. Falling back to
@@ -184,6 +184,46 @@ func runtimeDir() string {
 		return filepath.Join(d, "canaveral")
 	}
 	return filepath.Join(os.TempDir(), "canaveral")
+}
+
+// envFileTTL is how long an environment file can plausibly still be waiting
+// to be read.
+//
+// The shell that consumes one is started by the same dispatch that created
+// it and sources it as its first act, so the real window is milliseconds.
+// Anything appreciably older than that was never going to be read: hyprctl
+// answered "ok" but nothing started, or whatever did was killed before its
+// first line. Generous, because deleting a file a slow spawn is still on its
+// way to would break the spawn, and lingering for a few minutes costs
+// nothing — but not unbounded, because the whole point of the file is that
+// its contents should not sit around.
+const envFileTTL = 5 * time.Minute
+
+// sweepEnvFiles removes environment files old enough to be certainly
+// abandoned.
+//
+// Every error path in Spawn deletes its own file and the shell deletes it on
+// the happy path, so this is for the case neither covers: a dispatch the
+// compositor accepted that produced no process. Without it those accumulate
+// for the life of the session, each one holding an entire window's
+// environment — which for a project whose toolchain exports credentials is
+// the thing writing them to a file was meant to stop leaving lying around.
+func sweepEnvFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-envFileTTL)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "env-") || !strings.HasSuffix(e.Name(), ".sh") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 // writeEnvFile writes env as a shell fragment and returns its path, or ""
@@ -209,6 +249,7 @@ func writeEnvFile(env map[string]string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("env dir: %w", err)
 	}
+	sweepEnvFiles(dir)
 	f, err := os.CreateTemp(dir, "env-*.sh")
 	if err != nil {
 		return "", fmt.Errorf("env file: %w", err)
@@ -257,7 +298,6 @@ func buildArgv(s SpawnSpec, envFile string) (string, error) {
 	if s.Class == "" {
 		return "", errors.New("spawn: class is required")
 	}
-
 	// Environment is applied to the terminal itself rather than to the inner
 	// command, so an interactive shell started with no command still inherits
 	// CANAVERAL_ROOT and friends.

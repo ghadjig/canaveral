@@ -214,6 +214,12 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		return err
 	}
 	closeFeatureWindows(ctx, f, r)
+	// After the windows, and in the same late slot as them, for the same
+	// reason: this can kill the terminal the teardown was typed into, so it
+	// must not happen until everything durable has been written. Windows
+	// canaveral opened take their clients with them; this is for the ones
+	// started by hand, which nothing else knows about.
+	closeAgentClients(ctx, f, r)
 	if deferredUnit != "" {
 		if err := unit.Stop(ctx, deferredUnit); err != nil {
 			r.Warn("could not stop %s — run `canaveral prune` to reap it", deferredUnit)

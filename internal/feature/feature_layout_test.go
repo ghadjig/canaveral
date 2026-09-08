@@ -367,6 +367,11 @@ esac
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	t.Setenv("CANAVERAL_TEST_LOG", log)
+	// Spawn writes the window's environment to a file under $XDG_RUNTIME_DIR
+	// and relies on the shell it starts to delete it. No shell ever starts
+	// here, so without this the suite drops a file holding a whole window's
+	// environment into the developer's own runtime directory on every run.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 }
 
 // The step announced for a window has to be the spawn, not the template
