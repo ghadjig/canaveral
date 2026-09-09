@@ -80,9 +80,12 @@ func runBare(ctx context.Context, args []string) error {
 // command fails in the one way you want it to — immediately and without side
 // effects.
 func openFeature(ctx context.Context, verb string, args []string, create, allowSpace bool) error {
+	scratch := verb == "scratch"
 	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
 	fs.Usage = func() {
-		if create {
+		if scratch {
+			fmt.Fprintln(os.Stderr, "Usage: canaveral scratch [flags]\n\nCreate a fresh disposable workspace with an automatically generated name and\nbranch. Starts from the project's default branch; use --base to choose another\nref. Pass --focus to switch to it once ready.\n\nRemove it with `canaveral rm` from inside it, or `canaveral rm <name>`.\nRemoval discards uncommitted changes and the branch, even if unmerged.\n\nFlags:")
+		} else if create {
 			fmt.Fprintln(os.Stderr, "Usage: canaveral new <feature> [flags]\n\nCreate a feature workspace — worktree, branch, services, agent and windows —\nin the background, without switching your view to it. Pass --focus to jump\nthere once it's ready.\n\nFlags:")
 		} else {
 			fmt.Fprintln(os.Stderr, "Usage: canaveral <feature> [flags]\n\nReconcile an existing feature, bringing up whatever is missing, without\nswitching your view to it. Pass --focus to jump there once it's ready.\nUse `canaveral new <feature>` to create one.\n\nFlags:")
@@ -100,6 +103,16 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 	if err != nil {
 		return err
 	}
+	if scratch {
+		if len(pos) != 0 {
+			return fmt.Errorf("scratch takes no feature name; use `canaveral scratch [flags]`")
+		}
+		name, err := scratchName()
+		if err != nil {
+			return err
+		}
+		pos = []string{name}
+	}
 	if len(pos) == 0 {
 		if create {
 			return fmt.Errorf("specify a feature name, e.g. `canaveral new small-fixes`")
@@ -116,6 +129,7 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 	}
 	opt := feature.Options{
 		NoWindows: *noWindows, NoServices: *noServices, NoAgents: *noAgents, Base: *base,
+		Scratch: scratch,
 	}
 
 	m, err := loadManifest()
@@ -156,6 +170,9 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 		return stashErr
 	}
 	if stashErr == nil {
+		if scratch {
+			return fmt.Errorf("scratch name %q is already stashed; run `canaveral scratch` again", name)
+		}
 		r.Step("restoring stashed %s  %s",
 			color(cBold, m.Name+"/"+name), color(cDim, humanAgo(stash.StashedAt)))
 		res, err := feature.Pop(ctx, m, name, opt, r)
@@ -331,6 +348,9 @@ func noProjectError(manifestErr error, name string, allowSpace bool) error {
 }
 
 func printFeatureSummary(f *state.Feature) {
+	if f.Scratch {
+		fmt.Printf("    %s disposable; rm discards changes and branch\n", dim("scratch "))
+	}
 	if f.Space {
 		// No branch and no worktree to report: a space has neither, and its
 		// directory is one you already keep rather than something canaveral
@@ -435,7 +455,7 @@ func runReset(ctx context.Context, args []string) error {
 func runRm(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral rm [feature...] [flags]\n\nStop a feature and remove its worktree. Defaults to whichever feature's\nworktree you're currently in.\n\nRefuses to remove a feature whose branch has not been merged into the\ndefault branch; merge it first, or pass --force. Once removed, the branch\nis deleted too if it was fully merged, and kept otherwise.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral rm [feature...] [flags]\n\nStop a feature and remove its worktree. Defaults to whichever feature's\nworktree you're currently in.\n\nRefuses to remove a feature whose branch has not been merged into the\ndefault branch; merge it first, or pass --force. Once removed, the branch\nis deleted too if it was fully merged, and kept otherwise.\n\nScratch workspaces are disposable: their changes and branches are discarded\nwithout --force, even if unmerged. --keep-worktree and --keep-branch still apply.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (

@@ -143,6 +143,7 @@ const (
 var commandArgs = map[string][]argKind{
 	"init":     {argNone},
 	"new":      {argNewFeature, argNone},
+	"scratch":  {argNone},
 	"open":     {argFeature, argNone},
 	"reset":    {argFeature},
 	"restart":  {argFeatureOrService, argService},
@@ -175,6 +176,7 @@ var commandArgs = map[string][]argKind{
 var commandFlags = map[string]map[string]string{
 	"init":     {"--force": "overwrite an existing canaveral.toml"},
 	"new":      {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for the new feature branch"},
+	"scratch":  {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for the scratch branch"},
 	"open":     {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for a new feature branch"},
 	"reset":    {"--all": "reset every feature of the project", "--no-windows": "skip windows"},
 	"ls":       {"--all": "list features across every project", "--names": "print only feature names"},
@@ -846,6 +848,9 @@ func featureDesc(f *state.Feature) string {
 	var parts []string
 	if f.WSlot > 0 {
 		parts = append(parts, fmt.Sprintf("slot %d", f.WSlot))
+	}
+	if f.Scratch {
+		parts = append(parts, "disposable scratch")
 	}
 	// The default branch template is "{{.Feature}}", so for most features the
 	// branch is the name again. Repeating it back at twice the width says

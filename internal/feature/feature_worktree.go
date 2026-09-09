@@ -46,7 +46,11 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 			base = ""
 		}
 	}
-	res, err := worktree.Ensure(ctx, m.Root, f.Worktree, f.Branch, base)
+	ensure := worktree.Ensure
+	if f.Scratch && created {
+		ensure = worktree.EnsureNew
+	}
+	res, err := ensure(ctx, m.Root, f.Worktree, f.Branch, base)
 	if err != nil {
 		return err
 	}
@@ -60,6 +64,13 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 		r.Warn("%v; %s starts from the current HEAD of %s", baseErr, f.Branch, m.Root)
 	}
 	r.OK("worktree %s on %s", f.Worktree, f.Branch)
+	if f.Scratch && created {
+		// Once git creation succeeds this is ours, even if provisioning
+		// fails. Keep it reachable by rm and reset in that case.
+		if err := state.Save(f); err != nil {
+			return fmt.Errorf("save scratch state: %w", err)
+		}
+	}
 
 	env, err := provisionWorktree(ctx, m, f, vars, r)
 	if err != nil {

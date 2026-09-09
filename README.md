@@ -43,6 +43,7 @@ $ canaveral new small-fixes
 | Command | Purpose |
 | --- | --- |
 | `canaveral new <feature>` | Create a feature; add `--focus` to also switch to its workspace |
+| `canaveral scratch` | Create a fresh, automatically named disposable workspace; `--focus` to switch to it |
 | `canaveral <feature>` | Repair an existing feature; add `--focus` to also switch to its workspace |
 | `canaveral reset [feature...]` | Bring up whatever is missing; `--all` for every feature |
 | `canaveral ls` | Features, branches, ports, service and window counts |
@@ -65,7 +66,7 @@ $ canaveral new small-fixes
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
 
-Creating a feature needs the `new` keyword. Everything else is a bare word, and
+Creating a named feature needs the `new` keyword. Everything else is a bare word, and
 an unrecognised bare word used to be taken as "make me this feature" — so one
 fumbled keystroke (`canaveral stratus` for `status`) would silently build a
 worktree, a branch, a server and an agent that you then had to go and find.
@@ -105,7 +106,7 @@ manifest's services is read as the feature.
 worktree you are standing in, so finishing up is `canaveral merge` from where
 you already are.
 
-`rm` refuses a feature whose branch has not been merged into the default
+`rm` refuses an ordinary feature whose branch has not been merged into the default
 branch:
 
 ```
@@ -115,11 +116,36 @@ canaveral: mywork is not merged into main
   or discard the workspace with `canaveral rm mywork --force` (the branch is kept)
 ```
 
-Committed work was never actually at risk — `rm` has always kept an unmerged
+For ordinary features, committed work was never actually at risk — `rm` keeps an unmerged
 branch — but tearing down the workspace, ports and agent of something you
 haven't landed leaves a branch behind that is easy to lose track of. `--force`
 removes the workspace anyway and still keeps the branch; `--all` skips
 unmerged features and says so rather than stopping.
+
+### Scratch workspaces
+
+For experiments you expect to throw away, create a scratch workspace without
+choosing a feature or branch name:
+
+```bash
+canaveral -C norules scratch --focus  # launcher: norules scratch
+canaveral scratch --base HEAD        # start from the current checkout's HEAD
+```
+
+Each invocation creates a fresh `scratch-<random-id>` workspace and branch,
+with the project's usual provisioning, ports, services, agents and windows.
+The branch name is generated independently of the manifest's branch template.
+The default base is the project's default branch, as with `new`; `--base`,
+`--no-services`, `--no-agents`, `--no-windows` and `--focus` work the same way.
+
+Scratch workspaces remain available until you remove them. Reopen one using
+its generated name from `canaveral ls`, or stash and pop it as usual.
+
+Run `canaveral rm` inside it (or `canaveral rm scratch-<id>` elsewhere) to
+discard it. **Scratch removal deletes uncommitted changes and the branch,
+including unmerged commits, without `--force`.** This also applies to stashed
+scratch workspaces and `rm --all`. `--keep-branch` preserves commits on the
+branch; `--keep-worktree` preserves both the worktree and branch.
 
 ### Stashing
 

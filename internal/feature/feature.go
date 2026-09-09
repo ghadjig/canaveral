@@ -53,6 +53,8 @@ type Options struct {
 	NoAgents bool
 	// Base is the git ref new feature branches start from.
 	Base string
+	// Scratch creates a disposable workspace on its own generated branch.
+	Scratch bool
 	// Resume maps agent name to an opencode session that agent's window
 	// should reopen instead of starting a fresh conversation. Set by Pop
 	// from the stash record; nil everywhere else.
@@ -179,9 +181,26 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	// had legitimately moved on to in the meantime.
 	originalWS, _ := hypr.ActiveWorkspaceName(ctx)
 
-	f, created, err := ensureRecord(ctx, m, name)
+	recordManifest := m
+	if opt.Scratch {
+		if m.Space {
+			return nil, fmt.Errorf("scratch requires a project repository")
+		}
+		// A fixed project branch template must never turn somebody else's
+		// branch into disposable scratch work.
+		copy := *m
+		copy.Branch = "{{.Feature}}"
+		recordManifest = &copy
+	}
+	f, created, err := ensureRecord(ctx, recordManifest, name)
 	if err != nil {
 		return nil, err
+	}
+	if opt.Scratch {
+		if !created {
+			return nil, fmt.Errorf("scratch feature %q already exists", name)
+		}
+		f.Scratch = true
 	}
 	res := &Result{Feature: f, Created: created}
 
@@ -192,11 +211,21 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	// watcher has a row to put it on; everything below this point is slow
 	// enough to be worth reporting.
 	prog := newProgress(f, r, state.PhaseBooting, reconcileSteps(m, opt))
+	if opt.Scratch {
+		// Claim the git worktree before publishing a disposable record. A
+		// name collision must not leave state that rm could use to delete
+		// the branch or directory whose existence prevented creation.
+		if err := ensureWorktree(ctx, m, f, vars, opt, created, r); err != nil {
+			return nil, err
+		}
+	}
 	defer prog.finish()
 
 	prog.start("worktree")
-	if err := ensureWorktree(ctx, m, f, vars, opt, created, r); err != nil {
-		return nil, err
+	if !opt.Scratch {
+		if err := ensureWorktree(ctx, m, f, vars, opt, created, r); err != nil {
+			return nil, err
+		}
 	}
 	prog.done()
 	// The worktree may have just been created, so re-resolve the toolchain there.
