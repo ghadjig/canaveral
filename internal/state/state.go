@@ -47,6 +47,9 @@ type Feature struct {
 	// you already keep, and removing it the way a worktree is removed would
 	// be a catastrophe rather than a cleanup.
 	Worktree string `json:"worktree"`
+	// Scratch marks an explicitly disposable workspace. Removal discards its
+	// uncommitted changes and branch, including unmerged commits.
+	Scratch bool `json:"scratch,omitempty"`
 	// Space marks a workspace with no project behind it — no repository, no
 	// worktree, no branch — defined in canaveral's config directory rather
 	// than in a checkout. See internal/space.

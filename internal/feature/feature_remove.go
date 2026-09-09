@@ -144,8 +144,8 @@ func (e *unmergedError) Error() string {
 //
 // Refuses outright when the feature's branch has not been merged into the
 // repo's default branch, unless force is set or the worktree is being kept.
-// Committed work survives on the branch either way — Remove has never deleted
-// an unmerged branch — but tearing down the workspace, ports and agent of
+// For ordinary features, committed work survives on the branch either way —
+// an unmerged branch is kept — but tearing down the workspace, ports and agent of
 // something you have not landed yet is nearly always a mistake, and the branch
 // left behind is easy to lose track of.
 //
@@ -154,11 +154,13 @@ func (e *unmergedError) Error() string {
 // what makes it safe, not the caller's say-so, so unmerged work is always
 // kept regardless of keepBranch. keepBranch exists purely to opt out of
 // deletion even when merged, e.g. to keep it around for a while longer.
+// Scratch workspaces explicitly opt into discarding changes and unmerged
+// branches; keepWorktree and keepBranch still apply.
 func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
 	// Checked before anything else: every step below this point is
 	// destructive, and stopping a feature's services only to then refuse to
 	// remove it would leave it half torn down.
-	if !force && !keepWorktree && !f.Space && f.Worktree != "" {
+	if !force && !f.Scratch && !keepWorktree && !f.Space && f.Worktree != "" {
 		if merged, target, ok := mergeTarget(ctx, f); ok && !merged {
 			return &unmergedError{feature: f.Name, branch: f.Branch, target: target}
 		}
@@ -311,7 +313,8 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 // been fully merged into the repo's default branch — merge history is what
 // makes it safe, not the caller's say-so, so unmerged work is always kept
 // regardless of keepBranch. keepBranch exists purely to opt out of deletion
-// even when merged, e.g. to keep it around for a while longer.
+// even when merged, e.g. to keep it around for a while longer. Scratch
+// workspaces instead discard both changes and unmerged branches by default.
 func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
 	// Space is asked before Worktree, and that order is the whole safety
 	// property here: a space's directory is one you already keep — your home
@@ -321,11 +324,18 @@ func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree
 	if keepWorktree || f.Space || f.Worktree == "" {
 		return nil
 	}
-	if err := worktree.Remove(ctx, f.Root, f.Worktree, force, f.Provisioned); err != nil {
+	if err := worktree.Remove(ctx, f.Root, f.Worktree, force || f.Scratch, f.Provisioned); err != nil {
 		return err
 	}
 	_ = worktree.Prune(ctx, f.Root)
 	r.OK("removed worktree")
+	if f.Scratch && !keepBranch {
+		if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, true); err != nil {
+			return err
+		}
+		r.OK("deleted scratch branch %s", f.Branch)
+		return nil
+	}
 
 	deleted := false
 	if !keepBranch {

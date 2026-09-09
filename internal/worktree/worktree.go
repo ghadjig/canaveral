@@ -68,7 +68,24 @@ type Result struct {
 // Reusing an existing worktree is deliberate: re-running `canaveral up` after a
 // crash must not discard uncommitted agent work.
 func Ensure(ctx context.Context, repo, path, branch, base string) (Result, error) {
+	return ensure(ctx, repo, path, branch, base, true)
+}
+
+// EnsureNew creates a worktree and branch without adopting existing work.
+// Disposable workspaces use this so a collision cannot claim user work.
+func EnsureNew(ctx context.Context, repo, path, branch, base string) (Result, error) {
+	return ensure(ctx, repo, path, branch, base, false)
+}
+
+func ensure(ctx context.Context, repo, path, branch, base string, reuse bool) (Result, error) {
 	res := Result{Dir: path, Branch: branch}
+	if !reuse {
+		if _, err := os.Lstat(path); err == nil {
+			return res, fmt.Errorf("worktree path %s already exists", path)
+		} else if !os.IsNotExist(err) {
+			return res, fmt.Errorf("check worktree path: %w", err)
+		}
+	}
 
 	if st, err := os.Stat(filepath.Join(path, ".git")); err == nil && (st.IsDir() || st.Mode().IsRegular()) {
 		cur, err := currentBranch(ctx, path)
@@ -87,7 +104,7 @@ func Ensure(ctx context.Context, repo, path, branch, base string) (Result, error
 	}
 
 	args := []string{"-C", repo, "worktree", "add"}
-	if branchExists(ctx, repo, branch) {
+	if reuse && branchExists(ctx, repo, branch) {
 		args = append(args, path, branch)
 	} else {
 		args = append(args, "-b", branch, path)
@@ -496,6 +513,13 @@ func IsMerged(ctx context.Context, repo, branch, target string) (bool, error) {
 // DeleteBranch removes a local branch. force uses -D instead of -d, allowing
 // deletion of a branch that is not merged into its upstream.
 func DeleteBranch(ctx context.Context, repo, branch string, force bool) error {
+	// Teardown can be retried after git succeeded but state removal did not.
+	if _, err := gitOutput(ctx, repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return nil
+		}
+	}
 	flag := "-d"
 	if force {
 		flag = "-D"

@@ -589,6 +589,9 @@ func printFeatureBlock(f *state.Feature, rows []row, bs worktree.BranchStatus, h
 // branch, its declared ports if any, and how long ago it was created.
 func featureHeaderLine(f *state.Feature) string {
 	hdr := fmt.Sprintf("%s  %s", color(cBold, f.Key()), dim(f.Branch))
+	if f.Scratch {
+		hdr += dim("  disposable scratch")
+	}
 	if len(f.Ports) > 0 {
 		hdr += dim("  ports " + portSummary(f.Ports))
 	}

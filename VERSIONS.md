@@ -12,6 +12,17 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `canaveral scratch` (launcher: `norules scratch`) creates a fresh project
+  workspace with an automatically generated name and branch. It supports the
+  same base, focus and startup flags as `new`. Scratch workspaces are explicitly
+  disposable: `rm` discards uncommitted changes and deletes their branches even
+  if unmerged, without `--force`, including when stashed or removed with `--all`.
+  `--keep-worktree` and `--keep-branch` still apply.
+
 ## v0.9.2 — 2026-09-08
 
 **Fixed**

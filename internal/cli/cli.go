@@ -47,6 +47,7 @@ func commands() []command {
 	return []command{
 		{"init", "write a starter canaveral.toml for a project", runInit},
 		{"new", "create a feature: worktree, branch, services, agent and windows", runNew},
+		{"scratch", "create an automatically named, disposable project workspace", runScratch},
 		{"open", "open an existing feature explicitly (for names clashing with commands)", runOpen},
 		{"reset", "bring up whatever is missing for a feature", runReset},
 		{"restart", "stop and restart named services of a feature", runRestart},
