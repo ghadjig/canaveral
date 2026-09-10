@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,7 +405,7 @@ func TestReconcileWindowsCountsTheSpawnNotTheSpecBuild(t *testing.T) {
 	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
 
 	err := reconcileWindows(context.Background(), m, f, tmpl.Vars{}, nil,
-		&Result{}, quietReporter{}, "", prog)
+		&Result{}, quietReporter{}, prog)
 	if err != nil {
 		t.Fatalf("reconcileWindows: %v", err)
 	}
@@ -466,7 +468,7 @@ func TestReconcileWindowsCountsAWindowThatNeedsNoSpawn(t *testing.T) {
 	t.Setenv("CANAVERAL_TEST_CLIENTS", string(clients))
 
 	if err := reconcileWindows(context.Background(), m, f, tmpl.Vars{}, nil,
-		&Result{}, quietReporter{}, "", prog); err != nil {
+		&Result{}, quietReporter{}, prog); err != nil {
 		t.Fatalf("reconcileWindows: %v", err)
 	}
 
@@ -475,5 +477,65 @@ func TestReconcileWindowsCountsAWindowThatNeedsNoSpawn(t *testing.T) {
 	}
 	if prog.step != 1 {
 		t.Errorf("step = %d, want 1: an adopted window is still a step done", prog.step)
+	}
+}
+
+func TestLayoutWaitsForWindowsBeforeTouchingFocus(t *testing.T) {
+	for _, failSpawn := range []bool{false, true} {
+		t.Run(fmt.Sprint(failSpawn), func(t *testing.T) {
+			dir := t.TempDir()
+			log := filepath.Join(dir, "calls")
+			script := `#!/bin/sh
+printf '%s\n' "$*" >> "$LAYOUT_LOG"
+case "$1" in
+  dispatch) if [ "$LAYOUT_FAIL" = true ]; then exit 1; fi; printf ok ;;
+  clients) printf '%s' '[{"address":"0xa","initialClass":"a","workspace":{"name":"p:f"}},{"address":"0xb","initialClass":"b","workspace":{"name":"p:f"}}]' ;;
+  getoption) printf '%s' '{"int":0}' ;;
+  monitors) printf '%s' '[{"name":"DP-1","focused":true,"activeWorkspace":{"name":"latest"}}]' ;;
+  workspaces) printf '%s' '[{"name":"p:f","monitor":"DP-1"}]' ;;
+  activewindow) printf '%s' '{"address":"0xff"}' ;;
+  --batch) printf ok ;;
+  *) exit 1 ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "hyprctl"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			t.Setenv("LAYOUT_LOG", log)
+			t.Setenv("LAYOUT_FAIL", fmt.Sprint(failSpawn))
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			m := &manifest.Manifest{}
+			m.Layout.Order = []string{"a", "b"}
+			pending := map[string]pendingSpawn{
+				"a": {name: "a", spec: hypr.SpawnSpec{Class: "a", Workspace: "p:f", Cmd: "true"}},
+				"b": {name: "b", spec: hypr.SpawnSpec{Class: "b", Workspace: "p:f", Cmd: "true"}},
+			}
+			err := reconcileLayoutWindows(context.Background(), m, pending, true, &Result{}, quietReporter{}, nil)
+			if (err != nil) != failSpawn {
+				t.Fatalf("layout error = %v", err)
+			}
+			b, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(b)
+			if strings.Contains(calls, "\ndispatch focus") || strings.Contains(calls, "moveworkspacetomonitor") {
+				t.Fatalf("layout changed focus outside the batch: %s", calls)
+			}
+			if failSpawn {
+				if strings.Contains(calls, "--batch") {
+					t.Fatalf("failed spawn must not touch focus: %s", calls)
+				}
+				return
+			}
+			batch := strings.Index(calls, "--batch")
+			if batch < 0 || strings.LastIndex(calls, "dispatch exec") > batch || strings.Index(calls, "activewindow") < strings.LastIndex(calls, "dispatch exec") {
+				t.Fatalf("focus must be captured and batched after all spawns: %s", calls)
+			}
+			if !strings.Contains(calls, "dispatch workspace name:latest") {
+				t.Fatalf("must restore the latest workspace: %s", calls)
+			}
+		})
 	}
 }

@@ -1361,21 +1361,16 @@ spawned into whatever slot dwindle's default placement gives it, since
 reflowing the other three already-placed windows around it isn't worth the
 disruption.
 
-Building a feature briefly needs to shuffle window focus to lay out each
-column, which would otherwise flash across whatever workspace you're currently
-looking at. If you have a second monitor, canaveral moves the new workspace
-there the moment the first window exists, so that shuffling happens somewhere
-you're not working, and puts that monitor back to whatever it was showing once
-the build is done. `--focus` (and `canaveral-goto` / clicking a bar's slot)
-explicitly pulls the workspace back onto whichever monitor you're currently on
-before switching to it. On a single-monitor machine there's nowhere to hide the
-work, so it briefly flashes your current workspace and restores it afterwards
-instead.
+Windows open silently first, without borrowing another monitor or holding focus
+while applications start. Once they have all appeared, canaveral retiles them
+into columns in one Hyprland batch. Cursor warping is disabled for that batch;
+the current window, each monitor's visible workspace and the temporary settings
+are restored before it finishes. The current view is captured after startup, so
+you can switch workspaces while a feature boots without being sent back later.
 
-This is bounded, not invisible: keyboard focus does travel to the build monitor
-while the layout is applied — a quarter of a second or so for two windows —
-because Hyprland will only lay windows out relative to whichever one is
-focused. It is put back where it was afterwards, on both monitors.
+`--focus` (and `canaveral-goto` / clicking a bar's slot) explicitly pulls the
+finished workspace onto whichever monitor you're currently on before switching
+to it.
 
 ## Status bar integration
 

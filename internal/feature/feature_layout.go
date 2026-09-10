@@ -22,7 +22,7 @@ import (
 )
 
 func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Feature,
-	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, originalWS string, prog *progress) error {
+	vars tmpl.Vars, tc map[string]string, res *Result, r Reporter, prog *progress) error {
 
 	if len(m.Windows) == 0 {
 		return nil
@@ -75,7 +75,7 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	spawnFreeWindows(ctx, m, pendingByName, res, r, prog)
 
 	if m.Layout.Enabled() {
-		if err := reconcileLayoutWindows(ctx, m, f.HyprWorkspace(), pendingByName, isLayoutFresh(m, pendingByName), res, r, originalWS, prog); err != nil {
+		if err := reconcileLayoutWindows(ctx, m, pendingByName, isLayoutFresh(m, pendingByName), res, r, prog); err != nil {
 			return fmt.Errorf("layout: %w", err)
 		}
 	}
@@ -456,31 +456,11 @@ func waitForMatch(ctx context.Context, re *regexp.Regexp, seen map[string]bool, 
 
 // reconcileLayoutWindows spawns [layout]'s windows.
 //
-// When every one of them is missing (layoutFresh), they are spawned in Order
-// with `preselect` chaining them into a single left-to-right dwindle split,
-// then the exact ratios from splitRatioChain are applied. Otherwise, any
-// still-missing ones are spawned without chaining (see reconcileWindows for
-// why a partial chain cannot be reliably re-derived).
-//
-// Hyprland's splitratio and preselect dispatchers both operate on whichever
-// window is currently focused, and focusing a window switches what is
-// displayed — confirmed empirically — even though this whole process runs in
-// the background by default and should not disturb whatever the user is
-// actually looking at. So as soon as the workspace exists it is moved to a
-// monitor the user is not working on (see buildAway), which keeps the
-// shuffling off their screen; that monitor is then put back to what it was
-// showing, and the original view restored, once everything is done. On a
-// single monitor there is nowhere to hide the work, so only the restore
-// applies, and the spawn+preselect+splitratio sequence is structured to need
-// as few focus switches as physically possible (one per window instead of
-// two).
-//
-// None of this is invisible: keyboard focus does travel to the build monitor
-// for the duration, measured at roughly a quarter of a second for two
-// windows. It is bounded and it is put back, which is the most that can be
-// had while Hyprland requires focus to lay windows out at all.
-func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
-	pending map[string]pendingSpawn, layoutFresh bool, res *Result, r Reporter, originalWS string, prog *progress) error {
+// Fresh layouts wait for all windows to map silently before touching focus.
+// Their tiling and focus restoration then happen in a single compositor batch,
+// so application startup never holds the user's keyboard or cursor hostage.
+func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest,
+	pending map[string]pendingSpawn, layoutFresh bool, res *Result, r Reporter, prog *progress) error {
 
 	var missing []string
 	for _, name := range m.Layout.Order {
@@ -492,22 +472,12 @@ func reconcileLayoutWindows(ctx context.Context, m *manifest.Manifest, hyprWorks
 		return nil
 	}
 
-	restore := func() {
-		if originalWS == "" {
-			return
-		}
-		if cur, err := hypr.ActiveWorkspaceName(ctx); err == nil && cur != originalWS {
-			_ = hypr.Focus(ctx, originalWS)
-		}
-	}
-	defer restore()
-
 	if !layoutFresh {
 		spawnMissingIndependently(ctx, missing, pending, res, r, prog)
 		return nil
 	}
 
-	return spawnLayoutChain(ctx, m, hyprWorkspace, pending, res, r, prog)
+	return spawnLayoutChain(ctx, m, pending, res, r, prog)
 }
 
 // spawnMissingIndependently spawns each still-missing layout window on its
@@ -526,115 +496,23 @@ func spawnMissingIndependently(ctx context.Context, missing []string, pending ma
 	}
 }
 
-// spawnLayoutChain builds [layout] from scratch: every window in Order is
-// spawned in sequence, each preselected to open beside the previous one so
-// the result is a single left-to-right dwindle split, then the exact
-// ratios from splitRatioChain are applied.
-func spawnLayoutChain(ctx context.Context, m *manifest.Manifest, hyprWorkspace string,
+// spawnLayoutChain separates slow application startup from the focus-sensitive
+// tiling operations. Only mapped windows enter the compositor batch.
+func spawnLayoutChain(ctx context.Context, m *manifest.Manifest,
 	pending map[string]pendingSpawn, res *Result, r Reporter, prog *progress) error {
-
-	// Runs before reconcileLayoutWindows' own focus restore, which is
-	// registered earlier and so fires later: this monitor has to be showing
-	// the right workspace again before the user is sent back to theirs,
-	// otherwise the last thing that happened would be a focus change onto a
-	// screen still displaying the build.
-	var restoreSecondary func()
-	defer func() {
-		if restoreSecondary != nil {
-			restoreSecondary()
-		}
-	}()
-
 	ratios := splitRatioChain(m.Layout.Order, m.Layout.Fractions())
-	addresses := make(map[string]string, len(m.Layout.Order))
-	for i, name := range m.Layout.Order {
+	var addresses []string
+	for _, name := range m.Layout.Order {
 		p := pending[name]
-		if i > 0 {
-			if err := chainAfter(ctx, addresses[m.Layout.Order[i-1]], m.Layout.Order[i-1], name); err != nil {
-				return err
-			}
-		}
 		addr, err := spawnTracked(ctx, p, true, prog)
 		if err != nil {
 			return fmt.Errorf("window %q: %w", name, err)
 		}
 		r.OK("window %s", name)
 		res.SpawnedWindow = append(res.SpawnedWindow, name)
-		addresses[name] = addr
-
-		if i == 0 {
-			// The workspace only comes into existence once this first window
-			// creates it, so this is the first moment it can be relocated.
-			// Doing so before any focus-shuffling begins keeps every
-			// subsequent preselect/splitratio focus change off the monitor
-			// the user is working on.
-			restoreSecondary = buildAway(ctx, hyprWorkspace, r)
-		}
-
-		// Applied here, immediately, rather than in a second pass over all
-		// windows: the previous window is already focused right now (it was
-		// focused a moment ago for preselect, and the spawn above was
-		// silent, so focus never moved off it) — reusing that avoids a
-		// second focus switch for the same window later, halving the total
-		// number of visible workspace jumps this whole operation causes.
-		if i > 0 {
-			if err := hypr.SplitRatioExact(ctx, ratios[i-1]); err != nil {
-				return fmt.Errorf("splitratio for %q: %w", m.Layout.Order[i-1], err)
-			}
-		}
+		addresses = append(addresses, addr)
 	}
-	return nil
-}
-
-// chainAfter focuses the previously-spawned window and preselects the
-// direction the next spawn should open in, continuing the dwindle chain.
-// Hyprland's preselect dispatcher operates on whichever window is currently
-// focused, which is why this must run immediately before each spawn rather
-// than once up front.
-func chainAfter(ctx context.Context, prevAddr, prevName, nextName string) error {
-	if prevAddr == "" {
-		return fmt.Errorf("could not locate %q to chain %q after it", prevName, nextName)
-	}
-	if err := hypr.FocusWindow(ctx, prevAddr); err != nil {
-		return fmt.Errorf("focus %q: %w", prevName, err)
-	}
-	if err := hypr.Preselect(ctx, "r"); err != nil {
-		return fmt.Errorf("preselect after %q: %w", prevName, err)
-	}
-	return nil
-}
-
-// buildAway moves the just-created workspace onto a monitor the user is not
-// looking at, and returns a function that puts that monitor back to whatever
-// it was displaying before. Returns nil when there is nothing to undo: a
-// single monitor, a failed relocation, or a secondary that was already
-// showing this workspace.
-//
-// The undo is the point. Relocating alone left the other monitor parked on
-// the workspace canaveral had just built, so opening a feature in the
-// background silently replaced whatever the user had on their second screen
-// and left it that way — a fair description of which is that the build stole
-// the monitor rather than borrowed it.
-func buildAway(ctx context.Context, hyprWorkspace string, r Reporter) func() {
-	sec, ok, err := hypr.SecondaryMonitor(ctx)
-	if err != nil || !ok {
-		return nil
-	}
-	// Read before the move, since afterwards this monitor's active workspace
-	// is the one being built.
-	was := sec.ActiveWorkspace.Name
-	if err := hypr.MoveWorkspaceToMonitor(ctx, hyprWorkspace, sec.Name); err != nil {
-		r.Warn("could not build on a secondary monitor: %v", err)
-		return nil
-	}
-	if was == "" || was == hyprWorkspace {
-		return nil
-	}
-	return func() {
-		if err := hypr.ShowWorkspaceOnMonitor(ctx, sec.Name, was); err != nil {
-			r.Warn("%v", err)
-		}
-	}
+	return hypr.ApplyColumns(ctx, addresses, ratios)
 }
 
 // waitForClass polls for a window of the given class to appear, returning

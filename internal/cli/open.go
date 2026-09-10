@@ -240,10 +240,9 @@ func checkFeatureExistence(loadErr error, create bool, projectName, name string)
 // focusFeatureWorkspace switches to f's workspace, first pulling it back
 // onto whichever monitor is actually focused right now.
 //
-// The workspace may have been deliberately built on a monitor other than
-// the one the user is on (see reconcileLayoutWindows), so it has to be
-// relocated before switching to it — otherwise --focus would silently make
-// it appear on a screen the user is not even looking at.
+// The user may have changed monitors while the workspace was starting, so
+// relocate it before switching — otherwise --focus could take them to a
+// different screen.
 func focusFeatureWorkspace(ctx context.Context, f *state.Feature, r reporter) {
 	if err := hypr.Available(ctx); err != nil {
 		return

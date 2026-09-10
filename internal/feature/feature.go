@@ -173,14 +173,6 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		return nil, err
 	}
 
-	// Captured before anything else runs, not right before the window step:
-	// service and agent startup alone can take several seconds, and on a
-	// machine actually being used, the visible workspace can easily have
-	// changed by the time a later capture would see it — restoring to that
-	// later, already-stale value would silently overwrite wherever the user
-	// had legitimately moved on to in the meantime.
-	originalWS, _ := hypr.ActiveWorkspaceName(ctx)
-
 	recordManifest := m
 	if opt.Scratch {
 		if m.Space {
@@ -273,7 +265,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	if !opt.NoWindows {
 		// Agent URLs are only known after agents start, so windows render last.
 		vars = varsFor(ctx, m, f, res.Created, opt.Resume)
-		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, originalWS, prog); err != nil {
+		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
 		}

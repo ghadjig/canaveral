@@ -12,6 +12,16 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Creating a workspace with a column layout no longer holds focus on a secondary
+  monitor while windows start or warps the mouse cursor there. Windows open
+  silently before a single layout batch restores the current window and visible
+  workspaces, with cursor warping disabled until restoration completes. Switching
+  workspaces during startup no longer sends you back to the original workspace.
+
 ## v0.10.0 — 2026-09-09
 
 **Added**
