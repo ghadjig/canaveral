@@ -459,6 +459,12 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 
 // baseEnvFor layers canaveral's own variables over the toolchain environment.
 func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) map[string]string {
+	shellEnv := agent.ShellEnv()
+	// A custom suffix belongs to the target feature, never the shell in
+	// which canaveral was invoked. Toolchain and manifest values still win.
+	if m.Database.SuffixEnv != "" {
+		delete(shellEnv, m.Database.SuffixEnv)
+	}
 	own := map[string]string{
 		"CANAVERAL_PROJECT":  f.Project,
 		"CANAVERAL_FEATURE":  f.Name,
@@ -479,7 +485,7 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 	// one, so under mise the gap survived and only showed up as a window
 	// whose command was not on PATH vanishing the instant it spawned.
 	// Merging is append-only, so mise's shims keep their precedence.
-	if p := agent.ShellPATH(); p != "" {
+	if p := shellEnv["PATH"]; p != "" {
 		own["PATH"] = agent.MergePATH(tc["PATH"], p)
 	}
 	if f.DBSuffix != "" && m.Database.SuffixEnv != "" {
@@ -488,7 +494,7 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 	for name, p := range f.Ports {
 		own["CANAVERAL_PORT_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_"))] = fmt.Sprint(p)
 	}
-	return manifest.MergeEnv(tc, own)
+	return manifest.MergeEnv(shellEnv, tc, own)
 }
 
 // envFor is baseEnvFor plus the manifest's [env], with its templates

@@ -16,6 +16,12 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 **Fixed**
 
+- Agents, services and workspace commands now receive exported shell variables
+  such as `EDITOR` and `VISUAL`, including exports from interactive/login startup
+  files when launched from the desktop. Project toolchains and manifest `env`
+  settings still take precedence; workspace and process identity are not copied
+  from the invoking feature.
+
 - Creating a workspace with a column layout no longer holds focus on a secondary
   monitor while windows start or warps the mouse cursor there. Windows open
   silently before a single layout batch restores the current window and visible

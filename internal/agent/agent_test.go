@@ -19,7 +19,7 @@ import (
 func resetShellPATHCacheForTest() {
 	shellPATH = struct {
 		once  sync.Once
-		value string
+		value map[string]string
 	}{}
 }
 
