@@ -129,6 +129,21 @@ func TestBaseEnvForSharedDatabaseSetsNoSuffix(t *testing.T) {
 	}
 }
 
+func TestEnvForEditorOverrides(t *testing.T) {
+	m := &manifest.Manifest{Name: "p"}
+	f := &state.Feature{Project: "p", Name: "scratch-test"}
+	tc := map[string]string{"EDITOR": "toolchain-editor"}
+	env, err := envFor(m, f, tc, tmpl.Vars{})
+	if err != nil || env["EDITOR"] != "toolchain-editor" {
+		t.Fatalf("toolchain EDITOR = %q, %v", env["EDITOR"], err)
+	}
+	m.Env = map[string]string{"EDITOR": "project-editor", "VISUAL": ""}
+	env, err = envFor(m, f, tc, tmpl.Vars{})
+	if err != nil || env["EDITOR"] != "project-editor" || env["VISUAL"] != "" {
+		t.Fatalf("manifest overrides: EDITOR=%q VISUAL=%q, %v", env["EDITOR"], env["VISUAL"], err)
+	}
+}
+
 // TestBaseEnvForFillsPATHWhenToolchainHasNone covers the window/service PATH
 // bug: without a toolchain-resolved PATH, a spawned window or unit would
 // otherwise see nothing explicit at all and fall back to whatever PATH

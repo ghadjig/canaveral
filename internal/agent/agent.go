@@ -14,6 +14,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +61,7 @@ func (e *NotInstalledError) Error() string {
 // reconciles.
 var shellPATH struct {
 	once  sync.Once
-	value string
+	value map[string]string
 }
 
 // ShellPATH returns PATH the way a real terminal would see it: the current
@@ -77,18 +78,39 @@ var shellPATH struct {
 // unless a profile file explicitly sources it, so both kinds are tried and
 // merged rather than picking one.
 func ShellPATH() string {
-	shellPATH.once.Do(func() {
-		shellPATH.value = computeShellPATH()
-	})
-	return shellPATH.value
+	return ShellEnv()["PATH"]
 }
 
-func computeShellPATH() string {
-	p := os.Getenv("PATH")
+// ShellEnv returns exported variables from the caller and its interactive and
+// login shell startup files. Each caller receives its own copy. Feature-local
+// and process-local variables are excluded so a nested launch cannot inherit
+// the surrounding workspace's identity or systemd invocation.
+func ShellEnv() map[string]string {
+	shellPATH.once.Do(func() {
+		shellPATH.value = computeShellEnv()
+	})
+	return maps.Clone(shellPATH.value)
+}
+
+func computeShellEnv() map[string]string {
+	inherited := parseShellEnv(strings.Join(os.Environ(), "\x00"))
+	env := maps.Clone(inherited)
+	p := inherited["PATH"]
 	for _, flag := range []string{"-ic", "-lc"} {
-		p = MergePATH(p, shellPATHVia(flag))
+		for k, v := range shellEnvVia(flag) {
+			if k == "PATH" {
+				p = MergePATH(p, v)
+				continue
+			}
+			// A login shell that merely inherited a value must not undo an
+			// interactive rc's export. Actual startup-file exports win.
+			if old, ok := inherited[k]; !ok || old != v {
+				env[k] = v
+			}
+		}
 	}
-	return p
+	env["PATH"] = p
+	return env
 }
 
 // MergePATH returns base with every directory of extra that base does not
@@ -119,9 +141,10 @@ func MergePATH(base, extra string) string {
 	return strings.Join(dirs, string(filepath.ListSeparator))
 }
 
-// shellPATHVia runs $SHELL with flag (e.g. "-ic" for interactive, "-lc" for
-// login) and prints its PATH, or "" if the shell can't be run or times out.
-func shellPATHVia(flag string) string {
+// shellEnvVia frames the NUL-delimited environment so startup banners and
+// multiline values cannot become bogus variables. An absolute env path works
+// even when a shell startup file replaces PATH entirely.
+func shellEnvVia(flag string) map[string]string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -131,11 +154,43 @@ func shellPATHVia(flag string) string {
 	// -i shells source files that assume a terminal; none of that reads
 	// stdin, so leaving it at the default (/dev/null) is enough to avoid a
 	// hang, and stderr noise (job control warnings) is simply discarded.
-	out, err := exec.CommandContext(ctx, shell, flag, `printf '%s' "$PATH"`).Output()
+	const marker = "\x00canaveral-shell-env\x00"
+	out, err := exec.CommandContext(ctx, shell, flag, `printf '\000canaveral-shell-env\000'; /usr/bin/env -0`).Output()
 	if err != nil {
-		return ""
+		return nil
 	}
-	return strings.TrimSpace(string(out))
+	_, body, ok := strings.Cut(string(out), marker)
+	if !ok {
+		return nil
+	}
+	return parseShellEnv(body)
+}
+
+func parseShellEnv(body string) map[string]string {
+	env := map[string]string{}
+	for _, entry := range strings.Split(body, "\x00") {
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok || !exportName.MatchString(k) || !portableShellVar(k) {
+			continue
+		}
+		env[k] = v
+	}
+	return env
+}
+
+var exportName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+func portableShellVar(k string) bool {
+	if strings.HasPrefix(k, "CANAVERAL_") || strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "__MISE_") {
+		return false
+	}
+	switch k {
+	case "PWD", "OLDPWD", "SHLVL", "_", "TERM", "COLORTERM", "WINDOWID", "DB_SUFFIX",
+		"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "NOTIFY_SOCKET",
+		"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES", "WATCHDOG_PID", "WATCHDOG_USEC":
+		return false
+	}
+	return true
 }
 
 // lookPathIn searches path (a PATH-style list) for an executable file named

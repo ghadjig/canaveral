@@ -966,6 +966,14 @@ types `bin/rspec` themselves.
 agents start, and services start before them, so the value would depend on which
 phase asked; canaveral refuses it at startup instead.
 
+Workspace processes also receive your exported shell environment, including
+`EDITOR` and `VISUAL` from interactive/login startup files when started through
+the desktop launcher. Toolchain values override those exports, then canaveral
+sets the feature's identity and ports, and manifest `env` settings take final
+precedence. Shell aliases and unexported variables are not environment variables.
+Running agents keep the environment they started with; reopening an already
+healthy agent does not replace its environment.
+
 Values never appear on a command line. `/proc/<pid>/cmdline` is world-readable,
 so anything passed that way is legible to every process on the machine for as
 long as the process lives — which matters because `[env]` and the toolchain
