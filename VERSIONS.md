@@ -12,6 +12,16 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.10.2 — 2026-09-14
+
+**Fixed**
+
+- Browser windows now get a class-based workspace rule before launch, so Chrome
+  process handoffs cannot leave them on the active workspace. Window rules use
+  Hyprland's new syntax with a fallback for older versions, and rejected rules
+  are reported even when hyprctl exits successfully. Newly spawned layout
+  windows are checked and silently placed before arranging columns.
+
 ## v0.10.1 — 2026-09-14
 
 **Fixed**

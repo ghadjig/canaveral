@@ -1376,6 +1376,11 @@ the current window, each monitor's visible workspace and the temporary settings
 are restored before it finishes. The current view is captured after startup, so
 you can switch workspaces while a feature boots without being sent back later.
 
+Before launch, each uniquely classed window gets its own workspace rule. This
+keeps browsers on the feature workspace even if they hand startup to another
+process. Both the current Hyprland rule syntax and older `windowrulev2` syntax
+are supported; placement is checked again before arranging layout windows.
+
 `--focus` (and `canaveral-goto` / clicking a bar's slot) explicitly pulls the
 finished workspace onto whichever monitor you're currently on before switching
 to it.

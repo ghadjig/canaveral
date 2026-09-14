@@ -144,6 +144,10 @@ func Spawn(ctx context.Context, s SpawnSpec) error {
 		removeEnvFile(envFile)
 		return err
 	}
+	if err := ensurePlacementRule(ctx, s.Class, s.Workspace); err != nil {
+		removeEnvFile(envFile)
+		return fmt.Errorf("spawn %s: %w", s.Class, err)
+	}
 
 	// `silent` keeps the new window off-screen-focus so opening a feature does
 	// not yank the user away from what they are doing.
@@ -611,15 +615,10 @@ func SplitRatioExact(ctx context.Context, ratio float64) error {
 // canaveral window should join the normal tiled layout instead. Windows are
 // deliberately left ungrouped; no tab bar is created.
 func EnsureRules(ctx context.Context) error {
-	rule := "tile,class:^(canaveral-.*)$"
-	cmd := exec.CommandContext(ctx, "hyprctl", "keyword", "windowrulev2", rule)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("install rule %q: %w: %s", rule, err,
-			strings.TrimSpace(stderr.String()))
+	if err := windowRule(ctx, "windowrule", "match:class ^(canaveral-.*)$, float off"); err == nil {
+		return nil
 	}
-	return nil
+	return windowRule(ctx, "windowrulev2", "tile,class:^(canaveral-.*)$")
 }
 
 // workspaceArg renders a workspace name as an argument to the `workspace`
