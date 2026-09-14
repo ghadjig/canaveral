@@ -600,8 +600,8 @@ func Preselect(ctx context.Context, direction string) error {
 // even 50/50 split, not — as the name might suggest — "give the focused
 // window 100%"), since Hyprland does not document the exact mapping.
 func SplitRatioExact(ctx context.Context, ratio float64) error {
-	return exec.CommandContext(ctx, "hyprctl", "dispatch", "splitratio",
-		fmt.Sprintf("exact %.4f", ratio)).Run()
+	return exec.CommandContext(ctx, "hyprctl", "dispatch", "layoutmsg",
+		fmt.Sprintf("splitratio %.4f exact", ratio)).Run()
 }
 
 // EnsureRules installs the window rules canaveral relies on.

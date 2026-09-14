@@ -16,6 +16,11 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 **Fixed**
 
+- Column layouts now use Hyprland 0.55's `layoutmsg splitratio <ratio> exact`
+  dispatcher. Declared windows are saved before spawning and arranging them,
+  so a failed spawn or layout no longer misclassifies the feature as a headless
+  worker in status bars or prevents it receiving a workspace slot.
+
 - Agents, services and workspace commands now receive exported shell variables
   such as `EDITOR` and `VISUAL`, including exports from interactive/login startup
   files when launched from the desktop. Project toolchains and manifest `env`

@@ -480,6 +480,73 @@ func TestReconcileWindowsCountsAWindowThatNeedsNoSpawn(t *testing.T) {
 	}
 }
 
+// A compositor error after mapping windows used to discard their declarations:
+// the windows stayed on screen but watch called the feature a headless worker.
+// Exercise the real reconciliation path and its persisted state, rather than
+// only checking the temporary record in memory.
+func TestReconcileWindowsRetainsDeclarationsAfterLayoutFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "test")
+	t.Setenv("LAYOUT_SPAWNED", filepath.Join(dir, "spawned"))
+	script := `#!/bin/sh
+case "$1" in
+  version|keyword) printf ok ;;
+  clients)
+    if [ -e "$LAYOUT_SPAWNED" ]; then
+      printf '%s' '[{"address":"0xa","initialClass":"canaveral-p-f-a","workspace":{"name":"p:f"}},{"address":"0xb","initialClass":"canaveral-p-f-b","workspace":{"name":"p:f"}}]'
+    else
+      printf '[]'
+    fi ;;
+  dispatch) touch "$LAYOUT_SPAWNED"; printf ok ;;
+  getoption) printf '%s' '{"int":0}' ;;
+  monitors) printf '%s' '[{"name":"DP-1","focused":true,"activeWorkspace":{"name":"current"}}]' ;;
+  workspaces) printf '%s' '[{"name":"p:f","monitor":"DP-1"}]' ;;
+  activewindow) printf '%s' '{"address":"0xff"}' ;;
+  --batch) printf 'ok\nInvalid dispatcher\nok\n' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "hyprctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	run := "true"
+	m := &manifest.Manifest{Root: "/p", Terminal: "alacritty", Windows: []manifest.Window{
+		{Name: "a", Run: &run}, {Name: "b", Run: &run},
+	}}
+	m.Layout.Order = []string{"a", "b"}
+	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
+	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
+	res := &Result{Feature: f}
+	err := reconcileWindows(context.Background(), m, f, tmpl.Vars{}, nil, res, quietReporter{}, prog)
+	if err == nil || !strings.Contains(err.Error(), "Invalid dispatcher") {
+		t.Fatalf("layout failure = %v", err)
+	}
+	if len(res.SpawnedWindow) != 2 {
+		t.Fatalf("spawned windows = %v, want both before layout fails", res.SpawnedWindow)
+	}
+	// Reconcile's deferred finish must not erase declarations either.
+	prog.finish()
+	saved, err := state.Load("p", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Headless() || len(saved.Windows) != 2 || saved.Phase != "" {
+		t.Fatalf("failed layout lost window identity or did not settle: %+v", saved)
+	}
+	for i, name := range []string{"a", "b"} {
+		if w := saved.Windows[i]; w.Name != name || w.Class != hypr.Class(f.Key(), name) || w.Workspace != "p:f" {
+			t.Errorf("window %d declaration = %+v", i, w)
+		}
+	}
+	all, err := state.EnsureWSlots()
+	if err != nil || len(all) != 1 || all[0].WSlot != 1 {
+		t.Fatalf("feature with failed layout needs a workspace slot: %v, %v", all, err)
+	}
+}
+
 func TestLayoutWaitsForWindowsBeforeTouchingFocus(t *testing.T) {
 	for _, failSpawn := range []bool{false, true} {
 		t.Run(fmt.Sprint(failSpawn), func(t *testing.T) {

@@ -72,6 +72,17 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		}
 	}
 
+	// These are declarations, not evidence of a successful layout. Persist
+	// them before spawning: Hyprland 0.55 rejected the old splitratio
+	// dispatcher after both windows had opened, and returning before this
+	// assignment left the feature permanently classified as a headless
+	// worker. A later spawn/layout failure must retain its window identity
+	// for the watcher, workspace slots and a repairing reconcile alike.
+	f.Windows = records
+	if err := state.Save(f); err != nil {
+		return fmt.Errorf("save window declarations: %w", err)
+	}
+
 	spawnFreeWindows(ctx, m, pendingByName, res, r, prog)
 
 	if m.Layout.Enabled() {
@@ -80,7 +91,6 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 		}
 	}
 
-	f.Windows = records
 	return nil
 }
 

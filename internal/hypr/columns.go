@@ -150,13 +150,16 @@ func ApplyColumns(ctx context.Context, addresses []string, ratios []float64) err
 		commands = append(commands, "dispatch setfloating address:"+addr)
 	}
 	commands = append(commands, "dispatch settiled address:"+addresses[0])
+	// Hyprland 0.55 moved splitratio into layoutmsg and put `exact` after
+	// the ratio. The old dispatcher fails after the windows have already
+	// opened, leaving a plausible-looking layout despite a failed reconcile.
 	for i := 1; i < len(addresses); i++ {
 		commands = append(commands,
 			"dispatch focuswindow address:"+addresses[i-1],
 			"dispatch layoutmsg preselect r",
 			"dispatch settiled address:"+addresses[i],
 			"dispatch focuswindow address:"+addresses[i-1],
-			fmt.Sprintf("dispatch splitratio exact %.4f", ratios[i-1]))
+			fmt.Sprintf("dispatch layoutmsg splitratio %.4f exact", ratios[i-1]))
 	}
 	// A non-direction resets preselection, including when a window vanished
 	// during the batch and never consumed its pending split.
