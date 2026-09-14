@@ -562,6 +562,7 @@ case "$1" in
   workspaces) printf '%s' '[{"name":"p:f","monitor":"DP-1"}]' ;;
   activewindow) printf '%s' '{"address":"0xff"}' ;;
   --batch) printf ok ;;
+  keyword) printf ok ;;
   *) exit 1 ;;
 esac
 `
@@ -604,5 +605,38 @@ esac
 				t.Fatalf("must restore the latest workspace: %s", calls)
 			}
 		})
+	}
+}
+
+func TestNewClassedWindowIsPlacedBeforeLayout(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$PLACEMENT_LOG"
+case "$1" in
+  clients)
+    if [ -f "$PLACEMENT_MOVED" ]; then ws='p:f'; else ws='active'; fi
+    printf '[{"address":"0xab","initialClass":"canaveral-browser","workspace":{"name":"%s"}}]' "$ws"
+    ;;
+  dispatch) touch "$PLACEMENT_MOVED"; printf ok ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "hyprctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("PLACEMENT_LOG", log)
+	t.Setenv("PLACEMENT_MOVED", filepath.Join(dir, "moved"))
+	addr, err := waitForClassInWorkspace(context.Background(), "canaveral-browser", "p:f", time.Second)
+	if err != nil || addr != "0xab" {
+		t.Fatalf("placement = %q, %v", addr, err)
+	}
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "dispatch movetoworkspacesilent name:p:f,address:0xab") || strings.Count(string(b), "clients") < 2 {
+		t.Fatalf("must silently move and recheck before layout: %s", b)
 	}
 }

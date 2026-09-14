@@ -355,7 +355,7 @@ func spawnWindow(ctx context.Context, p pendingSpawn, locate bool) (string, erro
 		if !locate {
 			return "", nil
 		}
-		return waitForClass(ctx, p.spec.Class, classWait)
+		return waitForClassInWorkspace(ctx, p.spec.Class, p.spec.Workspace, classWait)
 	}
 	return placeMatched(ctx, p.match, seen, p.spec.Workspace)
 }
@@ -529,12 +529,25 @@ func spawnLayoutChain(ctx context.Context, m *manifest.Manifest,
 // its address. Spawn's own exec dispatch returns before the window is
 // necessarily mapped, and the next step (focusing it) needs its address.
 func waitForClass(ctx context.Context, class string, timeout time.Duration) (string, error) {
+	return waitForClassInWorkspace(ctx, class, "", timeout)
+}
+
+// waitForClassInWorkspace verifies placement before the layout uses the window.
+// Only a newly spawned, uniquely classed window is repaired here; an existing
+// window the user moved is still adopted without moving it back.
+func waitForClassInWorkspace(ctx context.Context, class, workspace string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		clients, err := hypr.Clients(ctx)
 		if err == nil {
 			for _, c := range clients {
 				if c.InitialClass == class {
+					if workspace != "" && c.Workspace.Name != workspace {
+						if err := hypr.MoveWindowToNamedWorkspace(ctx, c.Address, workspace); err != nil {
+							return "", fmt.Errorf("place window %s: %w", class, err)
+						}
+						break
+					}
 					return c.Address, nil
 				}
 			}
