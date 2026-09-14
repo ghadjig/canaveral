@@ -12,6 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Interactive and login shell environment probes now run in their own session
+  without a controlling terminal. Starting Canaveral from a background job can
+  no longer let the shell's job-control initialization suspend Canaveral and its
+  caller together, stranding workspace setup and unattended bug-loop workers.
+
 ## v0.10.2 — 2026-09-14
 
 **Fixed**

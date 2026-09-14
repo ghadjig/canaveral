@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -151,11 +152,14 @@ func shellEnvVia(flag string) map[string]string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// -i shells source files that assume a terminal; none of that reads
-	// stdin, so leaving it at the default (/dev/null) is enough to avoid a
-	// hang, and stderr noise (job control warnings) is simply discarded.
+	// Interactive shells can open /dev/tty even with stdin set to /dev/null.
+	// In a background process group, bash's job-control setup then sends
+	// SIGTTIN to the entire caller group, stopping us and our timeout too.
+	// Give the probe its own session with no controlling terminal instead.
 	const marker = "\x00canaveral-shell-env\x00"
-	out, err := exec.CommandContext(ctx, shell, flag, `printf '\000canaveral-shell-env\000'; /usr/bin/env -0`).Output()
+	cmd := exec.CommandContext(ctx, shell, flag, `printf '\000canaveral-shell-env\000'; /usr/bin/env -0`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

@@ -1,11 +1,54 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func TestShellEnvProbeStartsOwnSession(t *testing.T) {
+	// Run this test binary as the configured shell so we can inspect the
+	// actual probe process, independent of whether go test has a terminal.
+	const helper = "CANAVERAL_TEST_SHELL_SESSION_HELPER"
+	if os.Getenv(helper) == "1" {
+		if syscall.Getpgrp() != os.Getpid() {
+			os.Exit(90)
+		}
+		// A session leader cannot create another process group. This also
+		// distinguishes Setsid from merely isolating the process group.
+		if err := syscall.Setpgid(0, 0); err != syscall.EPERM {
+			os.Exit(91)
+		}
+		if tty, err := os.Open("/dev/tty"); err == nil {
+			tty.Close()
+			os.Exit(92)
+		}
+		fmt.Print("\x00canaveral-shell-env\x00PROBE_ISOLATED=yes\x00")
+		os.Exit(0)
+	}
+
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := filepath.Join(t.TempDir(), "shell")
+	script := "#!/bin/sh\nexec \"$SHELL_TEST_BINARY\" -test.run=^TestShellEnvProbeStartsOwnSession$\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(helper, "1")
+	t.Setenv("SHELL_TEST_BINARY", binary)
+	t.Setenv("SHELL", shell)
+	t.Setenv("PROBE_ISOLATED", "")
+	for _, flag := range []string{"-ic", "-lc"} {
+		if env := shellEnvVia(flag); env["PROBE_ISOLATED"] != "yes" {
+			t.Errorf("%s probe did not start in its own terminal-free session", flag)
+		}
+	}
+}
 
 func TestShellEnvRecoversExportsFromBashrc(t *testing.T) {
 	bash, err := exec.LookPath("bash")
