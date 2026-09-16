@@ -1,10 +1,9 @@
-package hypr
+package wm
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -12,31 +11,21 @@ import (
 	"time"
 )
 
-var addressPattern = regexp.MustCompile(`^0x[0-9a-fA-F]+$`)
+var hyprAddressPattern = regexp.MustCompile(`^0x[0-9a-fA-F]+$`)
 
-// ApplyColumns arranges already-mapped windows into a dwindle column chain.
+// applyColumns arranges already-mapped windows into a dwindle column chain.
 // Focus changes, tiling and restoration run in one compositor request, with
 // cursor warping disabled, rather than holding focus across application startup.
-func ApplyColumns(ctx context.Context, addresses []string, ratios []float64) error {
-	if len(addresses) < 2 {
-		return nil
-	}
-	if len(ratios) != len(addresses)-1 {
-		return fmt.Errorf("column layout needs one ratio per split")
-	}
+func (h hyprland) applyColumns(ctx context.Context, addresses []string, fractions []float64) error {
+	ratios := splitRatioChain(fractions)
 	seen := map[string]bool{}
 	for _, addr := range addresses {
-		if !addressPattern.MatchString(addr) || seen[addr] {
+		if !hyprAddressPattern.MatchString(addr) || seen[addr] {
 			return fmt.Errorf("invalid or duplicate column address %q", addr)
 		}
 		seen[addr] = true
 	}
-	for _, ratio := range ratios {
-		if math.IsNaN(ratio) || ratio < 0.1 || ratio > 1.9 {
-			return fmt.Errorf("invalid column ratio %v", ratio)
-		}
-	}
-	clients, err := Clients(ctx)
+	clients, err := h.clients(ctx)
 	if err != nil {
 		return err
 	}
@@ -67,23 +56,22 @@ func ApplyColumns(ctx context.Context, addresses []string, ratios []float64) err
 	options := []string{"cursor:no_warps", "dwindle:use_active_for_splits", "dwindle:permanent_direction_override", "binds:workspace_back_and_forth"}
 	values := make([]int, len(options))
 	for i, option := range options {
-		out, err := exec.CommandContext(ctx, "hyprctl", "getoption", option, "-j").Output()
-		if err != nil {
-			return fmt.Errorf("read %s: %w", option, err)
-		}
 		var value struct {
 			Int *int `json:"int"`
 		}
-		if err := json.Unmarshal(out, &value); err != nil || value.Int == nil {
+		if err := hyprJSON(ctx, &value, "getoption", option); err != nil {
+			return fmt.Errorf("read %s: %w", option, err)
+		}
+		if value.Int == nil {
 			return fmt.Errorf("read %s: expected an integer option", option)
 		}
 		values[i] = *value.Int
 	}
-	monitors, err := Monitors(ctx)
+	monitors, err := h.monitors(ctx)
 	if err != nil {
 		return err
 	}
-	workspaces, err := Workspaces(ctx)
+	workspaces, err := h.workspaces(ctx)
 	if err != nil {
 		return err
 	}
@@ -122,13 +110,13 @@ func ApplyColumns(ctx context.Context, addresses []string, ratios []float64) err
 	if err != nil {
 		return fmt.Errorf("read active window: %w", err)
 	}
-	var window Client
+	var window hyprClient
 	if err := json.Unmarshal(active, &window); err != nil {
 		return fmt.Errorf("parse active window: %w", err)
 	}
 	restore = append(restore, "dispatch focusmonitor "+focused)
 	if window.Address != "" {
-		if !addressPattern.MatchString(window.Address) {
+		if !hyprAddressPattern.MatchString(window.Address) {
 			return fmt.Errorf("invalid active window address %q", window.Address)
 		}
 		restore = append(restore, "dispatch focuswindow address:"+window.Address)
@@ -187,4 +175,52 @@ func ApplyColumns(ctx context.Context, addresses []string, ratios []float64) err
 		}
 	}
 	return nil
+}
+
+// splitRatioChain converts a set of column fractions into the sequence of
+// dwindle split ratios that produces them, one per split point (every window
+// except the last, which simply occupies whatever remains).
+//
+// dwindle splits recursively: the first split separates column 0 from
+// everything after it, the second separates column 1 from everything after
+// that, and so on. So each ratio must be relative not to the whole width but
+// to whatever fraction of it is still undivided at that point — column i's
+// share of columns i onwards — which is why this cannot just use each
+// fraction directly. The ratio-to-fraction relationship itself
+// (fraction = ratio / 2) was confirmed empirically: it is not documented, and
+// "ratio 1.0" is an even 50/50 split, not "the focused window gets 100%" as
+// the name might suggest.
+//
+// Fractions are not required to sum to exactly 1 — validation allows a small
+// tolerance, and each step only ever looks at the sum of the fractions from
+// that point on, which naturally renormalizes as it goes.
+func splitRatioChain(fractions []float64) []float64 {
+	if len(fractions) == 0 {
+		return nil
+	}
+	remaining := 0.0
+	for _, f := range fractions {
+		remaining += f
+	}
+
+	ratios := make([]float64, 0, len(fractions)-1)
+	for i := 0; i < len(fractions)-1; i++ {
+		f := fractions[i]
+		var ratio float64
+		if remaining > 0 {
+			ratio = 2 * f / remaining
+		}
+		// Dwindle's ratio range is roughly (0, 2); clamp defensively so a
+		// pathological input (for example a hand-edited fraction) cannot
+		// send a nonsense value to hyprctl.
+		if ratio < 0.1 {
+			ratio = 0.1
+		}
+		if ratio > 1.9 {
+			ratio = 1.9
+		}
+		ratios = append(ratios, ratio)
+		remaining -= f
+	}
+	return ratios
 }

@@ -70,9 +70,11 @@ have go || have mise || {
 }
 have git || warn "git not found; canaveral needs it at runtime"
 have systemctl || warn "systemctl not found; services and agents will not start"
-for opt in hyprctl mise; do
-	have "$opt" || warn "$opt not found; the features that use it will be skipped"
-done
+have mise || warn "mise not found; the features that use it will be skipped"
+# Either compositor control binary will do, the same way any one agent harness
+# will. Warning about the one you do not run would be noise.
+have hyprctl || have swaymsg ||
+	warn "neither hyprctl nor swaymsg found; the window layer will be skipped"
 # Any one agent harness is enough; warning about the ones you deliberately
 # do not use would be noise. See internal/agent for the full list.
 have opencode || have claude ||

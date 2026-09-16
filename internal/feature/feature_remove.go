@@ -11,10 +11,10 @@ import (
 	"strings"
 
 	"github.com/bandito/canaveral/internal/agent"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/unit"
+	"github.com/bandito/canaveral/internal/wm"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -356,16 +356,16 @@ func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree
 
 // closeFeatureWindows closes every window canaveral opened for f, rehomes
 // any stray windows the user opened themselves, and releases the feature's
-// workspace. A no-op when Hyprland is not available or the feature has no
+// workspace. A no-op when no compositor is available or the feature has no
 // windows.
 func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
-	if err := hypr.Available(ctx); err != nil || len(f.Windows) == 0 {
+	if err := wm.Available(ctx); err != nil || len(f.Windows) == 0 {
 		return
 	}
-	if clients, err := hypr.Clients(ctx); err == nil {
-		open := hypr.ByClass(clients)
+	if clients, err := wm.Clients(ctx); err == nil {
+		open := wm.ByClass(clients)
 		closed := 0
-		var self *hypr.Client
+		var self *wm.Client
 		for _, w := range f.Windows {
 			c, ok := open[w.Class]
 			if w.MatchClass != "" {
@@ -378,10 +378,10 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 				if reErr != nil {
 					continue
 				}
-				c, ok = hypr.MatchInWorkspace(clients, re, f.HyprWorkspace())
+				c, ok = wm.MatchInWorkspace(clients, re, f.WorkspaceName())
 			}
 			if ok {
-				if hypr.IsSelf(c) {
+				if wm.IsSelf(c) {
 					// Close our own window last of all, and after
 					// everything above has already returned
 					// successfully, so the report below reaches the
@@ -390,7 +390,7 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 					self = &cc
 					continue
 				}
-				if err := hypr.Close(ctx, c.Address); err == nil {
+				if err := wm.Close(ctx, c.Address); err == nil {
 					closed++
 				}
 			}
@@ -400,7 +400,7 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 		}
 		if self != nil {
 			r.OK("closing this window")
-			_ = hypr.Close(ctx, self.Address)
+			_ = wm.Close(ctx, self.Address)
 		}
 	}
 	// Windows the user opened here themselves are not canaveral's to
@@ -410,12 +410,12 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 	// ordinary on the same monitor instead.
 	rehomeStrays(ctx, f, r)
 
-	// Hyprland won't destroy a workspace while it's a monitor's active
-	// one, even with zero windows left (confirmed empirically) — so
+	// Neither compositor will destroy a workspace while it's a monitor's
+	// active one, even with zero windows left (confirmed empirically) — so
 	// closing the last window above can leave the feature's workspace
 	// dangling forever on whatever monitor last displayed it, as a
 	// phantom entry in the waybar pill list. Release it explicitly.
-	if err := hypr.ReleaseWorkspace(ctx, f.HyprWorkspace()); err != nil {
+	if err := wm.ReleaseWorkspace(ctx, f.WorkspaceName()); err != nil {
 		r.Warn("%v", err)
 	}
 }
@@ -427,13 +427,13 @@ func closeFeatureWindows(ctx context.Context, f *state.Feature, r Reporter) {
 // closed just before; those belong to the user and are never closed on their
 // behalf.
 func rehomeStrays(ctx context.Context, f *state.Feature, r Reporter) {
-	name := f.HyprWorkspace()
+	name := f.WorkspaceName()
 
-	clients, err := hypr.Clients(ctx)
+	clients, err := wm.Clients(ctx)
 	if err != nil {
 		return
 	}
-	var strays []hypr.Client
+	var strays []wm.Client
 	for _, c := range clients {
 		if c.Workspace.Name == name {
 			strays = append(strays, c)
@@ -443,7 +443,7 @@ func rehomeStrays(ctx context.Context, f *state.Feature, r Reporter) {
 		return
 	}
 
-	all, err := hypr.Workspaces(ctx)
+	all, err := wm.Workspaces(ctx)
 	if err != nil {
 		return
 	}
@@ -455,18 +455,18 @@ func rehomeStrays(ctx context.Context, f *state.Feature, r Reporter) {
 		}
 	}
 
-	target := hypr.RehomeTarget(all, monitor, name)
+	target := wm.RehomeTarget(all, monitor, name)
 	if target == 0 {
 		// Nothing ordinary on that monitor; a fresh workspace still beats
 		// leaving them on one named after a feature that is gone.
-		if target, err = hypr.NextFreeWorkspaceID(ctx); err != nil {
+		if target, err = wm.NextFreeWorkspaceID(ctx); err != nil {
 			return
 		}
 	}
 
 	moved := 0
 	for _, c := range strays {
-		if err := hypr.MoveWindowToWorkspace(ctx, c.Address, target); err == nil {
+		if err := wm.MoveWindowToWorkspace(ctx, c.Address, target); err == nil {
 			moved++
 		}
 	}

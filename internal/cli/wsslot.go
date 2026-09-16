@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"text/tabwriter"
 
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 )
 
 // wsSlotJSON is waybar's custom-module contract: one line of JSON, where
@@ -54,7 +54,7 @@ func runWSSlot(ctx context.Context, args []string) error {
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", "SLOT", "WORKSPACE", "FEATURE")
 		for _, f := range features {
-			fmt.Fprintf(tw, "%d\t%s\t%s\n", f.WSlot, f.HyprWorkspace(), f.Key())
+			fmt.Fprintf(tw, "%d\t%s\t%s\n", f.WSlot, f.WorkspaceName(), f.Key())
 		}
 		return tw.Flush()
 	}
@@ -78,17 +78,17 @@ func runWSSlot(ctx context.Context, args []string) error {
 			// slots that hold nothing most of the time.
 			return nil
 		}
-		fmt.Println(found.HyprWorkspace())
+		fmt.Println(found.WorkspaceName())
 		return nil
 	}
 
 	out := wsSlotJSON{Class: "hidden"}
 	if found != nil {
-		out.Text = found.HyprWorkspace()
+		out.Text = found.WorkspaceName()
 		out.Class = "inactive"
-		// Only ask Hyprland once a slot is actually occupied, so the widget
+		// Only ask the compositor once a slot is actually occupied, so the widget
 		// still renders without a compositor running.
-		if active, err := hypr.ActiveWorkspaceName(ctx); err == nil && active == out.Text {
+		if active, err := wm.ActiveWorkspaceName(ctx); err == nil && active == out.Text {
 			out.Class = "active"
 		}
 	}

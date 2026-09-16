@@ -15,7 +15,7 @@ slicer and a browser on onshape.com, say, defined once in
 
 Each command creates a fully independent universe for that feature:
 its own git worktree and branch, its own ports, its own services and agent, and
-its own Hyprland workspace with the windows you declared — the coding agent, a
+its own workspace with the windows you declared — the coding agent, a
 terminal, tailed server logs, a browser. opencode and Claude Code are both
 supported; see [Agents](#agents).
 
@@ -151,7 +151,7 @@ branch; `--keep-worktree` preserves both the worktree and branch.
 
 `canaveral stash` is the non-destructive half of `rm`. Everything that costs
 something to keep running is released — services, agents, windows, the
-Hyprland workspace, the port slot, the widget number — and everything that
+compositor workspace, the port slot, the widget number — and everything that
 *is* the work is left exactly where it stands: the worktree on disk with its
 uncommitted edits and untracked files, the branch, and a note of which
 conversation each agent was in.
@@ -314,7 +314,7 @@ terminal = 0.2
 `[[window]]`, `[[service]]`, `[[agent]]`, `[ports]`, `[env]` and `[layout]`
 all mean exactly what they mean in a project manifest — it is the same
 parser, and everything downstream of it was always about windows, units and
-Hyprland rather than about git. So a space can run a local server, and it can
+the window manager rather than about git. So a space can run a local server, and it can
 have an agent in it, and `canaveral status`, `canaveral logs`, `canaveral
 restart` and `canaveral watch` all work on one.
 
@@ -397,7 +397,7 @@ canaveral new onboarding/skip-button
 ```
 
 Each is still a fully independent feature — its own branch (`onboarding/ask-for-name`),
-worktree, ports, services and Hyprland workspace, exactly as above. What
+worktree, ports, services and compositor workspace, exactly as above. What
 namespacing buys you is a shared **skill**: every feature under the same
 parent path (`onboarding`, here) gets `.claude/skills/onboarding/SKILL.md`
 symlinked into its worktree, pointing at the same real file. Write something
@@ -668,25 +668,26 @@ class flag at all, and neither do the AppImages of them. Chrome has one, but a
 class can only be given to a process that goes on to draw its own window, and a
 second `google-chrome` does not: it hands the request to the browser already
 running and exits. The flag is then read by nobody — as is the workspace
-canaveral asked Hyprland for, which is why such a window opens wherever you
-happen to be looking. For all of these, name the class the application does
+canaveral asked the compositor for, which is why such a window opens wherever
+you happen to be looking. For all of these, name the class the application does
 carry:
 
 ```toml
 [[window]]
 name = "bambustudio"
 exec = "BambuStudio.AppImage"
-match_class = "^BambuStudio$"      # a regular expression; hyprctl clients will tell you
+match_class = "^BambuStudio$"      # a regex; `hyprctl clients` or `swaymsg -t get_tree` will tell you
 ```
 
 canaveral then identifies the window as *a window of this class on this
 feature's workspace*, which is unambiguous because every feature owns a private
 one — your own copy of the same application, open elsewhere, is never touched.
 Placing it takes the same care: Hyprland's exec-time workspace rule binds to the
-process hyprctl started, and an application that re-execs (as an AppImage does
-once it has mounted its payload) or defers to a running instance draws its
-window from a process that rule never saw. So canaveral snapshots the open
-windows, spawns, waits for a matching one that is new, and moves that.
+process hyprctl started, sway has no process-scoped rule at all, and an
+application that re-execs (as an AppImage does once it has mounted its payload)
+or defers to a running instance draws its window from somewhere no rule
+matched. So canaveral snapshots the open windows, spawns, waits for a matching
+one that is new, and moves that.
 
 It then holds on until the application settles, because such an application is
 also prone to replacing its own window: BambuStudio maps a loading window,
@@ -732,7 +733,7 @@ canaveral exec small-fixes -- bin/rails test
 order: the working directory sitting inside a worktree, then
 `$CANAVERAL_FEATURE` (canaveral exports it into every process it starts, so a
 terminal it opened still knows which feature it belongs to after you have cd'd
-away), then the focused Hyprland workspace (which catches a terminal you opened
+away), then the focused workspace (which catches a terminal you opened
 yourself on a feature's workspace, inheriting neither). It needs no project in
 scope — the workspace name carries the project and the registry turns that into
 a checkout — so it works from anywhere.
@@ -1347,7 +1348,7 @@ the checkout is disposable, the commits are not.
 ## Layout
 
 `[layout]` gives `run`/`exec` windows a fixed column split instead of whatever
-Hyprland's default tiling would produce:
+your compositor's default tiling would produce:
 
 ```toml
 [layout]
@@ -1362,34 +1363,39 @@ serverlogs = 0.2
 
 `order` fixes the left-to-right column order; `[layout.default]` is each
 column's fraction of the workspace width, applied the first time all of a
-feature's layout windows are created together. canaveral achieves this with
-real dwindle tiling — `preselect` + `splitratio exact` per window, not floating
-windows pinned to computed pixel coordinates — so the columns behave like
-normal tiled windows afterwards (resizable, swappable, survive a monitor
-change).
+feature's layout windows are created together. Either way the result is real
+tiling — not floating windows pinned to computed pixel coordinates — so the
+columns behave like normal tiled windows afterwards (resizable, swappable,
+survive a monitor change). On Hyprland that means `preselect` + `splitratio
+exact` per window; on sway, a `splith` row whose members are resized to the
+percentages you asked for.
 
 Dragging a window resizes the layout normally, and that resize is yours for as
 long as the windows live. It is not recorded: `[layout.default]` is the one
 place the widths are configured, and every feature of a project starts from it.
 Want a different split? Edit the manifest.
 
-The ratio chain only reapplies when *every* layout window is missing (a fresh
+The split only reapplies when *every* layout window is missing (a fresh
 build). If only one window died and `reset` recreates just that one, it's
-spawned into whatever slot dwindle's default placement gives it, since
+spawned into whatever slot the compositor's default placement gives it, since
 reflowing the other three already-placed windows around it isn't worth the
 disruption.
 
 Windows open silently first, without borrowing another monitor or holding focus
-while applications start. Once they have all appeared, canaveral retiles them
-into columns in one Hyprland batch. Cursor warping is disabled for that batch;
-the current window, each monitor's visible workspace and the temporary settings
-are restored before it finishes. The current view is captured after startup, so
-you can switch workspaces while a feature boots without being sent back later.
+while applications start. Only once they have all appeared are they arranged.
+On Hyprland that happens in a single `hyprctl --batch` with cursor warping
+disabled, restoring the focused window, each monitor's visible workspace and
+the temporary settings before it finishes; sway needs none of that, because its
+criteria-addressed commands never move focus in the first place. Either way the
+current view is captured after startup, so you can switch workspaces while a
+feature boots without being sent back later.
 
 Before launch, each uniquely classed window gets its own workspace rule. This
 keeps browsers on the feature workspace even if they hand startup to another
-process. Both the current Hyprland rule syntax and older `windowrulev2` syntax
-are supported; placement is checked again before arranging layout windows.
+process. On Hyprland both the current rule syntax and the older `windowrulev2`
+one are supported; on sway it is a `for_window` rule plus `no_focus`, matched
+on `app_id` and on `class` so XWayland windows are covered too. Placement is
+checked again before arranging layout windows.
 
 `--focus` (and `canaveral-goto` / clicking a bar's slot) explicitly pulls the
 finished workspace onto whichever monitor you're currently on before switching
@@ -1421,7 +1427,14 @@ canaveral:install-script
 Bind those numbers to jumps, so slot N is one keystroke away:
 
 ```
+# hyprland.conf
 bind = $mainMod CTRL, 1, exec, ~/.config/hypr/bin/canaveral-goto 1
+# ...through 9
+```
+
+```
+# sway config
+bindsym $mod+Ctrl+1 exec ~/.config/hypr/bin/canaveral-goto 1
 # ...through 9
 ```
 
@@ -1434,8 +1447,19 @@ by class.
 ## Requirements
 
 systemd user manager, git, a coding agent (`opencode` or `claude` — see
-[Agents](#agents)), and Hyprland for the window layer. Without Hyprland the
-window step is skipped with a warning and everything else works.
+[Agents](#agents)), and either **Hyprland** or **sway** for the window layer.
+Without one of those the window step is skipped with a warning and everything
+else works.
+
+canaveral picks the compositor from the session it is running in:
+`HYPRLAND_INSTANCE_SIGNATURE` means Hyprland, `SWAYSOCK` means sway, and if
+both are set — one session nested in the other — `XDG_CURRENT_DESKTOP` breaks
+the tie. Set `CANAVERAL_WM=hyprland` or `CANAVERAL_WM=sway` to decide it
+yourself, which is what you want if canaveral runs from a unit whose
+environment was imported before the compositor started.
+
+Everything below that names `hyprctl` has a `swaymsg` equivalent; the quickshell
+launcher in `share/quickshell` is still Hyprland-only.
 
 ## Building and installing
 
@@ -1455,8 +1479,8 @@ Replacing the binary is not just a copy, because running units hold the old
 executable open. `install.sh` goes through these steps in order:
 
 1. **Preflight.** Requires a Go toolchain, on `PATH` or via `mise`. Missing
-   `git`, `systemctl`, `hyprctl` or `mise` only warn, as does having no
-   coding agent at all — any one of them is enough.
+   `git`, `systemctl` or `mise` only warn, as does having neither `hyprctl` nor
+   `swaymsg`, and having no coding agent at all — any one of each is enough.
 2. **Build** with the version stamped in (see below), and read the new version
    back out of `./bin/canaveral`.
 3. **Stop every `canaveral-*` systemd user unit** — feature agents and feature

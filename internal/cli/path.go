@@ -11,10 +11,10 @@ import (
 	"strings"
 
 	"github.com/bandito/canaveral/internal/feature"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 )
 
 // resolveFeature loads a workspace of that name: a feature of the current
@@ -84,7 +84,7 @@ func featureFromArgs(m *manifest.Manifest, pos []string) (*state.Feature, error)
 // feature's workspace still knows which feature it belongs to after you have
 // cd'd somewhere else entirely.
 //
-// The focused Hyprland workspace is a third signal, and it is not used here —
+// The focused compositor workspace is a third signal, and it is not used here —
 // see focusedFeature for why not.
 func currentFeature(m *manifest.Manifest) (*state.Feature, error) {
 	if f := featureFromDir(m.Name); f != nil {
@@ -97,7 +97,7 @@ func currentFeature(m *manifest.Manifest) (*state.Feature, error) {
 }
 
 // focusedFeature answers "which feature am I looking at" for commands that only
-// navigate, adding the focused Hyprland workspace to currentFeature's signals.
+// navigate, adding the focused compositor workspace to currentFeature's signals.
 //
 // That third signal is what makes a terminal you opened yourself — with a
 // keybind, on a feature's workspace, inheriting neither canaveral's environment
@@ -186,7 +186,7 @@ func featureFromEnv() *state.Feature {
 //
 // A feature's workspace is "project:feature". A space's is its bare name,
 // because it has no project, and its record is keyed by that name twice over
-// — see state.Feature.HyprWorkspace and internal/space. Anything else (a
+// — see state.Feature.WorkspaceName and internal/space. Anything else (a
 // plain numbered workspace, a special workspace) is not one of ours, but a
 // bare word could be either a space or somebody else's named workspace, so
 // the caller settles it by looking the record up.
@@ -203,12 +203,12 @@ func splitWorkspaceName(ws string) (project, feature string, ok bool) {
 	return ws, ws, true
 }
 
-// featureFromWorkspace reads the feature whose Hyprland workspace is focused.
+// featureFromWorkspace reads the feature whose workspace is focused.
 func featureFromWorkspace(ctx context.Context) *state.Feature {
-	if hypr.Available(ctx) != nil {
+	if wm.Available(ctx) != nil {
 		return nil
 	}
-	ws, err := hypr.ActiveWorkspaceName(ctx)
+	ws, err := wm.ActiveWorkspaceName(ctx)
 	if err != nil {
 		return nil
 	}

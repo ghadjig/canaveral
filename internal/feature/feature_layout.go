@@ -1,8 +1,8 @@
 package feature
 
 // Window and [layout] reconciliation: spawning declared windows, and,
-// when [layout] is enabled, chaining them into an exact-ratio dwindle
-// split via preselect/splitratio.
+// when [layout] is enabled, handing internal/wm the addresses they mapped
+// at, in order, with the width each one was declared to have.
 
 import (
 	"context"
@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/tmpl"
+	"github.com/bandito/canaveral/internal/wm"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -27,19 +27,19 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 	if len(m.Windows) == 0 {
 		return nil
 	}
-	if err := hypr.Available(ctx); err != nil {
+	if err := wm.Available(ctx); err != nil {
 		r.Warn("skipping windows: %v", err)
 		return nil
 	}
-	if err := hypr.EnsureRules(ctx); err != nil {
+	if err := wm.EnsureRules(ctx); err != nil {
 		r.Warn("%v", err)
 	}
 
-	clients, err := hypr.Clients(ctx)
+	clients, err := wm.Clients(ctx)
 	if err != nil {
 		return err
 	}
-	open := hypr.ByClass(clients)
+	open := wm.ByClass(clients)
 	base, err := envFor(m, f, tc, vars)
 	if err != nil {
 		return err
@@ -103,8 +103,8 @@ func reconcileWindows(ctx context.Context, m *manifest.Manifest, f *state.Featur
 // point in the chain, so inserting just one window into an already-tiled
 // arrangement cannot reliably reproduce it. When some (but not all) layout
 // windows already exist — a `reset` after closing just one of them, say —
-// the missing one is still spawned, just via dwindle's ordinary placement
-// instead of a re-derived chain.
+// the missing one is still spawned, just via the compositor's ordinary
+// placement instead of a re-derived chain.
 //
 // Asked of the pending set rather than the open one so that a window
 // buildWindowSpec closed as stale counts as being created here, which it is.
@@ -129,11 +129,11 @@ func isLayoutFresh(m *manifest.Manifest, pending map[string]pendingSpawn) bool {
 // risks adopting one of the user's own windows. A window declaring
 // match_class cannot carry that class, so it is instead looked for on the
 // feature's own workspace, which no other feature shares — see
-// hypr.MatchInWorkspace.
+// wm.MatchInWorkspace.
 func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature, w manifest.Window,
-	vars tmpl.Vars, base map[string]string, clients []hypr.Client, open map[string]hypr.Client, r Reporter) (state.Window, *pendingSpawn, error) {
+	vars tmpl.Vars, base map[string]string, clients []wm.Client, open map[string]wm.Client, r Reporter) (state.Window, *pendingSpawn, error) {
 
-	class := hypr.Class(f.Key(), w.Name)
+	class := wm.Class(f.Key(), w.Name)
 
 	profile, err := state.WindowProfile(f.Project, f.Name, w.Name)
 	if err != nil {
@@ -152,7 +152,7 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 	}
 	rec := state.Window{
 		Name: w.Name, Class: class, Cmd: cmd, Dir: dir,
-		MatchClass: w.MatchClass, Workspace: f.HyprWorkspace(),
+		MatchClass: w.MatchClass, Workspace: f.WorkspaceName(),
 	}
 
 	// Compiled rather than trusted: the manifest already rejected a bad
@@ -166,7 +166,7 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 
 	c, alive := open[class]
 	if match != nil {
-		c, alive = hypr.MatchInWorkspace(clients, match, f.HyprWorkspace())
+		c, alive = wm.MatchInWorkspace(clients, match, f.WorkspaceName())
 	}
 	if alive {
 		if !isStale(c, cmd, f.Agents) {
@@ -188,10 +188,10 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		}
 	}
 
-	spec := hypr.SpawnSpec{
+	spec := wm.SpawnSpec{
 		Class:      class,
 		Title:      f.Name + " · " + w.Name,
-		Workspace:  f.HyprWorkspace(),
+		Workspace:  f.WorkspaceName(),
 		Dir:        dir,
 		IsTerminal: w.IsTerminal(),
 		Terminal:   m.Terminal,
@@ -222,8 +222,8 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 // cannot appear in a window old enough to be adopted, and not an edited
 // manifest, where closing a window someone is working in would be a rude way
 // to apply a change.
-func isStale(c hypr.Client, cmd string, agents []state.Agent) bool {
-	actual, ok := hypr.Cmdline(c.PID)
+func isStale(c wm.Client, cmd string, agents []state.Agent) bool {
+	actual, ok := wm.Cmdline(c.PID)
 	if !ok {
 		// No way to tell, so leave it alone: a spurious close costs the user
 		// a window, a spurious adopt costs a reconcile that says so.
@@ -244,15 +244,15 @@ func isStale(c hypr.Client, cmd string, agents []state.Agent) bool {
 
 // replaceStale closes a stale window so its replacement can be spawned,
 // reporting whether the caller should go on to spawn one.
-func replaceStale(ctx context.Context, c hypr.Client, name string, r Reporter) bool {
+func replaceStale(ctx context.Context, c wm.Client, name string, r Reporter) bool {
 	// Closing the window this process is running in would kill the process
 	// mid-reconcile, so an agent that opens its own feature keeps the window
 	// it is typing in — stale or not, that is the lesser evil.
-	if hypr.IsSelf(c) {
+	if wm.IsSelf(c) {
 		r.Warn("window %s is stale but hosts this process; close and reopen it by hand", name)
 		return false
 	}
-	if err := hypr.Close(ctx, c.Address); err != nil {
+	if err := wm.Close(ctx, c.Address); err != nil {
 		r.Warn("window %s is stale but could not be closed: %v", name, err)
 		return false
 	}
@@ -328,16 +328,16 @@ const (
 //
 // locate asks for the address even for an ordinary window, which the layout
 // chain needs and the free path does not. A match_class window is always
-// located regardless of locate: the application does not carry the class
-// Hyprland's exec-time workspace rule was attached to, so unless the window
-// is found and moved here it opens wherever the user happens to be looking.
+// located regardless of locate: the application does not carry the class the
+// placement rule was written against, so unless the window is found and moved
+// here it opens wherever the user happens to be looking.
 func spawnWindow(ctx context.Context, p pendingSpawn, locate bool) (string, error) {
 	// Snapshotted before the spawn, because a match_class pattern cannot
 	// distinguish the window we are about to create from the user's own
 	// windows of the same application. Whichever one is new is ours.
 	var seen map[string]bool
 	if p.match != nil {
-		clients, err := hypr.Clients(ctx)
+		clients, err := wm.Clients(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -347,7 +347,7 @@ func spawnWindow(ctx context.Context, p pendingSpawn, locate bool) (string, erro
 		}
 	}
 
-	if err := hypr.Spawn(ctx, p.spec); err != nil {
+	if err := wm.Spawn(ctx, p.spec); err != nil {
 		return "", err
 	}
 
@@ -388,7 +388,7 @@ func placeMatched(ctx context.Context, re *regexp.Regexp, seen map[string]bool, 
 
 	for {
 		seen[addr] = true
-		if err := hypr.MoveWindowToNamedWorkspace(ctx, addr, workspace); err != nil {
+		if err := wm.MoveWindowToNamedWorkspace(ctx, addr, workspace); err != nil {
 			return addr, err
 		}
 		if survived, err := outlives(ctx, addr, matchSettle, deadline); err != nil || survived {
@@ -426,11 +426,11 @@ func outlives(ctx context.Context, address string, d time.Duration, deadline tim
 			return false, ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
-		clients, err := hypr.Clients(ctx)
+		clients, err := wm.Clients(ctx)
 		if err != nil {
 			continue
 		}
-		if !slices.ContainsFunc(clients, func(c hypr.Client) bool { return c.Address == address }) {
+		if !slices.ContainsFunc(clients, func(c wm.Client) bool { return c.Address == address }) {
 			return false, nil
 		}
 	}
@@ -445,10 +445,10 @@ func outlives(ctx context.Context, address string, d time.Duration, deadline tim
 // so being wrong here is not a cosmetic failure.
 func waitForMatch(ctx context.Context, re *regexp.Regexp, seen map[string]bool, deadline time.Time) (string, error) {
 	for {
-		clients, err := hypr.Clients(ctx)
+		clients, err := wm.Clients(ctx)
 		if err == nil {
 			for _, c := range clients {
-				if !seen[c.Address] && hypr.ClassMatches(re, c) {
+				if !seen[c.Address] && wm.ClassMatches(re, c) {
 					return c.Address, nil
 				}
 			}
@@ -510,7 +510,8 @@ func spawnMissingIndependently(ctx context.Context, missing []string, pending ma
 // tiling operations. Only mapped windows enter the compositor batch.
 func spawnLayoutChain(ctx context.Context, m *manifest.Manifest,
 	pending map[string]pendingSpawn, res *Result, r Reporter, prog *progress) error {
-	ratios := splitRatioChain(m.Layout.Order, m.Layout.Fractions())
+	fractions := m.Layout.Fractions()
+	var widths []float64
 	var addresses []string
 	for _, name := range m.Layout.Order {
 		p := pending[name]
@@ -521,8 +522,13 @@ func spawnLayoutChain(ctx context.Context, m *manifest.Manifest,
 		r.OK("window %s", name)
 		res.SpawnedWindow = append(res.SpawnedWindow, name)
 		addresses = append(addresses, addr)
+		widths = append(widths, fractions[name])
 	}
-	return hypr.ApplyColumns(ctx, addresses, ratios)
+	// The fractions go across as written. Turning them into whatever a
+	// compositor actually understands — dwindle's recursive split ratios, or
+	// sway's percentage-point resizes — is internal/wm's business, and the
+	// two answers have nothing in common.
+	return wm.ApplyColumns(ctx, addresses, widths)
 }
 
 // waitForClass polls for a window of the given class to appear, returning
@@ -538,12 +544,12 @@ func waitForClass(ctx context.Context, class string, timeout time.Duration) (str
 func waitForClassInWorkspace(ctx context.Context, class, workspace string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		clients, err := hypr.Clients(ctx)
+		clients, err := wm.Clients(ctx)
 		if err == nil {
 			for _, c := range clients {
 				if c.InitialClass == class {
 					if workspace != "" && c.Workspace.Name != workspace {
-						if err := hypr.MoveWindowToNamedWorkspace(ctx, c.Address, workspace); err != nil {
+						if err := wm.MoveWindowToNamedWorkspace(ctx, c.Address, workspace); err != nil {
 							return "", fmt.Errorf("place window %s: %w", class, err)
 						}
 						break
@@ -569,8 +575,8 @@ func waitForClassInWorkspace(ctx context.Context, class, workspace string, timeo
 func waitForAddressGone(ctx context.Context, address string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		clients, err := hypr.Clients(ctx)
-		if err == nil && !slices.ContainsFunc(clients, func(c hypr.Client) bool {
+		clients, err := wm.Clients(ctx)
+		if err == nil && !slices.ContainsFunc(clients, func(c wm.Client) bool {
 			return c.Address == address
 		}) {
 			return nil
@@ -584,53 +590,6 @@ func waitForAddressGone(ctx context.Context, address string, timeout time.Durati
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-}
-
-// splitRatioChain converts a set of column fractions into the sequence of
-// dwindle split ratios that produces them, one per split point (every window
-// except the last, which simply occupies whatever remains).
-//
-// dwindle splits recursively: the first split separates order[0] from
-// everything after it, the second separates order[1] from everything after
-// that, and so on. So each ratio must be relative not to the whole width but
-// to whatever fraction of it is still undivided at that point — order[i]'s
-// share of order[i:] — which is why this cannot just use each fraction
-// directly. The ratio-to-fraction relationship itself (fraction = ratio / 2)
-// was confirmed empirically: it is not documented, and "ratio 1.0" is an even
-// 50/50 split, not "the focused window gets 100%" as the name might suggest.
-//
-// Fractions are not required to sum to exactly 1.0 — validation allows a
-// small tolerance, and each step only ever looks at the sum of the fractions
-// from that point on, which naturally renormalizes as it goes.
-func splitRatioChain(order []string, fractions map[string]float64) []float64 {
-	if len(order) == 0 {
-		return nil
-	}
-	remaining := 0.0
-	for _, name := range order {
-		remaining += fractions[name]
-	}
-
-	ratios := make([]float64, 0, len(order)-1)
-	for i := 0; i < len(order)-1; i++ {
-		f := fractions[order[i]]
-		var ratio float64
-		if remaining > 0 {
-			ratio = 2 * f / remaining
-		}
-		// Dwindle's ratio range is roughly (0, 2); clamp defensively so a
-		// pathological input (for example a hand-edited fraction) cannot
-		// send a nonsense value to hyprctl.
-		if ratio < 0.1 {
-			ratio = 0.1
-		}
-		if ratio > 1.9 {
-			ratio = 1.9
-		}
-		ratios = append(ratios, ratio)
-		remaining -= f
-	}
-	return ratios
 }
 
 // expandHome resolves a leading "~" to the current user's home directory, the

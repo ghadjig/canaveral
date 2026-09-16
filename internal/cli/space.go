@@ -34,7 +34,7 @@ func spaceUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage: canaveral space <command> [args]")
 	fmt.Fprintln(w, "\nA space is a workspace with no project behind it: no repository, no")
 	fmt.Fprintln(w, "worktree, no branch — just the windows, services and agents you declared,")
-	fmt.Fprintln(w, "on a Hyprland workspace of its own. Its definition lives in canaveral's")
+	fmt.Fprintln(w, "on a workspace of its own. Its definition lives in canaveral's")
 	fmt.Fprintln(w, "config directory rather than in a checkout, because there is no checkout")
 	fmt.Fprintln(w, "to put it in.")
 	fmt.Fprintln(w, "\nOnce defined, open it from anywhere by name:")

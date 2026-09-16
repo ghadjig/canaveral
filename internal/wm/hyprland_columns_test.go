@@ -1,4 +1,4 @@
-package hypr
+package wm
 
 import (
 	"context"
@@ -31,12 +31,15 @@ esac
 	t.Setenv("COLUMN_OPTION", `{"int":0}`)
 	t.Setenv("COLUMN_ACTIVE", `{"address":"0xff"}`)
 	t.Setenv("COLUMN_REPLY", "ok")
+	useHyprland(t)
 	return log
 }
 
 func TestColumnsBatchRestoresFocusBeforeEnablingWarps(t *testing.T) {
 	log := columnCompositor(t)
-	if err := ApplyColumns(context.Background(), []string{"0xa", "0xb", "0xc"}, []float64{0.8, 1}); err != nil {
+	// 40/30/30 of the width is dwindle's 0.8 then 1.0: the first split hands
+	// 40% away from the 60% that is left, and the second halves that.
+	if err := ApplyColumns(context.Background(), []string{"0xa", "0xb", "0xc"}, []float64{0.4, 0.3, 0.3}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(log)
@@ -86,7 +89,7 @@ func TestColumnsPreservesEnabledOptionsAndEmptyWorkspaceFocus(t *testing.T) {
 	log := columnCompositor(t)
 	t.Setenv("COLUMN_OPTION", `{"int":1}`)
 	t.Setenv("COLUMN_ACTIVE", `{}`)
-	if err := ApplyColumns(context.Background(), []string{"0xa", "0xb"}, []float64{1}); err != nil {
+	if err := ApplyColumns(context.Background(), []string{"0xa", "0xb"}, []float64{0.5, 0.5}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
@@ -112,7 +115,7 @@ func TestColumnsFailureBeforeBatchDoesNotTouchFocus(t *testing.T) {
 			case "invalid-address":
 				addresses[1] = "0xb; dispatch exit"
 			}
-			if err := ApplyColumns(ctx, addresses, []float64{1}); err == nil {
+			if err := ApplyColumns(ctx, addresses, []float64{0.5, 0.5}); err == nil {
 				t.Fatal("expected error")
 			}
 			if _, err := os.Stat(log); !os.IsNotExist(err) {
@@ -125,7 +128,7 @@ func TestColumnsFailureBeforeBatchDoesNotTouchFocus(t *testing.T) {
 func TestColumnsReportsDispatcherErrorsWithCleanupInSameBatch(t *testing.T) {
 	log := columnCompositor(t)
 	t.Setenv("COLUMN_REPLY", "ok\nWindow not found\nok\n")
-	err := ApplyColumns(context.Background(), []string{"0xa", "0xb"}, []float64{1})
+	err := ApplyColumns(context.Background(), []string{"0xa", "0xb"}, []float64{0.5, 0.5})
 	if err == nil || !strings.Contains(err.Error(), "Window not found") {
 		t.Fatalf("dispatcher error = %v", err)
 	}

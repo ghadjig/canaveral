@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 )
 
 func TestStateLabelAgentStates(t *testing.T) {
@@ -184,7 +184,7 @@ func TestWindowRowUnknownWithoutAWindowList(t *testing.T) {
 
 func TestWindowRowOpenWhenClassMatches(t *testing.T) {
 	w := state.Window{Name: "term", Class: "canaveral-p-f-term"}
-	clients := []hypr.Client{{InitialClass: "canaveral-p-f-term"}}
+	clients := []wm.Client{{InitialClass: "canaveral-p-f-term"}}
 	got := windowRow(&state.Feature{Name: "f"}, w, clients, true)
 	if got.State != "open" {
 		t.Errorf("State = %q, want open", got.State)

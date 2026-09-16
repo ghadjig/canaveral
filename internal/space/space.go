@@ -17,8 +17,8 @@
 // [ports], [env] and [layout] sections a project uses, minus the four that
 // only mean something with a repository — see manifest.validateKind. Sharing
 // the type is the point: everything downstream of feature.Reconcile is about
-// windows, units and Hyprland, none of which ever cared whether git was
-// involved.
+// windows, units and the window manager, none of which ever cared whether
+// git was involved.
 package space
 
 import (
@@ -188,7 +188,7 @@ func starter(name string) string {
 #
 #     canaveral %s
 #
-# Windows are opened on a Hyprland workspace of the same name. "run" executes
+# Windows are opened on a workspace of the same name. "run" executes
 # inside a terminal; "exec" launches a GUI application, which canaveral must be
 # able to recognise later — either by being told to adopt {{.Class}}, or, when
 # the application will not take a class from you, by naming the one it carries:
@@ -196,7 +196,7 @@ func starter(name string) string {
 #     [[window]]
 #     name = "slicer"
 #     exec = "BambuStudio.AppImage"
-#     match_class = "^BambuStudio$"    # see: hyprctl clients
+#     match_class = "^BambuStudio$"    # see: hyprctl clients / swaymsg -t get_tree
 
 # Where windows, services and agents open. Defaults to your home directory.
 # dir = "~/models"

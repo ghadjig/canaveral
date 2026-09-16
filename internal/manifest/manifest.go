@@ -94,7 +94,7 @@ type Manifest struct {
 }
 
 // Layout forces a fixed column arrangement for windows instead of leaving
-// them to Hyprland's normal tiling.
+// them to the compositor's normal tiling.
 //
 // Each named window becomes its own full-height column, left to right in
 // Order, sized as a fraction of the monitor's usable width. The layout is
@@ -112,7 +112,7 @@ type Layout struct {
 
 // Enabled reports whether a layout is configured at all. An empty Layout
 // (the zero value, when [layout] is absent from the manifest) leaves windows
-// to Hyprland's normal tiling untouched.
+// to the compositor's normal tiling untouched.
 func (l Layout) Enabled() bool { return len(l.Order) > 0 }
 
 // Fractions returns the configured width fraction for each window in Order.
@@ -331,7 +331,7 @@ type Agent struct {
 	Agent string `toml:"agent"`
 }
 
-// Window is a GUI window belonging to a feature's Hyprland workspace.
+// Window is a GUI window belonging to a feature's workspace.
 //
 // Exactly one of Run or Exec is used: Run wraps a command in a terminal rooted
 // at the worktree, Exec launches a GUI application directly.
@@ -400,7 +400,7 @@ func (d Duration) Or(def time.Duration) time.Duration {
 }
 
 // NameRe is the shape of a project or space name: something that is safe as
-// a directory name, a systemd unit name and a Hyprland workspace name at
+// a directory name, a systemd unit name and a compositor workspace name at
 // once. Exported because internal/space validates its own names against the
 // same rule, and two spellings of "valid name" would drift.
 var NameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

@@ -25,13 +25,13 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/probe"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/tmpl"
 	"github.com/bandito/canaveral/internal/toolchain"
 	"github.com/bandito/canaveral/internal/unit"
+	"github.com/bandito/canaveral/internal/wm"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -45,7 +45,7 @@ type Reporter interface {
 
 // Options tunes a reconcile pass.
 type Options struct {
-	// NoWindows skips the Hyprland layer, for headless use.
+	// NoWindows skips the window layer, for headless use.
 	NoWindows bool
 	// NoServices skips starting services.
 	NoServices bool
@@ -115,10 +115,10 @@ func (res *Result) abort(ctx context.Context, r Reporter) {
 // (templates rendered, profile seeded) but which has not been created yet.
 type pendingSpawn struct {
 	name string
-	spec hypr.SpawnSpec
+	spec wm.SpawnSpec
 	// match is set for a window declaring match_class: the application will
 	// not carry spec.Class, so the window it produces has to be found by
-	// pattern and placed by hand rather than by Hyprland's exec-time rule.
+	// pattern and placed by hand rather than by a placement rule.
 	match *regexp.Regexp
 }
 
@@ -472,9 +472,9 @@ func baseEnvFor(m *manifest.Manifest, f *state.Feature, tc map[string]string) ma
 		"CANAVERAL_ROOT":     f.Root,
 	}
 	// Every process canaveral spawns — systemd --user units (services,
-	// agents) and window terminals via hyprctl alike — starts from
+	// agents) and window terminals via the compositor alike — starts from
 	// canaveral's own PATH, since none of them runs through a shell that
-	// would read an rc file. Launched from a Hyprland keybind or the
+	// would read an rc file. Launched from a compositor keybind or the
 	// quickshell launcher, that is the compositor session's PATH, missing
 	// whatever an rc file adds (~/.opencode/bin, ~/.cargo/bin, npm's global
 	// bin).

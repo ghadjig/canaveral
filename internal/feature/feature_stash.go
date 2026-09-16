@@ -189,7 +189,7 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 // DiscardStash tears down a stashed feature for good: its worktree and, if it
 // has landed, its branch. Units and windows are already gone by definition,
 // which is why this is not simply Remove — Remove would ask systemd and
-// Hyprland about a feature that has not existed to either of them since it
+// the compositor about a feature that has not existed to either of them since it
 // was stashed.
 func DiscardStash(ctx context.Context, s *state.Stash, keepWorktree, force, keepBranch bool, r Reporter) error {
 	f := s.Feature

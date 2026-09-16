@@ -14,9 +14,9 @@ import (
 
 	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/feature"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/unit"
+	"github.com/bandito/canaveral/internal/wm"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -97,10 +97,10 @@ func countOpenWindows(ctx context.Context, f *state.Feature) string {
 	if len(f.Windows) == 0 {
 		return "-"
 	}
-	if err := hypr.Available(ctx); err != nil {
+	if err := wm.Available(ctx); err != nil {
 		return "?"
 	}
-	clients, err := hypr.Clients(ctx)
+	clients, err := wm.Clients(ctx)
 	if err != nil {
 		return "?"
 	}
@@ -117,7 +117,7 @@ func countOpenWindows(ctx context.Context, f *state.Feature) string {
 //
 // Only the class canaveral assigned is matched: anything looser could adopt one
 // of the user's own windows.
-func windowOpen(clients []hypr.Client, w state.Window) bool {
+func windowOpen(clients []wm.Client, w state.Window) bool {
 	for _, c := range clients {
 		if c.InitialClass == w.Class {
 			return true
@@ -357,10 +357,10 @@ func renderLoop(ctx context.Context, interval time.Duration, render func() error
 // HTTP timeouts would make --watch unusable.
 func collect(ctx context.Context, features []*state.Feature) []row {
 	// Query the window list once rather than per feature.
-	var clients []hypr.Client
+	var clients []wm.Client
 	haveWindows := false
-	if err := hypr.Available(ctx); err == nil {
-		if cs, err := hypr.Clients(ctx); err == nil {
+	if err := wm.Available(ctx); err == nil {
+		if cs, err := wm.Clients(ctx); err == nil {
 			clients, haveWindows = cs, true
 		}
 	}
@@ -482,7 +482,7 @@ func applyPending(r *row, p *agent.Pending) {
 
 // windowRow reports whether a single declared window is currently open,
 // against a client list already fetched once for every feature.
-func windowRow(f *state.Feature, w state.Window, clients []hypr.Client, haveWindows bool) row {
+func windowRow(f *state.Feature, w state.Window, clients []wm.Client, haveWindows bool) row {
 	r := row{Feature: f.Name, Kind: kindWindow, Name: w.Name}
 	switch {
 	case !haveWindows:

@@ -1,4 +1,4 @@
-package hypr
+package wm
 
 import (
 	"context"
@@ -33,6 +33,7 @@ esac
 			t.Setenv("RULE_LOG", log)
 			t.Setenv("RULE_MODE", mode)
 			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			useHyprland(t)
 			err := Spawn(context.Background(), SpawnSpec{Class: "canaveral-p-f-chrome", Workspace: "p:f", Cmd: "true", Env: map[string]string{"A": "1"}})
 			b, readErr := os.ReadFile(log)
 			if readErr != nil {

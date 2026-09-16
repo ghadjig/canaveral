@@ -12,11 +12,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/tmpl"
+	"github.com/bandito/canaveral/internal/wm"
 )
+
+// useHyprland pins which compositor internal/wm drives, and makes it look
+// like one that is running.
+//
+// Both halves are needed. Without the override these tests read the
+// environment of the session they are running in, which is a real compositor,
+// so the fake hyprctl on PATH would be ignored on a sway machine. Without the
+// instance signature wm.Available refuses, the window layer is skipped with a
+// warning, and the assertions below quietly have nothing to assert — which is
+// how these tests came to depend on the developer's own desktop being
+// Hyprland. See AGENTS.md.
+func useHyprland(t *testing.T) {
+	t.Helper()
+	t.Setenv(wm.OverrideEnv, "hyprland")
+	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "test")
+}
 
 func TestExpandHome(t *testing.T) {
 	home, err := os.UserHomeDir()
@@ -38,83 +54,6 @@ func TestExpandHome(t *testing.T) {
 		if got != want {
 			t.Errorf("expandHome(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestSplitRatioChainMatchesLiveVerifiedValues(t *testing.T) {
-	// These exact numbers (0.8, 0.6667, 1.0) were verified against a real
-	// dwindle workspace: applying them via hyprctl dispatch splitratio to 4
-	// chained windows produced columns of 39.75%/19.8%/19.8%/19.7% of the
-	// monitor width — a 40/20/20/20 split within rounding.
-	order := []string{"chrome", "opencode", "terminal", "serverlogs"}
-	fractions := map[string]float64{
-		"chrome": 0.4, "opencode": 0.2, "terminal": 0.2, "serverlogs": 0.2,
-	}
-	got := splitRatioChain(order, fractions)
-	if len(got) != 3 {
-		t.Fatalf("len = %d, want 3 (one per split point, none for the last window)", len(got))
-	}
-	want := []float64{0.8, 0.6667, 1.0}
-	for i, w := range want {
-		if diff := got[i] - w; diff > 0.001 || diff < -0.001 {
-			t.Errorf("ratio[%d] = %v, want %v", i, got[i], w)
-		}
-	}
-}
-
-func TestSplitRatioChainEvenSplitIsNeutral(t *testing.T) {
-	// An even split at any point in the chain must be ratio 1.0 (confirmed
-	// empirically to mean "50/50", despite "1.0" not obviously meaning that).
-	got := splitRatioChain([]string{"a", "b"}, map[string]float64{"a": 0.5, "b": 0.5})
-	if len(got) != 1 || got[0] != 1.0 {
-		t.Errorf("got = %v, want [1.0]", got)
-	}
-}
-
-func TestSplitRatioChainHandlesImperfectSum(t *testing.T) {
-	// Validation allows [layout.default] to sum to 1.0 only within a
-	// tolerance, so a slightly-off partition must still work. Each step only
-	// looks at the remaining sum from that point on, so this must not error
-	// or divide by zero, and should still produce a sensible (clamped,
-	// finite) ratio.
-	order := []string{"chrome", "opencode", "terminal", "serverlogs"}
-	fractions := map[string]float64{
-		"chrome": 0.34, "opencode": 0.2, "terminal": 0.2, "serverlogs": 0.2, // sums to 0.94
-	}
-	got := splitRatioChain(order, fractions)
-	if len(got) != 3 {
-		t.Fatalf("len = %d, want 3", len(got))
-	}
-	for i, r := range got {
-		if r <= 0 || r >= 2 {
-			t.Errorf("ratio[%d] = %v, out of the valid (0,2) dwindle range", i, r)
-		}
-	}
-}
-
-func TestSplitRatioChainClampsExtremeInput(t *testing.T) {
-	// A hand-edited or corrupted fraction must not be forwarded to hyprctl
-	// as a nonsense ratio.
-	got := splitRatioChain([]string{"a", "b"}, map[string]float64{"a": 100, "b": 0.001})
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	if got[0] > 1.9 {
-		t.Errorf("ratio = %v, want clamped to <= 1.9", got[0])
-	}
-}
-
-func TestSplitRatioChainSingleWindow(t *testing.T) {
-	// One window in [layout] means nothing to split at all.
-	got := splitRatioChain([]string{"solo"}, map[string]float64{"solo": 1.0})
-	if len(got) != 0 {
-		t.Errorf("got = %v, want empty", got)
-	}
-}
-
-func TestSplitRatioChainEmptyOrder(t *testing.T) {
-	if got := splitRatioChain(nil, nil); got != nil {
-		t.Errorf("got = %v, want nil", got)
 	}
 }
 
@@ -149,8 +88,8 @@ func TestBuildWindowSpecForAnAlreadyOpenWindow(t *testing.T) {
 	m := &manifest.Manifest{Root: "/p"}
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
-	class := hypr.Class("p/f", "chrome")
-	open := map[string]hypr.Client{class: {}}
+	class := wm.Class("p/f", "chrome")
+	open := map[string]wm.Client{class: {}}
 
 	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, open, quietReporter{})
 	if err != nil {
@@ -170,14 +109,14 @@ func TestBuildWindowSpecForAMissingWindow(t *testing.T) {
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "chrome", Exec: "chromium --class={{.Class}}"}
 
-	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]hypr.Client{}, quietReporter{})
+	rec, pending, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]wm.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
 	if pending == nil {
 		t.Fatal("a window that is not open must produce a pending spawn")
 	}
-	class := hypr.Class("p/f", "chrome")
+	class := wm.Class("p/f", "chrome")
 	if pending.spec.Class != class || pending.spec.Cmd != "chromium --class="+class {
 		t.Errorf("spec = %+v", pending.spec)
 	}
@@ -199,11 +138,11 @@ func TestBuildWindowSpecAdoptsAMatchClassWindowOnTheFeatureWorkspace(t *testing.
 	f := &state.Feature{Space: true, Name: "3d", Worktree: "/home/u"}
 	w := manifest.Window{Name: "bambustudio", Exec: "BambuStudio.AppImage", MatchClass: "^BambuStudio$"}
 
-	c := hypr.Client{Address: "0xbambu", Class: "BambuStudio"}
-	c.Workspace.Name = f.HyprWorkspace()
+	c := wm.Client{Address: "0xbambu", Class: "BambuStudio"}
+	c.Workspace.Name = f.WorkspaceName()
 
 	rec, pending, err := buildWindowSpec(context.Background(), m, f, w,
-		tmpl.Vars{}, nil, []hypr.Client{c}, map[string]hypr.Client{}, quietReporter{})
+		tmpl.Vars{}, nil, []wm.Client{c}, map[string]wm.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
@@ -224,11 +163,11 @@ func TestBuildWindowSpecDoesNotAdoptAMatchClassWindowElsewhere(t *testing.T) {
 	f := &state.Feature{Space: true, Name: "3d", Worktree: "/home/u"}
 	w := manifest.Window{Name: "bambustudio", Exec: "BambuStudio.AppImage", MatchClass: "^BambuStudio$"}
 
-	c := hypr.Client{Address: "0xtheirs", Class: "BambuStudio"}
+	c := wm.Client{Address: "0xtheirs", Class: "BambuStudio"}
 	c.Workspace.Name = "2"
 
 	_, pending, err := buildWindowSpec(context.Background(), m, f, w,
-		tmpl.Vars{}, nil, []hypr.Client{c}, map[string]hypr.Client{}, quietReporter{})
+		tmpl.Vars{}, nil, []wm.Client{c}, map[string]wm.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
@@ -249,7 +188,7 @@ func TestBuildWindowSpecUsesADeclaredSubdir(t *testing.T) {
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	w := manifest.Window{Name: "api", Exec: "app --class={{.Class}}", Dir: "api"}
 
-	rec, _, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]hypr.Client{}, quietReporter{})
+	rec, _, err := buildWindowSpec(context.Background(), m, f, w, tmpl.Vars{}, nil, nil, map[string]wm.Client{}, quietReporter{})
 	if err != nil {
 		t.Fatalf("buildWindowSpec: %v", err)
 	}
@@ -260,7 +199,7 @@ func TestBuildWindowSpecUsesADeclaredSubdir(t *testing.T) {
 
 // A window's own PID is the ground truth for what it is running; a test can
 // stand in for one by pointing at a process it knows the command line of.
-func clientRunning(t *testing.T, cmdline string) hypr.Client {
+func clientRunning(t *testing.T, cmdline string) wm.Client {
 	t.Helper()
 	c := exec.Command("sh", "-c", "sleep 600")
 	// sh ignores arguments after the script, so this one exists purely to
@@ -277,13 +216,13 @@ func clientRunning(t *testing.T, cmdline string) hypr.Client {
 	// empty command line until the kernel has finished mapping the new
 	// argument vector in.
 	for range 200 {
-		if _, ok := hypr.Cmdline(c.Process.Pid); ok {
-			return hypr.Client{PID: c.Process.Pid}
+		if _, ok := wm.Cmdline(c.Process.Pid); ok {
+			return wm.Client{PID: c.Process.Pid}
 		}
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("stand-in process %d never reported a command line", c.Process.Pid)
-	return hypr.Client{}
+	return wm.Client{}
 }
 
 func agents(url string) []state.Agent {
@@ -336,7 +275,7 @@ func TestIsStaleFalseForAWindowThatIgnoresAgents(t *testing.T) {
 // here costs the user a window they were using.
 func TestIsStaleFalseWhenThePIDIsUnknown(t *testing.T) {
 	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
-	if isStale(hypr.Client{}, cmd, agents("http://127.0.0.1:38231")) {
+	if isStale(wm.Client{}, cmd, agents("http://127.0.0.1:38231")) {
 		t.Error("an unreadable window must not be closed on a guess")
 	}
 }
@@ -368,6 +307,7 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useHyprland(t)
 	t.Setenv("CANAVERAL_TEST_LOG", log)
 	// Spawn writes the window's environment to a file under $XDG_RUNTIME_DIR
 	// and relies on the shell it starts to delete it. No shell ever starts
@@ -460,8 +400,8 @@ func TestReconcileWindowsCountsAWindowThatNeedsNoSpawn(t *testing.T) {
 	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 1)
 
 	// hyprctl reports the window as already open, so buildWindowSpec adopts it.
-	class := hypr.Class(f.Key(), "terminal")
-	clients, err := json.Marshal([]hypr.Client{{Address: "0x1", Class: class, InitialClass: class}})
+	class := wm.Class(f.Key(), "terminal")
+	clients, err := json.Marshal([]wm.Client{{Address: "0x1", Class: class, InitialClass: class}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,11 +452,13 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useHyprland(t)
 	run := "true"
 	m := &manifest.Manifest{Root: "/p", Terminal: "alacritty", Windows: []manifest.Window{
 		{Name: "a", Run: &run}, {Name: "b", Run: &run},
 	}}
 	m.Layout.Order = []string{"a", "b"}
+	m.Layout.Default = map[string]float64{"a": 0.6, "b": 0.4}
 	f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt"}
 	prog := newProgress(f, quietReporter{}, state.PhaseBooting, 2)
 	res := &Result{Feature: f}
@@ -537,7 +479,7 @@ esac
 		t.Fatalf("failed layout lost window identity or did not settle: %+v", saved)
 	}
 	for i, name := range []string{"a", "b"} {
-		if w := saved.Windows[i]; w.Name != name || w.Class != hypr.Class(f.Key(), name) || w.Workspace != "p:f" {
+		if w := saved.Windows[i]; w.Name != name || w.Class != wm.Class(f.Key(), name) || w.Workspace != "p:f" {
 			t.Errorf("window %d declaration = %+v", i, w)
 		}
 	}
@@ -570,14 +512,16 @@ esac
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			useHyprland(t)
 			t.Setenv("LAYOUT_LOG", log)
 			t.Setenv("LAYOUT_FAIL", fmt.Sprint(failSpawn))
 			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 			m := &manifest.Manifest{}
 			m.Layout.Order = []string{"a", "b"}
+			m.Layout.Default = map[string]float64{"a": 0.6, "b": 0.4}
 			pending := map[string]pendingSpawn{
-				"a": {name: "a", spec: hypr.SpawnSpec{Class: "a", Workspace: "p:f", Cmd: "true"}},
-				"b": {name: "b", spec: hypr.SpawnSpec{Class: "b", Workspace: "p:f", Cmd: "true"}},
+				"a": {name: "a", spec: wm.SpawnSpec{Class: "a", Workspace: "p:f", Cmd: "true"}},
+				"b": {name: "b", spec: wm.SpawnSpec{Class: "b", Workspace: "p:f", Cmd: "true"}},
 			}
 			err := reconcileLayoutWindows(context.Background(), m, pending, true, &Result{}, quietReporter{}, nil)
 			if (err != nil) != failSpawn {
@@ -626,6 +570,7 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useHyprland(t)
 	t.Setenv("PLACEMENT_LOG", log)
 	t.Setenv("PLACEMENT_MOVED", filepath.Join(dir, "moved"))
 	addr, err := waitForClassInWorkspace(context.Background(), "canaveral-browser", "p:f", time.Second)

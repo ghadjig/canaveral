@@ -1,4 +1,4 @@
-package hypr
+package wm
 
 import (
 	"context"
@@ -55,9 +55,22 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useHyprland(t)
+}
+
+// useHyprland pins backend selection, which otherwise reads the environment
+// of whatever session the test is running in — a real compositor, in this
+// worktree — and could pick sway for a test that installed a fake hyprctl.
+// The signature is what Available then checks for, so a test that means to
+// reach the fake has to look like it is running under Hyprland too.
+func useHyprland(t *testing.T) {
+	t.Helper()
+	t.Setenv(OverrideEnv, "hyprland")
+	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "test")
 }
 
 func TestAvailableFailsWithoutHyprctlInPath(t *testing.T) {
+	useHyprland(t)
 	t.Setenv("PATH", t.TempDir())
 	if err := Available(context.Background()); err == nil {
 		t.Error("Available should fail when hyprctl is not on PATH")
@@ -213,30 +226,6 @@ func TestActiveMonitorErrorsWithNoMonitors(t *testing.T) {
 	}
 }
 
-func TestSecondaryMonitorFindsAnUnfocusedOne(t *testing.T) {
-	installFakeHyprctl(t)
-	t.Setenv("FAKE_HYPRCTL_MONITORS_JSON", `[{"name":"eDP-1","focused":true},{"name":"DP-3"}]`)
-	m, ok, err := SecondaryMonitor(context.Background())
-	if err != nil {
-		t.Fatalf("SecondaryMonitor: %v", err)
-	}
-	if !ok || m.Name != "DP-3" {
-		t.Errorf("m=%+v ok=%v, want DP-3/true", m, ok)
-	}
-}
-
-func TestSecondaryMonitorFalseWithOnlyOneMonitor(t *testing.T) {
-	installFakeHyprctl(t)
-	t.Setenv("FAKE_HYPRCTL_MONITORS_JSON", `[{"name":"eDP-1","focused":true}]`)
-	_, ok, err := SecondaryMonitor(context.Background())
-	if err != nil {
-		t.Fatalf("SecondaryMonitor: %v", err)
-	}
-	if ok {
-		t.Error("SecondaryMonitor should be false with a single monitor")
-	}
-}
-
 func TestMoveWorkspaceToMonitorSucceeds(t *testing.T) {
 	installFakeHyprctl(t)
 	if err := MoveWorkspaceToMonitor(context.Background(), "norules:f", "eDP-1"); err != nil {
@@ -271,39 +260,6 @@ func TestActiveWorkspaceNameErrorsOnNonZeroExit(t *testing.T) {
 	t.Setenv("FAKE_HYPRCTL_ACTIVEWORKSPACE_EXIT", "1")
 	if _, err := ActiveWorkspaceName(context.Background()); err == nil {
 		t.Error("ActiveWorkspaceName should fail when hyprctl exits non-zero")
-	}
-}
-
-func TestFocusWindowSucceedsAndFails(t *testing.T) {
-	installFakeHyprctl(t)
-	if err := FocusWindow(context.Background(), "0x1"); err != nil {
-		t.Errorf("FocusWindow: %v", err)
-	}
-	t.Setenv("FAKE_HYPRCTL_DISPATCH_EXIT", "1")
-	if err := FocusWindow(context.Background(), "0x1"); err == nil {
-		t.Error("FocusWindow should fail when hyprctl exits non-zero")
-	}
-}
-
-func TestPreselectSucceedsAndFails(t *testing.T) {
-	installFakeHyprctl(t)
-	if err := Preselect(context.Background(), "r"); err != nil {
-		t.Errorf("Preselect: %v", err)
-	}
-	t.Setenv("FAKE_HYPRCTL_DISPATCH_EXIT", "1")
-	if err := Preselect(context.Background(), "r"); err == nil {
-		t.Error("Preselect should fail when hyprctl exits non-zero")
-	}
-}
-
-func TestSplitRatioExactSucceedsAndFails(t *testing.T) {
-	installFakeHyprctl(t)
-	if err := SplitRatioExact(context.Background(), 0.8); err != nil {
-		t.Errorf("SplitRatioExact: %v", err)
-	}
-	t.Setenv("FAKE_HYPRCTL_DISPATCH_EXIT", "1")
-	if err := SplitRatioExact(context.Background(), 0.8); err == nil {
-		t.Error("SplitRatioExact should fail when hyprctl exits non-zero")
 	}
 }
 
@@ -347,7 +303,7 @@ func TestWorkspacesParsesOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Workspaces: %v", err)
 	}
-	if len(got) != 1 || got[0].Windows != 2 {
+	if len(got) != 1 || got[0] != (Workspace{ID: 1, Name: "1", Monitor: "eDP-1"}) {
 		t.Errorf("got = %+v", got)
 	}
 }
@@ -434,26 +390,6 @@ func TestReleaseWorkspacePropagatesADispatchFailure(t *testing.T) {
 	}
 }
 
-func TestIsSelfTrueForTheCallingProcess(t *testing.T) {
-	if !IsSelf(Client{PID: os.Getpid()}) {
-		t.Error("IsSelf should be true for the calling process's own PID")
-	}
-}
-
-func TestIsSelfFalseForAnUnrelatedPID(t *testing.T) {
-	// A PID that (almost certainly) does not exist, so parentPID fails
-	// immediately and IsSelf must not treat that as a match.
-	if IsSelf(Client{PID: 999999999}) {
-		t.Error("IsSelf should be false for a PID that cannot be our ancestor")
-	}
-}
-
-func TestIsSelfFalseForANonPositivePID(t *testing.T) {
-	if IsSelf(Client{PID: 0}) {
-		t.Error("IsSelf should be false for PID 0")
-	}
-}
-
 // installRecordingHyprctl installs a fake `hyprctl` that appends each
 // invocation's arguments to a log file, whose path it returns.
 //
@@ -471,6 +407,7 @@ func installRecordingHyprctl(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useHyprland(t)
 	return log
 }
 
@@ -507,33 +444,5 @@ func TestFocusDispatchesANumericWorkspaceByBareID(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("call %d = %q, want %q", i, got[i], want[i])
 		}
-	}
-}
-
-func TestShowWorkspaceOnMonitorFocusesTheMonitorFirst(t *testing.T) {
-	// The workspace dispatcher acts on whichever monitor is focused, so
-	// putting a *different* monitor back to what it was showing means
-	// focusing it first. Order is the whole behaviour.
-	log := installRecordingHyprctl(t)
-	if err := ShowWorkspaceOnMonitor(context.Background(), "eDP-1", "4"); err != nil {
-		t.Fatalf("ShowWorkspaceOnMonitor: %v", err)
-	}
-	got := recordedCalls(t, log)
-	want := []string{"dispatch focusmonitor eDP-1", "dispatch workspace 4"}
-	if len(got) != len(want) {
-		t.Fatalf("calls = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("call %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestShowWorkspaceOnMonitorFails(t *testing.T) {
-	installFakeHyprctl(t)
-	t.Setenv("FAKE_HYPRCTL_DISPATCH_EXIT", "1")
-	if err := ShowWorkspaceOnMonitor(context.Background(), "eDP-1", "4"); err == nil {
-		t.Error("ShowWorkspaceOnMonitor should fail when hyprctl exits non-zero")
 	}
 }

@@ -1,4 +1,4 @@
-package hypr
+package wm
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-// ensurePlacementRule matches the window rather than the exec process. Browsers
+// ensurePlacement matches the window rather than the exec process. Browsers
 // can hand startup to another process, losing Hyprland's PID-scoped exec rule.
 // Install before spawning so even those windows map silently on their workspace.
-func ensurePlacementRule(ctx context.Context, class, workspace string) error {
+func (hyprland) ensurePlacement(ctx context.Context, class, workspace string) error {
 	if class == "" || workspace == "" || strings.ContainsAny(class+workspace, ",;\n\r") {
 		return fmt.Errorf("invalid window class or workspace for placement rule")
 	}

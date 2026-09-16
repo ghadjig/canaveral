@@ -186,8 +186,8 @@ func TestProjectsEmpty(t *testing.T) {
 
 func TestHyprWorkspaceAndKey(t *testing.T) {
 	f := newFeature("norules", "small-fixes", 0)
-	if got := f.HyprWorkspace(); got != "norules:small-fixes" {
-		t.Errorf("HyprWorkspace = %q", got)
+	if got := f.WorkspaceName(); got != "norules:small-fixes" {
+		t.Errorf("WorkspaceName = %q", got)
 	}
 	if got := f.Key(); got != "norules/small-fixes" {
 		t.Errorf("Key = %q", got)
@@ -716,16 +716,16 @@ func TestSpaceIdentityDropsTheProjectPrefix(t *testing.T) {
 	if got, want := f.Key(), "norules/small-fixes"; got != want {
 		t.Errorf("Key() = %q, want %q", got, want)
 	}
-	if got, want := f.HyprWorkspace(), "norules:small-fixes"; got != want {
-		t.Errorf("HyprWorkspace() = %q, want %q", got, want)
+	if got, want := f.WorkspaceName(), "norules:small-fixes"; got != want {
+		t.Errorf("WorkspaceName() = %q, want %q", got, want)
 	}
 
 	s := &Feature{Project: "3d-printing", Name: "3d-printing", Space: true}
 	if got, want := s.Key(), "3d-printing"; got != want {
 		t.Errorf("space Key() = %q, want %q", got, want)
 	}
-	if got, want := s.HyprWorkspace(), "3d-printing"; got != want {
-		t.Errorf("space HyprWorkspace() = %q, want %q", got, want)
+	if got, want := s.WorkspaceName(), "3d-printing"; got != want {
+		t.Errorf("space WorkspaceName() = %q, want %q", got, want)
 	}
 }
 

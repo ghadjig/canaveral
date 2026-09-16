@@ -194,7 +194,7 @@ type Feature struct {
 	Name    string `json:"name"`
 	Key     string `json:"key"`
 	Branch  string `json:"branch,omitempty"`
-	// Workspace is the Hyprland workspace to switch to, so a widget can
+	// Workspace is the compositor workspace to switch to, so a widget can
 	// make its rows clickable.
 	Workspace string `json:"workspace,omitempty"`
 	// WSlot is the feature's stable widget slot, 1-indexed and global across
@@ -307,7 +307,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		Name:      f.Name,
 		Key:       f.Key(),
 		Branch:    f.Branch,
-		Workspace: f.HyprWorkspace(),
+		Workspace: f.WorkspaceName(),
 		WSlot:     f.WSlot,
 		Headless:  f.Headless(),
 		Space:     f.Space,

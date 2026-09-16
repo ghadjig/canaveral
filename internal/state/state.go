@@ -158,16 +158,16 @@ type Window struct {
 	// MatchClass identifies GUI windows that do not carry our class. Such a
 	// window is matched by class within the feature's own workspace.
 	MatchClass string `json:"match_class,omitempty"`
-	// Workspace is the Hyprland workspace the window belongs to.
+	// Workspace is the compositor workspace the window belongs to.
 	Workspace string `json:"workspace,omitempty"`
 }
 
-// HyprWorkspace is the Hyprland workspace name for the feature.
+// WorkspaceName is the compositor workspace name for the feature.
 //
 // A space carries no project prefix because it has no project: its name is
 // the whole of its identity, and "3d-printing:3d-printing" would be a colon
 // separating a thing from itself.
-func (f *Feature) HyprWorkspace() string {
+func (f *Feature) WorkspaceName() string {
 	if f.Space {
 		return f.Name
 	}
@@ -220,7 +220,7 @@ func (f *Feature) ForgetDiscovered(names []string) {
 }
 
 // Key uniquely identifies the feature across projects. A space is keyed by
-// its bare name, for the reason given on HyprWorkspace.
+// its bare name, for the reason given on WorkspaceName.
 func (f *Feature) Key() string {
 	if f.Space {
 		return f.Name

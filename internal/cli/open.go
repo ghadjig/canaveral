@@ -12,11 +12,11 @@ import (
 	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/config"
 	"github.com/bandito/canaveral/internal/feature"
-	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 )
 
 // loadManifest finds the project manifest from the current directory.
@@ -244,13 +244,13 @@ func checkFeatureExistence(loadErr error, create bool, projectName, name string)
 // relocate it before switching — otherwise --focus could take them to a
 // different screen.
 func focusFeatureWorkspace(ctx context.Context, f *state.Feature, r reporter) {
-	if err := hypr.Available(ctx); err != nil {
+	if err := wm.Available(ctx); err != nil {
 		return
 	}
-	if mon, err := hypr.ActiveMonitor(ctx); err == nil {
-		_ = hypr.MoveWorkspaceToMonitor(ctx, f.HyprWorkspace(), mon.Name)
+	if mon, err := wm.ActiveMonitor(ctx); err == nil {
+		_ = wm.MoveWorkspaceToMonitor(ctx, f.WorkspaceName(), mon.Name)
 	}
-	if err := hypr.Focus(ctx, f.HyprWorkspace()); err != nil {
+	if err := wm.Focus(ctx, f.WorkspaceName()); err != nil {
 		r.Warn("%v", err)
 	}
 }
@@ -653,7 +653,7 @@ func starterAgent(tool string) string {
 name = "main"
 tool = %q
 
-# Windows opened on the feature's Hyprland workspace, grouped as tabs.
+# Windows opened on the feature's own workspace, grouped as tabs.
 # "run" executes inside a terminal rooted at the worktree; "exec" is a GUI app.
 [[window]]
 name = %q

@@ -12,6 +12,29 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- sway is now supported alongside Hyprland. Windows, workspaces, `[layout]`
+  columns, `--focus`/`canaveral-goto`, workspace slots and teardown all work the
+  same on either, driven through `swaymsg` instead of `hyprctl`. The compositor
+  is detected from the session (`HYPRLAND_INSTANCE_SIGNATURE`, then `SWAYSOCK`,
+  with `XDG_CURRENT_DESKTOP` breaking the tie when a session is nested); set
+  `CANAVERAL_WM=hyprland` or `CANAVERAL_WM=sway` to decide it yourself. With
+  neither compositor running the window step is still skipped with a warning.
+  The quickshell launcher in `share/quickshell` remains Hyprland-only.
+
+**Changed**
+
+- `scripts/install.sh` preflight accepts `swaymsg` or `hyprctl`, warning only
+  when neither is present.
+- On sway, a window's whole launch — environment included — goes through a
+  private, self-deleting script rather than the command line. sway's command
+  parser splits a command list on `;` and `,` before any shell sees it, which a
+  real command line cannot survive; only the script's path crosses that
+  boundary. Hyprland's spawn path is unchanged.
+
 ## v0.11.0 — 2026-09-16
 
 **Fixed**

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 )
 
 // clearFeatureEnv unsets everything the "which feature am I in" lookup reads.
@@ -22,9 +23,13 @@ func clearFeatureEnv(t *testing.T) {
 	t.Setenv("CANAVERAL_PROJECT", "")
 	t.Setenv("CANAVERAL_FEATURE", "")
 	t.Setenv("CANAVERAL_ROOT", "")
-	// Hyprland is the last-resort signal; a test must never reach the real
-	// compositor and pick up whatever workspace the developer is looking at.
+	// The focused workspace is the last-resort signal; a test must never
+	// reach the real compositor and pick up whatever the developer is
+	// looking at. Both compositors' variables have to go, since detection
+	// falls through from one to the other.
 	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "")
+	t.Setenv("SWAYSOCK", "")
+	t.Setenv(wm.OverrideEnv, "")
 }
 
 // saveFeature records a feature with a real worktree directory on disk.

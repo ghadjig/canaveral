@@ -31,7 +31,7 @@ import (
 // missing toolchain into an immediate, clear error instead of a unit that
 // starts and dies.
 //
-// LookPath alone is not enough: canaveral is often started from a Hyprland
+// LookPath alone is not enough: canaveral is often started from a compositor
 // keybind or a quickshell launcher, which inherit the session's PATH rather
 // than a real terminal's. That PATH is missing whatever a shell startup file
 // would have added — mise/asdf shims, ~/.local/bin, npm's global bin — which
@@ -71,8 +71,8 @@ var shellPATH struct {
 //
 // Needed generally, not just for the agents: canaveral itself, the systemd
 // --user units it starts (see internal/unit's inheritEnv) and the window
-// terminals it spawns via hyprctl all begin with whatever PATH launched
-// canaveral — a Hyprland keybind or the quickshell launcher hand over the
+// terminals it spawns through the compositor all begin with whatever PATH
+// launched canaveral — a compositor keybind or the quickshell launcher hand over the
 // compositor session's PATH, not a login shell's, and that is missing
 // whatever an rc file would have added. Different setups put that PATH in
 // different files — bash only reads ~/.bashrc for an interactive shell,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
+	"github.com/bandito/canaveral/internal/wm"
 	"github.com/bandito/canaveral/internal/worktree"
 )
 
@@ -43,6 +44,8 @@ func TestScratchCollisionLeavesNoDisposableRecord(t *testing.T) {
 		t.Run(collision, func(t *testing.T) {
 			f := gitFeature(t, false)
 			t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "")
+			t.Setenv("SWAYSOCK", "")
+			t.Setenv(wm.OverrideEnv, "")
 			bin := t.TempDir()
 			for _, name := range []string{"systemctl", "systemd-run", "hyprctl"} {
 				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
