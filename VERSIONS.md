@@ -12,6 +12,25 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- OpenCode status probes no longer download entire conversations, including all
+  historical tool outputs. They request the latest 16 messages, cache unchanged
+  completed previews for up to 30 seconds, and cap message responses at 4 MiB.
+  Oversized/failed previews back off while lightweight status, questions,
+  permissions and todos remain available. Referenced permission messages are
+  fetched individually, including those belonging to subagents.
+- Watcher feature rescans and git updates reuse agent health instead of polling
+  all agents every three seconds. Events refresh only their originating agent,
+  sustained event refreshes are rate-limited, and changed server URLs reconnect
+  their subscriptions. The 30-second safety refresh remains.
+- OpenCode transcript timing and previews now cover recent messages. Large
+  sessions report `recent_history: true` in JSON and `(recent)` beside CLI worked
+  time; a prompt outside that window has no prompt timer/preview. Session-family
+  token and cost totals are unchanged.
+
 ## v0.10.3 — 2026-09-14
 
 **Fixed**

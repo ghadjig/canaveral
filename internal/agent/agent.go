@@ -381,6 +381,9 @@ type Health struct {
 	// that has finished in the newest session — actual generation time, not
 	// wall-clock span, so it excludes the gaps where nothing was happening.
 	Worked time.Duration
+	// RecentHistory means transcript-derived fields cover only recent messages,
+	// not the entire conversation. Token and cost totals remain session-wide.
+	RecentHistory bool
 	// Working is how long the current assistant message has been
 	// generating. Note this is not "how long since I asked": one prompt
 	// produces many assistant messages, one per tool round trip, so this
