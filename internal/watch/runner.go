@@ -56,12 +56,14 @@ type Runner struct {
 
 	mu   sync.Mutex
 	prev map[string]Feature // feature key -> last built view
-	subs map[string]context.CancelFunc
+	subs map[string]subscription
 
 	// health caches the last full refresh's probe results, keyed by feature and
 	// then agent name, so the fast lifecycle poll can rebuild a snapshot
 	// without issuing HTTP of its own.
-	health map[string]map[string]agent.Health
+	health      map[string]map[string]agent.Health
+	connections map[string]agent.Conn
+	dirty       map[string]bool
 	// inPhase is the set of feature keys that were mid-lifecycle at the last
 	// poll, so leaving a phase can be noticed and acted on.
 	inPhase map[string]bool
@@ -76,17 +78,24 @@ type Runner struct {
 	now  func() time.Time
 }
 
+type subscription struct {
+	conn   agent.Conn
+	cancel context.CancelFunc
+}
+
 // NewRunner builds a runner with the default, real data sources.
 func NewRunner(opt Options) *Runner {
 	return &Runner{
-		opt:     opt.withDefaults(),
-		prev:    map[string]Feature{},
-		subs:    map[string]context.CancelFunc{},
-		trigger: make(chan struct{}, 1),
-		git:     newGitCache(),
-		probe:   agent.Probe,
-		load:    loadFeatures,
-		now:     time.Now,
+		opt:         opt.withDefaults(),
+		prev:        map[string]Feature{},
+		connections: map[string]agent.Conn{},
+		dirty:       map[string]bool{},
+		subs:        map[string]subscription{},
+		trigger:     make(chan struct{}, 1),
+		git:         newGitCache(),
+		probe:       agent.Probe,
+		load:        loadFeatures,
+		now:         time.Now,
 	}
 }
 
@@ -116,6 +125,8 @@ func loadFeatures(project string) ([]*state.Feature, error) {
 // that has just launched immediately has something to render rather than a
 // blank widget until the next event.
 func (r *Runner) Run(ctx context.Context, w io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	enc := json.NewEncoder(w)
 
 	// Every snapshot is flushed as it is produced. A buffered writer would
@@ -138,7 +149,7 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 	write(snap)
 
 	emit := func() {
-		if s, changed := r.refresh(ctx); changed {
+		if s, changed := r.refreshSelected(ctx, false); changed {
 			write(s)
 		}
 	}
@@ -165,16 +176,26 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 	defer phase.Stop()
 
 	var debounce <-chan time.Time
+	var lastEventRefresh time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-r.trigger:
 			// Collapse a burst into a single refresh.
-			debounce = time.After(r.opt.Debounce)
+			if debounce == nil {
+				delay := r.opt.Debounce
+				// Bound sustained tool/status traffic, not just individual
+				// bursts. Otherwise a busy agent can keep REST probes hot.
+				if remaining := time.Until(lastEventRefresh.Add(time.Second)); remaining > delay {
+					delay = remaining
+				}
+				debounce = time.After(delay)
+			}
 		case <-debounce:
 			debounce = nil
 			emit()
+			lastEventRefresh = time.Now()
 		case <-phase.C:
 			if s, changed := r.refreshCached(); changed {
 				write(s)
@@ -183,7 +204,9 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 			r.resubscribe(ctx)
 			emit()
 		case <-safety.C:
-			emit()
+			if s, changed := r.refresh(ctx); changed {
+				write(s)
+			}
 		}
 	}
 }
@@ -215,29 +238,32 @@ func (r *Runner) resubscribe(ctx context.Context) {
 			key := f.Key() + "/" + a.Name
 			live[key] = true
 
+			c := agent.Conn{URL: a.URL, Dir: a.Dir}
 			r.mu.Lock()
-			_, watching := r.subs[key]
+			old, watching := r.subs[key]
 			r.mu.Unlock()
-			if watching {
+			if watching && old.conn == c {
 				continue
+			}
+			if watching {
+				old.cancel()
 			}
 
 			sctx, cancel := context.WithCancel(ctx)
 			r.mu.Lock()
-			r.subs[key] = cancel
+			r.subs[key] = subscription{c, cancel}
 			r.mu.Unlock()
 
-			c := agent.Conn{URL: a.URL, Dir: a.Dir}
 			go func() {
-				_ = h.Watch(sctx, c, r.wake)
+				_ = h.Watch(sctx, c, func() { r.wakeAgent(key) })
 			}()
 		}
 	}
 
 	r.mu.Lock()
-	for key, cancel := range r.subs {
+	for key, sub := range r.subs {
 		if !live[key] {
-			cancel()
+			sub.cancel()
 			delete(r.subs, key)
 		}
 	}
@@ -245,6 +271,20 @@ func (r *Runner) resubscribe(ctx context.Context) {
 }
 
 func (r *Runner) wake() {
+	r.mu.Lock()
+	r.dirty["*"] = true
+	r.mu.Unlock()
+	r.notify()
+}
+
+func (r *Runner) wakeAgent(key string) {
+	r.mu.Lock()
+	r.dirty[key] = true
+	r.mu.Unlock()
+	r.notify()
+}
+
+func (r *Runner) notify() {
 	select {
 	case r.trigger <- struct{}{}:
 	default: // a refresh is already pending
@@ -254,12 +294,23 @@ func (r *Runner) wake() {
 // refresh rebuilds the whole view and reports whether it differs from the
 // last one, so identical snapshots are not re-emitted.
 func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
+	return r.refreshSelected(ctx, true)
+}
+
+func (r *Runner) refreshSelected(ctx context.Context, all bool) (Snapshot, bool) {
 	features, err := r.load(r.opt.Project)
 	if err != nil {
 		return Snapshot{Time: r.now()}, false
 	}
 
 	now := r.now()
+	r.mu.Lock()
+	dirty := r.dirty
+	r.dirty = map[string]bool{}
+	cached := r.health
+	r.mu.Unlock()
+	all = all || dirty["*"]
+	nextConnections := map[string]agent.Conn{}
 
 	// Probe agents concurrently: serial HTTP with timeouts would make the
 	// refresh latency scale with the number of features.
@@ -274,6 +325,20 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 				continue
 			}
 			f, a := f, a
+			key := f.Key() + "/" + a.Name
+			conn := agent.Conn{URL: a.URL, Dir: a.Dir}
+			nextConnections[key] = conn
+			if !all && !dirty[key] && r.connections[key] == conn {
+				if h, ok := cached[f.Key()][a.Name]; ok {
+					mu.Lock()
+					if results[f.Key()] == nil {
+						results[f.Key()] = map[string]agent.Health{}
+					}
+					results[f.Key()][a.Name] = h
+					mu.Unlock()
+					continue
+				}
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -288,6 +353,7 @@ func (r *Runner) refresh(ctx context.Context) (Snapshot, bool) {
 		}
 	}
 	wg.Wait()
+	r.connections = nextConnections
 
 	r.mu.Lock()
 	r.health = results
@@ -443,6 +509,7 @@ func sameFeature(a, b Feature) bool {
 	for i := range a.Agents {
 		x, y := a.Agents[i], b.Agents[i]
 		if x.Name != y.Name || x.Status != y.Status || x.Error != y.Error ||
+			x.RecentHistory != y.RecentHistory ||
 			x.Tokens != y.Tokens || x.Cost != y.Cost || x.Model != y.Model ||
 			x.Variant != y.Variant || x.SubAgents != y.SubAgents ||
 			x.LastUser != y.LastUser || x.LastAssistant != y.LastAssistant {

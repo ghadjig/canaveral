@@ -156,38 +156,39 @@ type row struct {
 	Name    string  `json:"name"`
 	// Tool is the agent harness this row's agent runs, e.g. "opencode" or
 	// "claude". Set only on kindAgent rows.
-	Tool        string        `json:"tool,omitempty"`
-	Unit        string        `json:"unit,omitempty"`
-	State       string        `json:"state"`
-	MemBytes    uint64        `json:"mem_bytes,omitempty"`
-	CPUNanos    time.Duration `json:"cpu_nanos,omitempty"`
-	URL         string        `json:"url,omitempty"`
-	Detail      string        `json:"detail,omitempty"`
-	Busy        bool          `json:"busy,omitempty"`
-	AgentState  string        `json:"agent_state,omitempty"`
-	Idle        time.Duration `json:"idle_nanos,omitempty"`
-	Worked      time.Duration `json:"worked_nanos,omitempty"`
-	Working     time.Duration `json:"working_nanos,omitempty"`
-	SincePrompt time.Duration `json:"since_prompt_nanos,omitempty"`
-	Sessions    int           `json:"sessions,omitempty"`
-	TodoTotal   int           `json:"todo_total,omitempty"`
-	TodoDone    int           `json:"todo_done,omitempty"`
-	TodoNow     string        `json:"todo_current,omitempty"`
-	ActTool     string        `json:"activity_tool,omitempty"`
-	ActTitle    string        `json:"activity_title,omitempty"`
-	LastUser    string        `json:"last_user,omitempty"`
-	LastAgent   string        `json:"last_assistant,omitempty"`
-	PendKind    string        `json:"pending_kind,omitempty"`
-	PendHeader  string        `json:"pending_header,omitempty"`
-	PendDetail  string        `json:"pending_detail,omitempty"`
-	PendExtra   string        `json:"pending_extra,omitempty"`
-	Tokens      int64         `json:"tokens,omitempty"`
-	Cost        float64       `json:"cost,omitempty"`
-	Model       string        `json:"model,omitempty"`
-	Variant     string        `json:"variant,omitempty"`
-	Provider    string        `json:"provider,omitempty"`
-	SubAgents   int           `json:"subagents,omitempty"`
-	LastError   string        `json:"last_error,omitempty"`
+	Tool          string        `json:"tool,omitempty"`
+	Unit          string        `json:"unit,omitempty"`
+	State         string        `json:"state"`
+	MemBytes      uint64        `json:"mem_bytes,omitempty"`
+	CPUNanos      time.Duration `json:"cpu_nanos,omitempty"`
+	URL           string        `json:"url,omitempty"`
+	Detail        string        `json:"detail,omitempty"`
+	Busy          bool          `json:"busy,omitempty"`
+	AgentState    string        `json:"agent_state,omitempty"`
+	Idle          time.Duration `json:"idle_nanos,omitempty"`
+	Worked        time.Duration `json:"worked_nanos,omitempty"`
+	RecentHistory bool          `json:"recent_history,omitempty"`
+	Working       time.Duration `json:"working_nanos,omitempty"`
+	SincePrompt   time.Duration `json:"since_prompt_nanos,omitempty"`
+	Sessions      int           `json:"sessions,omitempty"`
+	TodoTotal     int           `json:"todo_total,omitempty"`
+	TodoDone      int           `json:"todo_done,omitempty"`
+	TodoNow       string        `json:"todo_current,omitempty"`
+	ActTool       string        `json:"activity_tool,omitempty"`
+	ActTitle      string        `json:"activity_title,omitempty"`
+	LastUser      string        `json:"last_user,omitempty"`
+	LastAgent     string        `json:"last_assistant,omitempty"`
+	PendKind      string        `json:"pending_kind,omitempty"`
+	PendHeader    string        `json:"pending_header,omitempty"`
+	PendDetail    string        `json:"pending_detail,omitempty"`
+	PendExtra     string        `json:"pending_extra,omitempty"`
+	Tokens        int64         `json:"tokens,omitempty"`
+	Cost          float64       `json:"cost,omitempty"`
+	Model         string        `json:"model,omitempty"`
+	Variant       string        `json:"variant,omitempty"`
+	Provider      string        `json:"provider,omitempty"`
+	SubAgents     int           `json:"subagents,omitempty"`
+	LastError     string        `json:"last_error,omitempty"`
 
 	// Set only on kindBranch rows. Not omitempty: "+0 -0, nothing committed"
 	// is a meaningful answer and must survive the round trip.
@@ -431,6 +432,7 @@ func agentRow(ctx context.Context, f *state.Feature, a state.Agent) row {
 	r.Busy, r.Sessions = h.Busy, h.Sessions
 	r.AgentState = string(h.State)
 	r.Worked, r.Working = h.Worked, h.Working
+	r.RecentHistory = h.RecentHistory
 	r.SincePrompt = h.SincePrompt
 	r.Idle = idleFor(h)
 	r.TodoTotal = h.Todos.Total
@@ -716,6 +718,9 @@ func idleDetail(r row) string {
 func workedDetail(r row) string {
 	if r.Kind != kindAgent || r.Worked <= 0 {
 		return "-"
+	}
+	if r.RecentHistory {
+		return humanDuration(r.Worked) + " (recent)"
 	}
 	return humanDuration(r.Worked)
 }

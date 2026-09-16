@@ -17,7 +17,7 @@ func runWatch(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stderr, "Usage: canaveral watch [flags]\n\n"+
 			"Stream a JSON snapshot of every feature's agent state, one line per\n"+
 			"change, for a status widget to consume. Driven by opencode's event\n"+
-			"stream rather than polling, so it is idle until something happens.\n\nFlags:")
+			"stream with a slow safety refresh; feature rescans reuse cached agent health.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (

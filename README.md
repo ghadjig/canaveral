@@ -1199,6 +1199,13 @@ every few seconds and reads like a command timer without being one. It
 remains available as `working_nanos` in `--json` and `since_prompt_seconds`
 in `canaveral watch`.
 
+OpenCode transcript-derived fields use the latest 16 messages, with a 4 MiB
+response cap, rather than downloading historical tool outputs on every probe.
+For a full recent window, `WORKED` is labelled `(recent)` and JSON includes
+`recent_history: true`: that duration is not a lifetime total. Prompt previews
+and timers are absent when the prompt has fallen outside the window. Token and
+cost totals still come from session summaries and cover the whole family.
+
 ## Watching from a status widget
 
 `canaveral watch` streams one JSON snapshot per line to stdout, emitting only
@@ -1291,8 +1298,11 @@ measured all-zero: "nothing committed yet" is a real answer worth showing.
 working / idle" gauge can tick locally without the stream having to emit on a
 timer. A consumer should render elapsed time itself from `since`.
 
-It is driven by opencode's event stream rather than polling, so it costs
-nothing while nothing is happening. Because which event means what has varied
+It is driven by opencode's event stream, with a slow safety poll while idle.
+Feature discovery (`--rescan`) and git refreshes reuse cached agent health.
+Events refresh only the originating agent, coalesced for 150ms and limited to
+one event-driven refresh per second under sustained activity. Completed message
+previews are cached until a change or a 30-second expiry. Because event shapes vary
 between opencode versions — and whether permissions are ever requested at all
 depends on your own permission config — an event is treated only as
 "something changed, go look"; the authoritative state always comes from

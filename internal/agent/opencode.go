@@ -78,7 +78,18 @@ func (opencode) Watch(ctx context.Context, c Conn, fn func()) error {
 		return ErrNoEvents
 	}
 	return ocevents.Watch(ctx, c.URL, func(ev ocevents.Event) {
-		if relevantEvent(ev.Type) {
+		relevant := relevantEvent(ev.Type)
+		if ev.Type == "message.part.updated" {
+			var payload struct {
+				Part struct {
+					Type string `json:"type"`
+				} `json:"part"`
+			}
+			_ = json.Unmarshal(ev.Payload(), &payload)
+			relevant = payload.Part.Type == "tool"
+		}
+		if relevant {
+			invalidateRecent(c.URL)
 			fn()
 		}
 	})
@@ -100,7 +111,7 @@ func relevantEvent(t string) bool {
 		"permission.v2.asked", "permission.v2.replied",
 		"question.asked", "question.replied", "question.rejected",
 		"question.v2.asked", "question.v2.replied", "question.v2.rejected",
-		"todo.updated",
+		"todo.updated", "message.updated",
 		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
 		"server.connected":
 		return true
@@ -271,7 +282,7 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 	}
 
 	var list sessionListResp
-	if err := getJSON(ctx, baseURL+"/api/session?limit=100&order=desc", &list); err != nil {
+	if err := getJSON(ctx, baseURL+"/api/session?limit=100&order=desc&directory="+url.QueryEscape(dir), &list); err != nil {
 		return Health{Err: err}
 	}
 	// A server that answered is by definition running, so Live and
@@ -316,21 +327,26 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 		h.Cost += x.Cost
 	}
 
-	var msgs []sessionMessage
-	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(newest.ID)+"/message", &msgs); err != nil {
-		h.State = StateIdle
+	msgs, err := recentMessages(ctx, baseURL, newest)
+	if err != nil {
+		// Large or unavailable message previews must not hide live state.
+		h.RecentHistory = true
+		h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, false, nil)
+		h.Busy = h.State == StateBusy || h.State == StateRetrying
+		h.Todos = fetchTodos(ctx, baseURL, newest.ID)
 		return h
 	}
 
 	// Messages drive only the current turn and elapsed work; totals come
 	// from the session list above.
 	//
-	// Worked counts this conversation's turns only. A parent's turn stays
+	// Worked counts this conversation's recent turns only. A parent's turn stays
 	// open while a subagent runs, so its duration already covers that work;
 	// adding the subagents' own turns would double-count it.
 	now := time.Now()
 	turns := scanTurns(msgs, now)
 	h.Worked = turns.worked
+	h.RecentHistory = len(msgs) >= recentMessageLimit
 	h.LastUser = turns.lastUser
 	h.SincePrompt = turns.sincePrompt
 	// Only report what the agent said if it said it *after* the latest
@@ -369,6 +385,7 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 		h.Todos = Todos{}
 	}
 	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, turns.completedByID)
+	h.Busy = h.State == StateBusy || h.State == StateRetrying
 	return h
 }
 
@@ -599,8 +616,16 @@ func classify(ctx context.Context, baseURL, sessionID string, family map[string]
 	if p := pendingPermission(ctx, baseURL, sessionID, family, completedByID); p != nil {
 		return StateWaiting, p
 	}
-	if isRetrying(ctx, baseURL, sessionID) {
-		return StateRetrying, nil
+	var statuses map[string]sessionStatusInfo
+	if getJSON(ctx, baseURL+"/session/status", &statuses) == nil {
+		switch statuses[sessionID].Type {
+		case "retry":
+			return StateRetrying, nil
+		case "busy":
+			return StateBusy, nil
+		case "idle":
+			return StateIdle, nil
+		}
 	}
 	if busy {
 		return StateBusy, nil
@@ -699,21 +724,15 @@ func toolCallStillOpen(ctx context.Context, baseURL, reqSessionID, messageID, ne
 	}
 	if reqSessionID == newestSessionID {
 		done, ok := completedByID[messageID]
-		if !ok {
-			return true
+		if ok {
+			return !done
 		}
-		return !done
 	}
-	var msgs []sessionMessage
-	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(reqSessionID)+"/message", &msgs); err != nil {
+	var msg sessionMessage
+	if err := getBoundedJSON(ctx, baseURL+"/session/"+url.PathEscape(reqSessionID)+"/message/"+url.PathEscape(messageID), &msg); err != nil {
 		return true
 	}
-	for _, m := range msgs {
-		if m.Info.ID == messageID {
-			return m.Info.Time.Completed == nil
-		}
-	}
-	return true
+	return msg.Info.Time.Completed == nil
 }
 
 func getJSON(ctx context.Context, u string, out any) error {

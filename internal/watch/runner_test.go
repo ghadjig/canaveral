@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,91 @@ func testRunner(t *testing.T, features []*state.Feature, probe func(ctx context.
 	r.load = func(string) ([]*state.Feature, error) { return features, nil }
 	r.probe = probe
 	return r
+}
+
+func TestRescansDoNotPollUnchangedAgents(t *testing.T) {
+	var calls atomic.Int32
+	f := feat("quiet", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
+		calls.Add(1)
+		return agent.Health{Reachable: true, State: agent.StateIdle}
+	})
+	r.opt.Rescan = 20 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := r.Run(ctx, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("unchanged agent probed %d times across rescans", n)
+	}
+}
+
+func TestSustainedEventsAreBoundedAndProbesDoNotOverlap(t *testing.T) {
+	var calls, active, maxActive atomic.Int32
+	f := feat("busy", "main")
+	r := testRunner(t, []*state.Feature{f}, func(context.Context, string, agent.Conn) agent.Health {
+		calls.Add(1)
+		n := active.Add(1)
+		if n > maxActive.Load() {
+			maxActive.Store(n)
+		}
+		time.Sleep(30 * time.Millisecond)
+		active.Add(-1)
+		return agent.Health{Reachable: true, State: agent.StateBusy}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.wakeAgent(f.Key() + "/main")
+			}
+		}
+	}()
+	if err := r.Run(ctx, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if calls.Load() != 2 {
+		t.Fatalf("sustained events got %d probes, want initial plus one (no starvation or storm)", calls.Load())
+	}
+	if maxActive.Load() != 1 {
+		t.Fatal("overlapping probes")
+	}
+}
+
+func TestEventOnlyProbesItsAgent(t *testing.T) {
+	a, b := feat("a", "main"), feat("b", "main")
+	a.Agents[0].URL = "http://a.invalid"
+	b.Agents[0].URL = "http://b.invalid"
+	var mu sync.Mutex
+	calls := map[string]int{}
+	r := testRunner(t, []*state.Feature{a, b}, func(_ context.Context, _ string, c agent.Conn) agent.Health {
+		mu.Lock()
+		calls[c.URL]++
+		mu.Unlock()
+		return agent.Health{Reachable: true, State: agent.StateIdle}
+	})
+	_, _ = r.refresh(context.Background())
+	r.wakeAgent(a.Key() + "/main")
+	_, _ = r.refreshSelected(context.Background(), false)
+	if calls[a.Agents[0].URL] != 2 || calls[b.Agents[0].URL] != 1 {
+		t.Fatalf("event fanout: %v", calls)
+	}
+	// A restart onto a different URL must bypass cached health on rescan.
+	b.Agents[0].URL = "http://new.invalid"
+	_, _ = r.refreshSelected(context.Background(), false)
+	if calls[b.Agents[0].URL] != 1 {
+		t.Fatal("changed endpoint not probed")
+	}
 }
 
 func decodeLines(t *testing.T, s string) []Snapshot {

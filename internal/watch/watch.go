@@ -129,8 +129,11 @@ type Agent struct {
 	// Error is the last turn's failure message, when Status is error.
 	Error string `json:"error,omitempty"`
 	// Worked is total generation time in the current session, in seconds,
-	// cumulative across every prompt in it.
+	// cumulative across every prompt unless RecentHistory marks a bounded view.
 	Worked float64 `json:"worked_seconds,omitempty"`
+	// RecentHistory marks bounded transcript timing/previews; cost and tokens
+	// still cover the complete session family.
+	RecentHistory bool `json:"recent_history,omitempty"`
 	// SincePrompt is how long since the user's most recent message, in
 	// seconds — "how long has it been working on what I asked". Unlike the
 	// per-message generation timer, this does not reset on each tool round
@@ -336,6 +339,7 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 			Pending:       h.Pending,
 			Error:         h.LastError,
 			Worked:        h.Worked.Seconds(),
+			RecentHistory: h.RecentHistory,
 			SincePrompt:   h.SincePrompt.Seconds(),
 		}
 		if h.Todos.Total > 0 {

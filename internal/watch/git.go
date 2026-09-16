@@ -134,7 +134,7 @@ func (r *Runner) runGit(ctx context.Context) {
 			return
 		}
 		if r.git.refresh(ctx, features) {
-			r.wake()
+			r.notify()
 		}
 	}
 
