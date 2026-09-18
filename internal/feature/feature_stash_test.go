@@ -12,6 +12,7 @@ import (
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/unit"
+	"github.com/bandito/canaveral/internal/worktree"
 )
 
 // requireSystemd skips a test that reaches Stash, which refuses to run
@@ -132,6 +133,62 @@ func TestPopReportsAnUnknownNameAsNotFound(t *testing.T) {
 	_, err := Pop(context.Background(), m, "never-stashed", Options{}, quietReporter{})
 	if !errors.Is(err, state.ErrNotFound) {
 		t.Errorf("Pop = %v, want ErrNotFound so the CLI can list what is stashed", err)
+	}
+}
+
+func TestPopHeadlessClearsStashedWindowDeclarations(t *testing.T) {
+	for _, failPrecheck := range []bool{false, true} {
+		t.Run(map[bool]string{false: "restored", true: "precheck failure"}[failPrecheck], func(t *testing.T) {
+			f := gitFeature(t, false)
+			t.Setenv("CANAVERAL_ROOT", "")
+			t.Setenv("CANAVERAL_FEATURE", "")
+			t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "")
+			bin := t.TempDir()
+			for _, name := range []string{"systemctl", "systemd-run"} {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			ctx := context.Background()
+			if _, err := worktree.Ensure(ctx, f.Root, f.Worktree, f.Branch, ""); err != nil {
+				t.Fatal(err)
+			}
+			f.WSlot = 5
+			f.Windows = []state.Window{{Name: "terminal", Class: "old-terminal"}}
+			f.Agents = []state.Agent{{Name: "main", Tool: "opencode"}}
+			session := filepath.Join(f.Worktree, ".loop-session")
+			if err := os.WriteFile(session, []byte("ses_report24"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.SaveStash(&state.Stash{Feature: f, StashedAt: time.Now(), Sessions: map[string]string{"main": "ses_report24"}}); err != nil {
+				t.Fatal(err)
+			}
+			m := &manifest.Manifest{Name: f.Project, Root: f.Root, Toolchain: "none"}
+			if failPrecheck {
+				m.Precheck = "exit 1"
+			}
+			res, err := Pop(ctx, m, f.Name, Options{NoWindows: true, NoServices: true, NoAgents: true}, quietReporter{})
+			if (err != nil) != failPrecheck {
+				t.Fatalf("Pop error = %v, want failure %v", err, failPrecheck)
+			}
+			if !failPrecheck && !res.Restored {
+				t.Fatal("Pop did not report restoration")
+			}
+			saved, err := state.Load(f.Project, f.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !saved.Headless() || saved.WSlot != 0 {
+				t.Fatalf("restored worker has windows=%v slot=%d", saved.Windows, saved.WSlot)
+			}
+			if saved.Worktree != f.Worktree || saved.Branch != f.Branch || len(saved.Agents) != 1 {
+				t.Fatalf("restoration changed the worker: %+v", saved)
+			}
+			if data, err := os.ReadFile(session); err != nil || string(data) != "ses_report24" {
+				t.Fatalf("saved session = %q, %v", data, err)
+			}
+		})
 	}
 }
 

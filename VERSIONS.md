@@ -12,6 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Restoring a stashed feature with `pop --no-windows` (or `new --no-windows`)
+  clears its old window declarations and sidebar slot. Background workers no
+  longer reappear as numbered desktop features after restoration; their
+  worktree, branch and agent session are preserved.
+
 ## v0.11.0 — 2026-09-16
 
 **Fixed**

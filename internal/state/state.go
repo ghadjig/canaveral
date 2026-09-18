@@ -232,8 +232,8 @@ func (f *Feature) Key() string {
 // with --no-windows, or from a manifest that declares none. Such a feature is
 // a background worker: an agent and its services, with nothing on screen.
 //
-// Windows is written only by reconcileWindows, which --no-windows skips
-// entirely, and it records the DECLARED windows rather than the open ones.
+// Windows records the DECLARED windows rather than the open ones.
+// reconcileWindows writes it; a headless Pop clears the stashed declarations.
 // Closing a feature's windows therefore does not make it headless, which is
 // what makes this stable enough to allocate slots from: `canaveral status`
 // counts how many of these are currently open as a separate question.

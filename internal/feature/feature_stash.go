@@ -148,6 +148,14 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 	}
 
 	f := s.Feature
+	if opt.NoWindows {
+		// Stash already closed these windows. Restoring their declarations
+		// without opening them would classify a background worker as a desktop
+		// feature and reserve a numbered sidebar slot. Clear before publishing
+		// the active record, including when reconciliation later fails.
+		f.Windows = nil
+		f.WSlot = 0
+	}
 	// A stash's whole value is that the worktree was left alone, so say so
 	// when it is not there any more: something outside canaveral deleted it,
 	// and Reconcile is about to rebuild it from the branch. The committed
