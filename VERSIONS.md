@@ -12,6 +12,21 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.11.3 — 2026-09-19
+
+**Fixed**
+
+- `canaveral path` with no argument no longer answers with a space just
+  because you are standing in its directory. A space has no checkout, so its
+  worktree is merely the directory it works in — not an exclusive claim the
+  way a real worktree is, and very often `$HOME`, where every shell starts
+  when it was told nothing at all. That match used to outrank both
+  `$CANAVERAL_FEATURE` and the focused workspace, so one such space answered
+  "where am I" for every fresh terminal on the machine: opening a terminal in
+  a featurespace and running the documented `cv` helper left you in `$HOME`.
+  A checkout still wins outright; a space is now consulted only once the
+  signals that name a workspace directly have both come up empty.
+
 ## v0.11.2 — 2026-09-19
 
 **Fixed**
