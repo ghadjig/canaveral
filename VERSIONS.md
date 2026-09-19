@@ -12,6 +12,20 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.11.2 — 2026-09-19
+
+**Fixed**
+
+- The `cv` shell helper documented in the README no longer jumps out of the
+  feature you are standing in. Its no-argument form asked `canaveral path`
+  first, which does not fail outside a feature — it falls through to the
+  focused Hyprland workspace, so a bare `cv` could land you in whatever
+  feature or space you happened to be looking at rather than at the root of
+  your own checkout. It now uses `git rev-parse --show-toplevel`, which is
+  already that answer (the worktree root inside a linked worktree, the main
+  checkout otherwise), and keeps `canaveral path` as the fallback for
+  somewhere git cannot answer at all.
+
 ## v0.11.1 — 2026-09-18
 
 **Fixed**
