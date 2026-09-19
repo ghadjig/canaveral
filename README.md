@@ -765,9 +765,17 @@ cv() {
         # Bare `cv` goes to the root of wherever you are: the worktree of the
         # feature you're in, or the project's main checkout if you're not in
         # one. Both are "up and out of here", which is the only thing anyone
-        # means by it.
-        d=$(canaveral path 2>/dev/null) ||
-            d=$(dirname "$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)") ||
+        # means by it — and `git rev-parse --show-toplevel` is already exactly
+        # that answer, worktree root included.
+        #
+        # `canaveral path` is the fallback rather than the first choice,
+        # because with no argument it does not fail outside a feature: it
+        # falls through to the focused Hyprland workspace, which may well be
+        # some other feature, or a space with no project at all. That is the
+        # right signal for `canaveral path`, and the wrong one for "where am
+        # I standing".
+        d=$(git rev-parse --show-toplevel 2>/dev/null) ||
+            d=$(canaveral path 2>/dev/null) ||
             return
     fi
     cd "$d"
