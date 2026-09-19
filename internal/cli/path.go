@@ -113,14 +113,30 @@ func currentFeature(m *manifest.Manifest) (*state.Feature, error) {
 // directory belonging to no project at all. The workspace name carries the
 // project, and the registry turns that into a checkout.
 func focusedFeature(ctx context.Context) (*state.Feature, error) {
-	if f := featureFromDir(""); f != nil {
-		return f, nil
+	// A checkout contains you exclusively — no other feature can claim that
+	// directory — so it outranks everything else.
+	//
+	// A space's directory does not work like that. It is wherever that
+	// workspace happens to do its work, it is shared with anything else that
+	// picks the same place, and in practice it is very often $HOME: the
+	// directory every shell starts in when it was told nothing at all. Taking
+	// that as "you are in this space" would let one such space answer for
+	// every fresh terminal on the machine, ahead of the environment canaveral
+	// itself exported and ahead of the workspace actually on screen. So a
+	// space match is held back as a last resort, below the two signals that
+	// name a workspace outright.
+	dir := featureFromDir("")
+	if dir != nil && !dir.Space {
+		return dir, nil
 	}
 	if f := featureFromEnv(); f != nil {
 		return f, nil
 	}
 	if f := featureFromWorkspace(ctx); f != nil {
 		return f, nil
+	}
+	if dir != nil {
+		return dir, nil
 	}
 	return nil, fmt.Errorf("not in a feature (no worktree in the working directory, no $CANAVERAL_FEATURE, no feature workspace focused)")
 }

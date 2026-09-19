@@ -195,3 +195,78 @@ func TestFeatureFromArgsWrapsAnUnknownName(t *testing.T) {
 		t.Errorf("err = %v, want it to name the feature that could not be loaded", err)
 	}
 }
+
+// saveSpace records a space — a workspace with no checkout behind it, whose
+// "worktree" is just the directory it works in.
+func saveSpace(t *testing.T, name, dir string) *state.Feature {
+	t.Helper()
+	f := &state.Feature{Project: name, Name: name, Worktree: dir, Space: true}
+	if err := state.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestFocusedFeaturePrefersTheEnvironmentOverASpaceDirectory(t *testing.T) {
+	isolateDirs(t)
+	clearFeatureEnv(t)
+	feat := saveFeature(t, "canaveral", "global/work")
+
+	// A space's directory is not an exclusive claim the way a checkout is:
+	// spaces commonly sit in $HOME, which is where every shell starts when it
+	// was told nothing at all. Letting that outrank the environment canaveral
+	// itself exported meant one such space answered "where am I" for every
+	// fresh terminal on the machine.
+	home := t.TempDir()
+	saveSpace(t, "3d", home)
+	t.Chdir(home)
+	t.Setenv("CANAVERAL_PROJECT", "canaveral")
+	t.Setenv("CANAVERAL_FEATURE", "global/work")
+
+	got, err := focusedFeature(t.Context())
+	if err != nil {
+		t.Fatalf("focusedFeature: %v", err)
+	}
+	if got.Name != feat.Name {
+		t.Errorf("feature = %q, want %q — the space hijacked the answer", got.Name, feat.Name)
+	}
+}
+
+func TestFocusedFeatureStillAnswersWithASpaceWhenNothingElseDoes(t *testing.T) {
+	isolateDirs(t)
+	clearFeatureEnv(t)
+
+	// Held back, not discarded: standing in a space's own directory with no
+	// environment and no workspace to go on, the space is the only answer
+	// there is.
+	home := t.TempDir()
+	space := saveSpace(t, "3d", home)
+	t.Chdir(home)
+
+	got, err := focusedFeature(t.Context())
+	if err != nil {
+		t.Fatalf("focusedFeature: %v", err)
+	}
+	if got.Name != space.Name {
+		t.Errorf("feature = %q, want the space %q", got.Name, space.Name)
+	}
+}
+
+func TestFocusedFeaturePrefersARealWorktreeOverASpace(t *testing.T) {
+	isolateDirs(t)
+	clearFeatureEnv(t)
+
+	// A checkout contains you exclusively, so it keeps winning outright —
+	// the space ordering must not have cost the directory its precedence.
+	feat := saveFeature(t, "norules", "in-dir")
+	saveSpace(t, "3d", filepath.Dir(feat.Worktree))
+	t.Chdir(feat.Worktree)
+
+	got, err := focusedFeature(t.Context())
+	if err != nil {
+		t.Fatalf("focusedFeature: %v", err)
+	}
+	if got.Name != "in-dir" {
+		t.Errorf("feature = %q, want in-dir", got.Name)
+	}
+}
