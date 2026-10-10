@@ -259,6 +259,50 @@ func Prune(ctx context.Context, repo string) error {
 	return exec.CommandContext(ctx, "git", "-C", repo, "worktree", "prune").Run()
 }
 
+// Linked is one working tree as git reports it.
+type Linked struct {
+	Path string
+	// Branch is the short branch name, empty for a detached HEAD.
+	Branch string
+	// Prunable marks a worktree whose directory is gone; git still holds
+	// its administrative files until `git worktree prune`.
+	Prunable bool
+}
+
+// List returns every working tree of the repository dir belongs to, the main
+// checkout first, exactly as `git worktree list` orders them.
+func List(ctx context.Context, dir string) ([]Linked, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees of %s: %w", dir, err)
+	}
+	return parseWorktreeList(string(out)), nil
+}
+
+// parseWorktreeList reads `git worktree list --porcelain`: blank-line
+// separated records of "key value" lines, each starting with "worktree".
+func parseWorktreeList(s string) []Linked {
+	var out []Linked
+	var cur *Linked
+	for _, line := range strings.Split(s, "\n") {
+		key, val, _ := strings.Cut(line, " ")
+		switch key {
+		case "worktree":
+			out = append(out, Linked{Path: val})
+			cur = &out[len(out)-1]
+		case "branch":
+			if cur != nil {
+				cur.Branch = strings.TrimPrefix(val, "refs/heads/")
+			}
+		case "prunable":
+			if cur != nil {
+				cur.Prunable = true
+			}
+		}
+	}
+	return out
+}
+
 func branchExists(ctx context.Context, repo, branch string) bool {
 	return exec.CommandContext(ctx, "git", "-C", repo,
 		"show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil

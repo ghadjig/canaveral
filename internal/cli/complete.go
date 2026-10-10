@@ -11,6 +11,7 @@ import (
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/launcherhistory"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/skills"
 	"github.com/bandito/canaveral/internal/space"
@@ -34,6 +35,10 @@ const (
 	// windows and all, where a feature candidate merely focuses one that is
 	// already there.
 	candStash = "stash"
+	// candDormant is a worktree on disk with no record behind it. Its own
+	// kind rather than candStash, because waking one brings back the work
+	// but not the agent's conversation, which nothing remembered.
+	candDormant = "dormant"
 	// candNew is the candidate that creates something that does not exist yet.
 	// It is the whole reason the launcher exists, and it has to be visible
 	// rather than implied: bare dispatch will happily create a feature from a
@@ -563,8 +568,9 @@ func completeArgs(m *manifest.Manifest, done []string, prefix string) completion
 // completeFirstWord offers commands and existing features together, because
 // the first word can be either: `canaveral rm` is a command and
 // `canaveral small-fixes` is a feature, and the user has not decided which they
-// are typing yet. Stashed features are offered alongside the live ones,
-// because bare dispatch restores one — see openFeature.
+// are typing yet. Stashed features and dormant worktrees are offered
+// alongside the live ones, because bare dispatch wakes either — see
+// openFeature.
 //
 // It does NOT offer to create anything. Bare dispatch only opens features that
 // already exist — a mistyped command must fail rather than quietly build a
@@ -576,7 +582,7 @@ func completeFirstWord(m *manifest.Manifest, prefix string) completion {
 		all = append(all, candidate{Value: c.name, Kind: candCommand, Desc: c.summary})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
-	all = append(all, featureCandidates(m, prefix, scopeRestorable)...)
+	all = append(all, featureCandidates(m, prefix, scopeWakeable)...)
 	// Spaces are offered here too, because bare dispatch opens one: they are
 	// reachable from anywhere, and anywhere includes a project's checkout.
 	all = append(all, spaceCandidates()...)
@@ -616,9 +622,14 @@ const (
 	// `new` restores those rather than refusing them.
 	scopeCreate
 	// scopeRestorable offers both trees at once, for the positions that act
-	// on a workspace whether or not it happens to be running: bare dispatch,
-	// which pops a stash, and `rm`, which discards one.
+	// on a workspace whether or not it happens to be running: `rm`, which
+	// discards a stash as readily as a running feature.
 	scopeRestorable
+	// scopeWakeable is scopeRestorable plus dormant worktrees, for bare
+	// dispatch, which is the one position that can wake every kind of
+	// parked workspace. Not `rm`: a dormant worktree has no record for it
+	// to tear down, so offering one there would be offering an error.
+	scopeWakeable
 )
 
 // featureCandidates lists a project's features one path segment at a time.
@@ -668,6 +679,27 @@ func featureCandidates(m *manifest.Manifest, prefix string, scope featureScope) 
 		ns.note(n)
 	}
 
+	// Same again for dormant worktrees, which cost a `git worktree list` —
+	// cheap enough per keystroke, but only paid where a dormant name could
+	// actually be used.
+	dormant := map[string]parked.Workspace{}
+	var dormantLeaves []string
+	if scope == scopeWakeable || scope == scopeCreate {
+		ds, _ := parked.Dormants(context.Background(), m)
+		var dnames []string
+		for _, d := range ds {
+			dormant[d.Name] = d
+			dnames = append(dnames, d.Name)
+		}
+		var dNs *nsBucket
+		var dExact bool
+		dormantLeaves, dNs, dExact = partitionByNamespace(dnames, prefix, base)
+		exact = exact || dExact
+		for _, n := range dNs.order {
+			ns.note(n)
+		}
+	}
+
 	var out []candidate
 	if scope == scopeCreate {
 		// Namespaces survive, the features inside them do not.
@@ -681,6 +713,9 @@ func featureCandidates(m *manifest.Manifest, prefix string, scope featureScope) 
 	// back, then where else to look.
 	for _, n := range stashLeaves {
 		out = append(out, candidate{Value: n, Kind: candStash, Desc: stashDesc(stashes[n])})
+	}
+	for _, n := range dormantLeaves {
+		out = append(out, candidate{Value: n, Kind: candDormant, Desc: dormantDesc(dormant[n])})
 	}
 
 	// These land after the namespaces that still have features in them,
@@ -696,7 +731,11 @@ func featureCandidates(m *manifest.Manifest, prefix string, scope featureScope) 
 	}
 
 	if scope == scopeCreate && !exact {
-		if c, ok := newFeatureCandidate(prefix, base, records, stashes); ok {
+		taken := func(n string) bool {
+			_, d := dormant[n]
+			return records[n] != nil || stashes[n] != nil || d
+		}
+		if c, ok := newFeatureCandidate(prefix, base, taken); ok {
 			out = append(out, c)
 		}
 	}
@@ -730,6 +769,17 @@ func stashDesc(s *state.Stash) string {
 	parts := []string{"stashed " + humanAgo(s.StashedAt)}
 	if b := s.Feature.Branch; b != "" && b != s.Feature.Name {
 		parts = append(parts, b)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// dormantDesc describes a dormant worktree the way stashDesc describes a
+// stash: by when it was last touched, plus its branch when that says more
+// than the name already does.
+func dormantDesc(d parked.Workspace) string {
+	parts := []string{"worktree, touched " + humanAgo(d.Since)}
+	if d.Branch != "" && d.Branch != d.Name {
+		parts = append(parts, d.Branch)
 	}
 	return strings.Join(parts, "  ")
 }
@@ -810,9 +860,9 @@ func namespacesFromSkills(project, base string, b *nsBucket) {
 }
 
 // newFeatureCandidate offers to create prefix as a new feature, when it
-// does not already name one — in either tree — and genuinely extends what is
-// settled.
-func newFeatureCandidate(prefix, base string, records map[string]*state.Feature, stashes map[string]*state.Stash) (candidate, bool) {
+// does not already name one — running, stashed or dormant, which taken
+// answers — and genuinely extends what is settled.
+func newFeatureCandidate(prefix, base string, taken func(string) bool) (candidate, bool) {
 	// Slugged, because that is the name that will actually be created — a
 	// launcher that shows "My Feature" and produces "my-feature" is lying
 	// about what Enter does.
@@ -824,7 +874,7 @@ func newFeatureCandidate(prefix, base string, records map[string]*state.Feature,
 	// someone who just typed a separator is asking for.
 	slug := feature.Slug(prefix)
 	if len(slug) > len(base) && strings.HasPrefix(slug, base) && !reserved()[slug] &&
-		records[slug] == nil && stashes[slug] == nil {
+		!taken(slug) {
 		return candidate{Value: slug, Kind: candNew, Desc: "create this feature"}, true
 	}
 	return candidate{}, false

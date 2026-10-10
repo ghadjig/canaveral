@@ -11,6 +11,7 @@ import (
 
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -168,22 +169,37 @@ func printStashSummary(s *state.Stash) {
 	fmt.Printf("    %s %s\n", dim("restore "), "canaveral pop "+f.Name)
 }
 
-// printStashes lists a project's stashes under the `ls` table.
+// printParked lists the workspaces under the `ls` table that are not running
+// but could be: stashes and dormant worktrees.
 //
-// A separate block rather than extra rows: a stash has no running services,
-// no open windows and no ports to report, so four of the table's six columns
-// would be dashes, and a reader scanning for what is actually up would have
-// to check a status column on every row to tell the two apart.
-func printStashes(stashes []*state.Stash) {
-	if len(stashes) == 0 {
+// A separate block rather than extra rows: a parked workspace has no running
+// services, no open windows and no ports to report, so four of the table's
+// six columns would be dashes, and a reader scanning for what is actually up
+// would have to check a status column on every row to tell the two apart.
+//
+// One block for both kinds, because the same command wakes either — bare
+// dispatch pops a stash and adopts a dormant worktree — and STATE says which
+// of them will come back with its agent's conversation.
+func printParked(ws []parked.Workspace, withProject bool) {
+	if len(ws) == 0 {
 		return
 	}
-	fmt.Printf("\n%s\n", dim(plural(len(stashes), "stashed feature")+" — restore with `canaveral pop <feature>`"))
+	hint := "canaveral <feature>"
+	if withProject {
+		hint = "canaveral -C <project> <feature>"
+	}
+	fmt.Printf("\n%s\n", dim(plural(len(ws), "parked workspace")+" — wake with `"+hint+"`"))
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "%s\t%s\t%s\n", "FEATURE", "BRANCH", "STASHED")
-	for _, s := range stashes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n",
-			s.Feature.Name, shorten(s.Feature.Branch, 28), humanAgo(s.StashedAt))
+	if withProject {
+		fmt.Fprint(tw, "PROJECT\t")
+	}
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", "FEATURE", "BRANCH", "STATE", "SINCE")
+	for _, w := range ws {
+		if withProject {
+			fmt.Fprintf(tw, "%s\t", w.Project)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+			w.Name, shorten(w.Branch, 28), w.Kind, humanAgo(w.Since))
 	}
 	tw.Flush()
 }

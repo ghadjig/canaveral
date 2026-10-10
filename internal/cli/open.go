@@ -14,6 +14,7 @@ import (
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/registry"
 	"github.com/bandito/canaveral/internal/space"
 	"github.com/bandito/canaveral/internal/state"
@@ -186,6 +187,25 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 	// state file must not look like a free name, or `new` would allocate a
 	// fresh slot over the top of a feature that still has units running.
 	_, loadErr := state.Load(m.Name, name)
+
+	// A worktree on disk with no record is woken, by both verbs, for the
+	// same reason a stash is restored: it is the workspace, waiting. Bare
+	// dispatch earns this despite never creating anything, because nothing
+	// here is created — the work already exists, and a typo cannot name a
+	// directory that happens to hold a checkout. `new` needs it more: left
+	// to itself it would adopt the worktree only while its branch still
+	// matches the manifest's template, and refuse otherwise.
+	if errors.Is(loadErr, state.ErrNotFound) && !scratch {
+		if d, ok := parked.FindDormant(ctx, m, name); ok {
+			r.Step("waking %s  %s", color(cBold, d.Key), color(cDim, homeTilde(d.Worktree)))
+			opt.Adopt = d.Worktree
+			res, err := feature.Reconcile(ctx, m, name, opt, r)
+			if err != nil {
+				return err
+			}
+			return reportFeature(ctx, res, r, *focus && !*noWindows)
+		}
+	}
 	if err := checkFeatureExistence(loadErr, create, m.Name, name); err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/hypr"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/unit"
 	"github.com/bandito/canaveral/internal/worktree"
@@ -29,39 +30,45 @@ func runLs(ctx context.Context, args []string) error {
 	}
 
 	var features []*state.Feature
-	var stashes []*state.Stash
+	var waiting []parked.Workspace
 	var err error
 	if *all {
 		features, err = state.LoadAll()
-		stashes, _ = state.LoadAllStashes()
+		if !*names {
+			waiting, _ = parked.All(ctx)
+		}
 	} else {
 		m, mErr := loadManifest()
 		if mErr != nil {
 			return mErr
 		}
 		features, err = state.LoadProject(m.Name)
-		stashes, _ = state.LoadStashes(m.Name)
+		if !*names {
+			// Partial is fine: a project whose worktrees git cannot list
+			// still has stashes worth showing.
+			waiting, _ = parked.Project(ctx, m)
+		}
 	}
 	if err != nil {
 		return err
 	}
 	if *names {
-		// Stashes are deliberately absent here. --names feeds shell
-		// completion and scripts that act on running features, and a name
-		// that has no ports, no units and no windows behind it would break
-		// every one of them.
+		// Parked workspaces are deliberately absent here. --names feeds
+		// shell completion and scripts that act on running features, and a
+		// name that has no ports, no units and no windows behind it would
+		// break every one of them.
 		for _, f := range features {
 			fmt.Println(f.Name)
 		}
 		return nil
 	}
 	if len(features) == 0 {
-		if len(stashes) == 0 {
+		if len(waiting) == 0 {
 			fmt.Println("no features yet — create one with `canaveral new <feature>`")
 			return nil
 		}
 		fmt.Println("nothing running")
-		printStashes(stashes)
+		printParked(waiting, *all)
 		return nil
 	}
 
@@ -72,6 +79,13 @@ func runLs(ctx context.Context, args []string) error {
 	// column's computed width and pushes every later column out of
 	// alignment with its header — see printStatus below for the version of
 	// this bug that motivated the fix.
+	//
+	// PROJECT only under --all: a feature name is only unique within its
+	// project, and across several of them the bare name no longer says
+	// which one a row is, nor which -C reaches it.
+	if *all {
+		fmt.Fprint(tw, "PROJECT\t")
+	}
 	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 		"FEATURE", "BRANCH", "PORTS", "SVC", "WINDOWS", "AGE")
 	for _, f := range features {
@@ -82,6 +96,13 @@ func runLs(ctx context.Context, args []string) error {
 			}
 		}
 		openWindows := countOpenWindows(ctx, f)
+		if *all {
+			project := f.Project
+			if f.Space {
+				project = "-"
+			}
+			fmt.Fprintf(tw, "%s\t", project)
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%s\t%s\n",
 			f.Name, shorten(f.Branch, 28), portSummary(f.Ports),
 			live, len(f.Services), openWindows, humanAgo(f.CreatedAt))
@@ -89,7 +110,7 @@ func runLs(ctx context.Context, args []string) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	printStashes(stashes)
+	printParked(waiting, *all)
 	return nil
 }
 

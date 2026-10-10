@@ -916,3 +916,25 @@ func TestIsDirtyStillMatchesAProvisionedPathThatIsGone(t *testing.T) {
 		t.Error("a clean worktree reported dirty because an ignore entry could not be resolved")
 	}
 }
+
+func TestParseWorktreeList(t *testing.T) {
+	in := "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
+		"worktree /repo/worktrees/ns/a\nHEAD def\nbranch refs/heads/ns/a\n\n" +
+		"worktree /repo/worktrees/d\nHEAD 123\ndetached\n\n" +
+		"worktree /repo/worktrees/gone\nHEAD 456\nbranch refs/heads/gone\nprunable gitdir file points to non-existent location\n\n"
+	got := parseWorktreeList(in)
+	want := []Linked{
+		{Path: "/repo", Branch: "main"},
+		{Path: "/repo/worktrees/ns/a", Branch: "ns/a"},
+		{Path: "/repo/worktrees/d"},
+		{Path: "/repo/worktrees/gone", Branch: "gone", Prunable: true},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d worktrees, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("worktree %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

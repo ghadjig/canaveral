@@ -59,6 +59,14 @@ type Options struct {
 	// should reopen instead of starting a fresh conversation. Set by Pop
 	// from the stash record; nil everywhere else.
 	Resume map[string]string
+	// Adopt is the path of an existing worktree that has no canaveral record
+	// — a dormant one — for a pass that creates the record to take over.
+	// The record takes the worktree's path and checked-out branch as they
+	// are instead of deriving them from the manifest: the branch template
+	// may have changed since the worktree was made, or never produced it,
+	// and refusing over a mismatch would leave work on disk that no command
+	// could open. Ignored when the feature already has a record.
+	Adopt string
 }
 
 // Result summarises what a reconcile pass changed.
@@ -193,6 +201,13 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 			return nil, fmt.Errorf("scratch feature %q already exists", name)
 		}
 		f.Scratch = true
+	}
+	if created && opt.Adopt != "" && !opt.Scratch {
+		branch, err := worktree.CurrentBranch(ctx, opt.Adopt)
+		if err != nil {
+			return nil, err
+		}
+		f.Worktree, f.Branch = opt.Adopt, branch
 	}
 	res := &Result{Feature: f, Created: created}
 

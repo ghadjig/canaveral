@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -75,7 +76,16 @@ type Runner struct {
 	probe func(ctx context.Context, tool string, c agent.Conn) agent.Health
 	// load is swappable for the same reason.
 	load func(project string) ([]*state.Feature, error)
-	now  func() time.Time
+	// loadParked lists stashed and dormant workspaces. Swappable for the
+	// same reason as load, and slow enough — a `git worktree list` per
+	// project — that it runs on the rescan ticker rather than every rebuild.
+	loadParked func(ctx context.Context, project string) ([]parked.Workspace, error)
+	now        func() time.Time
+
+	// parked is the last parked list loaded; prevParked is the one the last
+	// emitted snapshot carried, so a change to it alone is still emitted.
+	parked     []parked.Workspace
+	prevParked []parked.Workspace
 }
 
 type subscription struct {
@@ -95,6 +105,7 @@ func NewRunner(opt Options) *Runner {
 		git:         newGitCache(),
 		probe:       agent.Probe,
 		load:        loadFeatures,
+		loadParked:  parked.ForProject,
 		now:         time.Now,
 	}
 }
@@ -144,6 +155,7 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 	}
 
 	r.resubscribe(ctx)
+	r.refreshParked(ctx)
 	go r.runGit(ctx)
 	snap, _ := r.refresh(ctx)
 	write(snap)
@@ -202,6 +214,7 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 			}
 		case <-rescan.C:
 			r.resubscribe(ctx)
+			r.refreshParked(ctx)
 			emit()
 		case <-safety.C:
 			if s, changed := r.refresh(ctx); changed {
@@ -209,6 +222,19 @@ func (r *Runner) Run(ctx context.Context, w io.Writer) error {
 			}
 		}
 	}
+}
+
+// refreshParked reloads the parked list. A failure keeps the previous one:
+// a transient git error must not make every parked workspace vanish from a
+// widget and reappear three seconds later.
+func (r *Runner) refreshParked(ctx context.Context) {
+	ws, err := r.loadParked(ctx, r.opt.Project)
+	if err != nil && len(ws) == 0 {
+		return
+	}
+	r.mu.Lock()
+	r.parked = ws
+	r.mu.Unlock()
 }
 
 // phaseRescan is how often state is re-read for lifecycle progress. Fast
@@ -430,11 +456,15 @@ func (r *Runner) rebuild(features []*state.Feature,
 		next[f.Key()] = v
 		built = append(built, v)
 	}
-	changed := !sameView(r.prev, next)
+	changed := !sameView(r.prev, next) || !sameParked(r.prevParked, r.parked)
 	r.prev = next
+	parkedNow := r.parked
+	r.prevParked = parkedNow
 	r.mu.Unlock()
 
-	return Summarise(built, now), changed
+	snap := Summarise(built, now)
+	snap.Parked = parkedNow
+	return snap, changed
 }
 
 // sameView compares two views ignoring fields that change on every rebuild
@@ -447,6 +477,20 @@ func sameView(a, b map[string]Feature) bool {
 	for k, av := range a {
 		bv, ok := b[k]
 		if !ok || !sameFeature(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameParked compares parked lists by what a widget would render.
+func sameParked(a, b []parked.Workspace) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.Key != y.Key || x.Kind != y.Kind || x.Branch != y.Branch || !x.Since.Equal(y.Since) {
 			return false
 		}
 	}
