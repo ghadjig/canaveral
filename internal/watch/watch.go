@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -239,6 +240,14 @@ type Snapshot struct {
 	Time     time.Time `json:"time"`
 	Features []Feature `json:"features"`
 	Summary  Summary   `json:"summary"`
+	// Parked lists workspaces that are not running but could be woken —
+	// stashed features and dormant worktrees — most recently parked first.
+	// Kept apart from Features, and out of Summary, for the reason stashes
+	// live in their own state tree: nothing parked has an agent, a status or
+	// a slot, and every consumer counting features would otherwise have to
+	// learn to skip them. Refreshed on the rescan interval, so a stash shows
+	// up here a few seconds after its row leaves Features.
+	Parked []parked.Workspace `json:"parked,omitempty"`
 }
 
 // Summary is the aggregate a compact widget can render without walking the

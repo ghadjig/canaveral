@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
+	"github.com/bandito/canaveral/internal/parked"
 	"github.com/bandito/canaveral/internal/state"
 )
 
@@ -21,8 +22,46 @@ func testRunner(t *testing.T, features []*state.Feature, probe func(ctx context.
 	t.Helper()
 	r := NewRunner(Options{Debounce: 10 * time.Millisecond, Rescan: time.Hour, Safety: time.Hour})
 	r.load = func(string) ([]*state.Feature, error) { return features, nil }
+	r.loadParked = func(context.Context, string) ([]parked.Workspace, error) { return nil, nil }
 	r.probe = probe
 	return r
+}
+
+// A workspace being parked changes nothing in Features once its row has
+// gone, so the parked list has to count as a change on its own — otherwise
+// a stash would vanish from a widget and never reappear under "parked".
+func TestParkedChangeAloneIsEmitted(t *testing.T) {
+	r := testRunner(t, nil, nil)
+	ctx := context.Background()
+	r.refreshCached() // settle the first view
+	if _, changed := r.refreshCached(); changed {
+		t.Fatal("an unchanged world reported a change")
+	}
+
+	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	r.loadParked = func(context.Context, string) ([]parked.Workspace, error) {
+		return []parked.Workspace{{Project: "p", Name: "x", Key: "p/x", Kind: parked.Stashed, Since: since}}, nil
+	}
+	r.refreshParked(ctx)
+	snap, changed := r.refreshCached()
+	if !changed {
+		t.Fatal("a newly parked workspace did not count as a change")
+	}
+	if len(snap.Parked) != 1 || snap.Parked[0].Key != "p/x" {
+		t.Fatalf("snapshot parked = %+v, want p/x", snap.Parked)
+	}
+	if _, changed := r.refreshCached(); changed {
+		t.Fatal("the same parked list reported a change twice")
+	}
+
+	// A failed load keeps what was there rather than blanking it.
+	r.loadParked = func(context.Context, string) ([]parked.Workspace, error) {
+		return nil, context.DeadlineExceeded
+	}
+	r.refreshParked(ctx)
+	if snap, _ := r.refreshCached(); len(snap.Parked) != 1 {
+		t.Fatalf("a failed reload dropped the parked list: %+v", snap.Parked)
+	}
 }
 
 func TestRescansDoNotPollUnchangedAgents(t *testing.T) {

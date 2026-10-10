@@ -193,6 +193,47 @@ separate block below the table rather than as rows with four empty columns.
 worktree and a branch just as an active feature does — stashing something
 must not be a way to make it undeletable.
 
+### Dormant worktrees
+
+A worktree can also outlive its record entirely: the state directory was
+wiped or left behind on another machine, `rm --keep-worktree` let the record
+go, or the worktree was added by hand. As long as it sits where canaveral
+would put the feature's worktree, on a branch, canaveral calls it *dormant*
+and wakes it the same way it pops a stash:
+
+```bash
+canaveral onboarding/step1       # adopts worktrees/onboarding/step1 as it is
+canaveral new onboarding/step1   # the same
+```
+
+Waking keeps the worktree's checked-out branch even when the manifest's
+branch template would name it something else, and allocates a fresh slot.
+Nothing remembered which conversation its agent was in, so that starts fresh.
+
+### Seeing what is parked
+
+Stashes and dormant worktrees are listed together below the `ls` table, since
+the same command wakes either:
+
+```
+$ canaveral ls
+FEATURE      BRANCH       PORTS  SVC  WINDOWS  AGE
+small-fixes  small-fixes  3000   1/1  3/3      2h4m ago
+
+2 parked workspaces — wake with `canaveral <feature>`
+FEATURE          BRANCH           STATE    SINCE
+onboarding/step1 onboarding/step1 dormant  3h12m ago
+employee-list    employee-list    stashed  21h7m ago
+```
+
+`canaveral ls --all` does the same across every project, adding a PROJECT
+column to both tables — a name is only unique within its project, and the
+project is what `-C` needs to reach it from anywhere. Stashes are found for
+every project with one; dormant worktrees only for registered projects, since
+finding them needs the checkout. Completion and the launcher offer both
+kinds, as `stash` and `dormant`, wherever bare dispatch or `new` would wake
+them, and `canaveral watch` reports them under `parked`.
+
 Command names are reserved and cannot be used as feature names. Use
 `canaveral open <name>` if you need a feature whose name clashes.
 
@@ -1261,9 +1302,24 @@ canaveral watch --all    # every project
     "waiting": 1, "working": 1, "idle": 1, "errored": 0,
     "status": "waiting",
     "oldest_attention_since": "2026-08-28T12:39:06+03:00"
-  }
+  },
+  "parked": [{                        // not running, but one command from it
+    "project": "norules", "name": "employee-list", "key": "norules/employee-list",
+    "kind": "stashed",                // stashed | dormant
+    "branch": "employee-list",
+    "worktree": "/home/me/norules/worktrees/employee-list",
+    "since": "2026-08-27T15:30:02+03:00"  // when stashed, or last touched
+  }]
 }
 ```
+
+`parked` lists stashed features and [dormant worktrees](#dormant-worktrees),
+most recently parked first, and is left out when there are none. It stays
+out of `features` and `summary` on purpose: nothing parked has an agent, a
+status or a slot. It is reloaded on the rescan interval rather than on every
+event, since finding dormant worktrees costs a `git worktree list` per
+project, so a stash shows up there a few seconds after its row leaves
+`features`.
 
 Features are ordered most-urgent first, and ties are broken by whichever has
 been in that state longest — so the thing you have ignored longest is always

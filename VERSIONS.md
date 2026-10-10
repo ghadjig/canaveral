@@ -12,6 +12,32 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- Dormant worktrees: a git worktree sitting where canaveral would put a
+  feature's, with no record behind it — active or stashed — is now woken by
+  `canaveral <feature>` and `canaveral new <feature>`, just as a stash is
+  popped. It is adopted on whatever branch it has checked out, so a worktree
+  whose branch no longer matches the manifest's template can be opened
+  instead of refused. These come from a wiped or moved state directory,
+  `rm --keep-worktree`, or a worktree added by hand, and used to be
+  reachable by no command at all.
+- `canaveral ls` lists stashes and dormant worktrees together in one
+  "parked workspaces" block, with a STATE column saying which is which.
+- `canaveral watch` snapshots carry a `parked` array of stashed features
+  and dormant worktrees, refreshed on the rescan interval.
+- Completion and the launcher offer dormant worktrees, as kind `dormant`,
+  wherever bare dispatch or `new` would wake them.
+
+**Changed**
+
+- `canaveral ls --all` adds a PROJECT column to both its tables, and the
+  parked block's hint now reads `canaveral -C <project> <feature>`. Without
+  the project, a row from another project gave no way to reach it, and
+  `canaveral pop <feature>` failed from anywhere but that project.
+
 ## v0.11.3 — 2026-09-19
 
 **Fixed**

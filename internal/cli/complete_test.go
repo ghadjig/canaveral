@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -501,5 +502,47 @@ func TestCompleteOffersANamespaceHoldingOnlyStashes(t *testing.T) {
 	c := complete([]string{root, ""}, true)
 	if kinds(c)["onboarding/"] != candNamespace {
 		t.Errorf("namespace missing from %v", values(c))
+	}
+}
+
+// A worktree with no record is offered wherever a command would wake it —
+// bare dispatch and `new` — and nowhere it could only fail.
+func TestCompleteOffersDormantWorktreesWhereTheyCanBeWoken(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	isolateDirs(t)
+	t.Setenv("CANAVERAL_ROOT", "")
+	t.Setenv("CANAVERAL_FEATURE", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	root := completeProject(t, "norules", "small-fixes")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("add", ".")
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+	run("worktree", "add", "-q", "-b", "sleepy-branch", filepath.Join(root, "worktrees", "sleepy"))
+
+	if got := kinds(complete([]string{root, "sl"}, true)); got["sleepy"] != candDormant {
+		t.Errorf("bare dispatch: sleepy offered as %q, want %q (%v)", got["sleepy"], candDormant, got)
+	}
+
+	c := complete([]string{root, "new", "sleepy"}, true)
+	got := kinds(c)
+	if got["sleepy"] != candDormant {
+		t.Errorf("new: sleepy offered as %q, want %q (%v)", got["sleepy"], candDormant, got)
+	}
+	for _, cand := range c.Candidates {
+		if cand.Kind == candNew {
+			t.Errorf("new offered to create %q over a dormant worktree it would wake", cand.Value)
+		}
+	}
+
+	if got := kinds(complete([]string{root, "rm", ""}, true)); got["sleepy"] != "" {
+		t.Errorf("rm offered dormant sleepy, which it has no record to remove")
 	}
 }
