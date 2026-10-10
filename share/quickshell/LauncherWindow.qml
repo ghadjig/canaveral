@@ -24,10 +24,16 @@ PanelWindow {
     id: root
 
     // ---- geometry ----
+    //
+    // Local constants here, where the copy in the author's bar reads them
+    // from its own Config singleton so a second launcher window can share
+    // them. That file belongs to one particular shell; this one has to drop
+    // into any config that provides a Theme.qml, so it restates the numbers.
     readonly property int cardWidth: 720
     readonly property int maxRows: 8
     readonly property int rowH: 30
     readonly property int pad: 16
+    readonly property real cardY: 0.22
 
     property bool open: false
     // A line the user has to confirm before it runs. Set for commands canaveral
@@ -84,6 +90,20 @@ PanelWindow {
     }
 
     function show() {
+        root.showWith("");
+    }
+
+    // Open with the line already started, for another window in the same
+    // shell to hand over to — the author's run launcher does this on `/c` —
+    // rather than reimplementing this window's grammar: the
+    // completion engine, the destructive-command confirmation and the
+    // history all live here, and a second copy of them would be wrong in a
+    // different way within a week.
+    //
+    // `refresh()` at the end rather than relying on `onTextChanged`: setting
+    // the text to "" when it is already "" fires no change signal, so the
+    // opening completion would never be requested on the common path.
+    function showWith(text) {
         // Open on the monitor being looked at, not on whichever screen happens
         // to be first in the list.
         const want = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "";
@@ -93,7 +113,8 @@ PanelWindow {
                 break;
             }
         }
-        input.text = "";
+        input.text = text || "";
+        input.cursorPosition = input.text.length;
         result = null;
         selected = 0;
         confirming = false;
@@ -168,8 +189,9 @@ PanelWindow {
     //
     // Empty until there is something to run: a project on its own is not a
     // command, and `canaveral -C norules` with nothing after it would exit 0
-    // having printed usage to a terminal nobody is looking at. A space on its
-    // own is the exception, and the only one — see argv.
+    // having printed usage to a terminal nobody is looking at. A SPACE on its
+    // own is the exception, and the one case where the first word is already
+    // the whole command — see argv().
     // The command actually executed, which is argv() behind an `env -u` that
     // strips canaveral's own feature variables.
     //
@@ -194,14 +216,32 @@ PanelWindow {
 
     function argv() {
         const w = words().filter(x => x !== "");
-        // A space is a whole command on its own: it belongs to no project, so
-        // it takes no -C, and its name *is* the verb — `canaveral 3d-printing`
-        // opens it. That makes it the one runnable one-word line here, which
-        // is why the completer says so explicitly (completion.space) rather
-        // than leaving the launcher to infer it from the highlighted row.
+        if (w.length === 0)
+            return [];
+
+        // A space is not a project, and the difference is the whole reason
+        // canaveral reports it. `canaveral space` defines a workspace with no
+        // repository behind it, so there is no checkout to point `-C` at, and
+        // the name on its own is already a runnable line — the name IS the
+        // command, as canaveral's own completion contract puts it.
+        //
+        // Without this, a space was unreachable from here. The rule below
+        // ("a project on its own is not a command") is right for a project
+        // and exactly wrong for a space: the line was one word, so argv()
+        // came back empty and Enter silently did nothing. It still completed
+        // and still showed the candidate, which is what made it look like a
+        // key that had stopped working rather than a line that was not a
+        // command.
+        //
+        // Read from `result.space` rather than guessed from the candidate's
+        // kind: `project` is set to the space's own name too, so the flag is
+        // the only thing that tells the two apart, and it survives further
+        // words on the line where the candidate list has already moved on to
+        // completing flags.
         if (result && result.space) {
             return [root.bin].concat(w);
         }
+
         if (w.length < 2)
             return [];
         const rest = w.slice(1);
@@ -215,6 +255,47 @@ PanelWindow {
 
     readonly property var candidates: result && result.candidates ? result.candidates : []
     readonly property var currentCandidate: candidates.length > selected ? candidates[selected] : null
+
+    // Where the repeatable argument list starts — after the project and the
+    // command, both of which the completer names back in its reply rather
+    // than being guessed from the line.
+    function argStart() {
+        let n = 0;
+        if (result && result.project)
+            n++;
+        if (result && result.command)
+            n++;
+        return n;
+    }
+
+    // True when accepting this candidate would only re-type an argument the
+    // line already has.
+    //
+    // This is what stops Tab looping on a command taking a list. `reset
+    // [feature...]` keeps offering a feature that is already listed — asked
+    // directly, `complete --launcher -- dotfiles reset launcher ""` still
+    // answers `launcher` — so "accept the only candidate" appends it again,
+    // and again, for as long as Tab is held.
+    //
+    // Only the argument list is compared, never the project or command
+    // words. A feature is very often named after the project it lives in
+    // (`canaveral open canaveral`), and comparing against the whole line
+    // would refuse that perfectly ordinary completion.
+    //
+    // A `continues` candidate is a namespace prefix rather than a finished
+    // answer, so it is never a repeat: it is still being typed.
+    function wouldRepeat(cand) {
+        if (!cand || cand.continues)
+            return false;
+        const w = words();
+        // Stops before the last word: that one is what is being completed,
+        // not something the line already has.
+        for (let i = argStart(); i < w.length - 1; i++) {
+            if (w[i] === cand.value)
+                return true;
+        }
+        return false;
+    }
 
     // ---- completion ----
 
@@ -280,6 +361,27 @@ PanelWindow {
         refresh();
     }
 
+    // The colour of a candidate's kind label, which is the only place the
+    // kinds differ on screen.
+    //
+    // "new" keeps the accent to itself: it is the one candidate that creates
+    // something rather than naming something that exists, and seeing that
+    // before pressing Enter is the only warning a typo gets. The rest that
+    // are coloured at all are the ones Enter would bring up rather than
+    // merely address: a space, in the bar's own spaces green, and a parked
+    // feature — `stash` or `dormant`, both woken by naming them — in the
+    // features orange, since waking one puts it back among the features.
+    // Everything else is a word on a command line and stays faint.
+    function kindColor(kind) {
+        if (kind === "new")
+            return Theme.accent;
+        if (kind === "space")
+            return Theme.section.spaces;
+        if (kind === "stash" || kind === "dormant")
+            return Theme.section.features;
+        return Theme.faint;
+    }
+
     // Enter completes before it runs: if the highlighted candidate merely
     // extends what has been typed, take it and wait. That makes Enter safe to
     // lean on — it can never run a half-typed name — while still running
@@ -287,20 +389,23 @@ PanelWindow {
     function activate() {
         const c = currentCandidate;
         const w = lastWord();
-        // Same rule as Tab: a candidate may take this keystroke when there is
-        // a word being typed, or when a row was deliberately picked with the
-        // arrows or the mouse. Otherwise Enter runs the line as it stands.
+        // A candidate may take this keystroke when there is a word being
+        // typed, or when a row was deliberately picked with the arrows or the
+        // mouse. Otherwise Enter runs the line as it stands.
+        //
+        // Deliberately NOT the rule Tab uses. Tab completes unconditionally,
+        // because completing is the only thing it does and doing nothing
+        // reads as broken. Enter's default is to RUN, and a line ending in a
+        // space is finished — `dotfiles reset` with every feature implied is
+        // a real command, and quietly completing it to a single feature
+        // first would run something narrower than what is on screen and in
+        // the footer.
         //
         // Without the second half, history is unreachable: it is only ever
         // offered while the line is still empty, so there is no word to
         // complete and Enter would fall straight through to run() — which
         // does nothing, since a bare project name is not a runnable command.
-        //
-        // A fully typed space name is the exception: the line already says
-        // what it means, so Enter runs it rather than appending a space and
-        // waiting for a verb that is never coming.
-        const spaceReady = result && result.space && c && c.value === w;
-        if ((w !== "" || selectedExplicit) && !spaceReady) {
+        if (w !== "" || selectedExplicit) {
             if (c && c.value !== w) {
                 accept(c);
                 return;
@@ -396,7 +501,7 @@ PanelWindow {
         id: card
 
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.round(parent.height * 0.22)
+        y: Math.round(parent.height * root.cardY)
         width: root.cardWidth
         height: content.implicitHeight + root.pad * 2
         radius: Theme.radius.card
@@ -463,21 +568,28 @@ PanelWindow {
                             // when it is unambiguous — the completion key,
                             // never the run key.
                             //
-                            // Acts on a candidate only when there is a word
-                            // being typed, or when a row was deliberately
-                            // picked. Neither holds right after `accept()`
-                            // appends its trailing space, which is what used
-                            // to make Tab loop forever on a command taking a
-                            // list (`reset [feature...]`): the empty next
-                            // argument always has exactly one candidate to
-                            // offer when the project has exactly one feature.
-                            if (root.lastWord() !== "" || root.selectedExplicit) {
-                                if (root.candidates.length === 1)
+                            // It always acts on the highlighted row, including
+                            // when the line ends in a space and nothing is
+                            // half-typed: with the list sitting right there
+                            // and its first row highlighted, a Tab that did
+                            // nothing at all just read as broken.
+                            //
+                            // This used to be guarded by "only when a word is
+                            // being typed, or a row was picked deliberately",
+                            // which was aimed at Tab looping forever on a
+                            // command taking a list. That guard also disabled
+                            // Tab in the ordinary case above, which is the
+                            // much more common one. `wouldRepeat` closes the
+                            // loop directly instead, by refusing the one thing
+                            // that caused it — re-adding an argument the line
+                            // already has.
+                            if (root.candidates.length === 1) {
+                                if (!root.wouldRepeat(root.candidates[0]))
                                     root.accept(root.candidates[0]);
-                                else if (root.result && root.result.common !== root.lastWord())
-                                    root.replaceLastWord(root.result.common);
-                                else if (root.currentCandidate)
-                                    root.accept(root.currentCandidate);
+                            } else if (root.result && root.result.common !== root.lastWord()) {
+                                root.replaceLastWord(root.result.common);
+                            } else if (root.currentCandidate && !root.wouldRepeat(root.currentCandidate)) {
+                                root.accept(root.currentCandidate);
                             }
                             event.accepted = true;
                             break;
@@ -572,10 +684,7 @@ PanelWindow {
                                 text: modelData.kind
                                 font.family: Theme.font.family
                                 font.pixelSize: Theme.font.label
-                                // "new" is the only candidate that creates
-                                // something rather than naming something that
-                                // exists, so it is the only one coloured.
-                                color: modelData.kind === "new" || modelData.kind === "space" ? Theme.accent : Theme.faint
+                                color: root.kindColor(modelData.kind)
                             }
 
                             Text {
