@@ -185,6 +185,29 @@ func TestPopHeadlessClearsStashedWindowDeclarations(t *testing.T) {
 			if saved.Worktree != f.Worktree || saved.Branch != f.Branch || len(saved.Agents) != 1 {
 				t.Fatalf("restoration changed the worker: %+v", saved)
 			}
+			if saved.RestorePending != failPrecheck || saved.RestoreSessions["main"] != "ses_report24" {
+				t.Fatalf("restore metadata lost: pending=%v sessions=%v", saved.RestorePending, saved.RestoreSessions)
+			}
+			if failPrecheck {
+				// The stash record has already transferred to active state.
+				// Retrying pop must use that record and its saved session.
+				m.Precheck = ""
+				retry, err := Pop(ctx, m, f.Name, Options{NoWindows: true, NoServices: true, NoAgents: true}, quietReporter{})
+				if err != nil || !retry.Restored {
+					t.Fatalf("retry pop: %v, %v", retry, err)
+				}
+				saved, err = state.Load(f.Project, f.Name)
+				if err != nil || saved.RestorePending || saved.RestoreSessions["main"] != "ses_report24" {
+					t.Fatalf("retry metadata: %+v, %v", saved, err)
+				}
+				if _, err := Reconcile(ctx, m, f.Name, Options{NoServices: true, NoAgents: true}, quietReporter{}); err != nil {
+					t.Fatal(err)
+				}
+				saved, err = state.Load(f.Project, f.Name)
+				if err != nil || saved.RestorePending || len(saved.RestoreSessions) != 0 {
+					t.Fatalf("completed desktop restore retained metadata: %+v, %v", saved, err)
+				}
+			}
 			if data, err := os.ReadFile(session); err != nil || string(data) != "ses_report24" {
 				t.Fatalf("saved session = %q, %v", data, err)
 			}

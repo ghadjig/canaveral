@@ -12,7 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.14.0 — 2026-10-12
+
+**Fixed**
+
+- A failed stash restore can be retried with `pop` even after its record has
+  transferred to active state. Stashed conversation pointers survive failed
+  startup and headless restores, so reopening does not silently start a new
+  conversation. With no name, `pop` retries a single unfinished restore before
+  selecting another stash.
 
 **Changed**
 

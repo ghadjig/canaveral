@@ -13,6 +13,7 @@ package feature
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -137,6 +138,11 @@ func recordSessions(ctx context.Context, f *state.Feature) map[string]string {
 func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r Reporter) (*Result, error) {
 	name = Slug(name)
 	s, err := state.LoadStash(m.Name, name)
+	if errors.Is(err, state.ErrNotFound) {
+		if f, loadErr := state.Load(m.Name, name); loadErr == nil && f.RestorePending {
+			return Reconcile(ctx, m, name, opt, r)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -145,9 +151,15 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 	// to do rather than guessing.
 	if _, err := state.Load(m.Name, name); err == nil {
 		return nil, fmt.Errorf("%s/%s is already active; the stash is stale, and `canaveral rm %s` will clear it once the feature is gone", m.Name, name, name)
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return nil, err
 	}
 
 	f := s.Feature
+	f.RestorePending = true
+	if len(s.Sessions) > 0 {
+		f.RestoreSessions = s.Sessions
+	}
 	if opt.NoWindows {
 		// Stash already closed these windows. Restoring their declarations
 		// without opening them would classify a background worker as a desktop
@@ -186,12 +198,14 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 		return nil, err
 	}
 
-	opt.Resume = s.Sessions
 	res, err := Reconcile(ctx, m, name, opt, r)
 	if res != nil {
 		res.Restored = true
 	}
-	return res, err
+	if err != nil {
+		return res, fmt.Errorf("restore %s: %w\n  retry with `canaveral -C %s pop %s`; worktree and session pointers are kept", f.Key(), err, m.Name, name)
+	}
+	return res, nil
 }
 
 // DiscardStash tears down a stashed feature for good: its worktree and, if it
