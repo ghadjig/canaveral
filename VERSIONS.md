@@ -12,6 +12,20 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Changed**
+
+- `share/quickshell/LauncherWindow.qml` catches up with the copy running in
+  the author's bar, which had moved on without it, so
+  `scripts/install-launcher.sh` no longer installs an older launcher over a
+  newer one. Tab now always acts on the highlighted row, including after a
+  finished word, and stops looping on commands that take a list by refusing
+  to re-add an argument the line already has. Another window in the same
+  shell can open it with a line already started (`showWith`). Kind labels
+  are coloured by what Enter brings up: `new` in the accent, a space in the
+  spaces colour, and `stash` and `dormant` in the features colour.
+
 ## v0.13.0 — 2026-10-10
 
 **Added**
