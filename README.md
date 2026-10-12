@@ -170,7 +170,7 @@ Bringing it back:
 
 ```bash
 canaveral pop small-fixes
-canaveral pop                    # whichever you stashed most recently
+canaveral pop                    # retry an unfinished restore, otherwise the newest stash
 canaveral small-fixes            # bare dispatch restores a stash too
 canaveral new small-fixes        # and so does `new`, saying so out loud
 ```

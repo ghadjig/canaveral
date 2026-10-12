@@ -22,8 +22,14 @@ var ErrNotFound = errors.New("feature not found")
 
 // Feature is the persisted record of one active feature workspace.
 type Feature struct {
-	Project string `json:"project"`
-	Name    string `json:"name"`
+	// RestorePending marks a stash transferred to active state whose startup
+	// has not finished yet. It keeps `pop` retryable after a service failure.
+	RestorePending bool `json:"restore_pending,omitempty"`
+	// RestoreSessions preserves the stashed conversations until windows have
+	// been reopened, including across failed or headless restore attempts.
+	RestoreSessions map[string]string `json:"restore_sessions,omitempty"`
+	Project         string            `json:"project"`
+	Name            string            `json:"name"`
 	// Root is the project's main checkout.
 	Root string `json:"root"`
 	// Slot is the stable index used to derive ports. It is allocated once and

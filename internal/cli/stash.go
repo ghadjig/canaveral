@@ -77,7 +77,7 @@ func runStash(ctx context.Context, args []string) error {
 func runPop(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("pop", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral pop [feature...] [flags]\n\nRestore a stashed feature: the same worktree, the same branch, and the\nsame agent conversation it was in when stashed. With no argument, pops\nthe most recently stashed feature of the project.\n\n`canaveral new <feature>` and `canaveral <feature>` do the same thing for\na name that is stashed, so this command exists mainly to be listed and\ncompleted from.\n\nFlags:")
+		fmt.Fprintln(os.Stderr, "Usage: canaveral pop [feature...] [flags]\n\nRestore a stashed feature: the same worktree, the same branch, and the\nsame agent conversation it was in when stashed. Failed restores can be\nretried with the same command. With no argument, retries a single unfinished\nrestore, otherwise pops the project's most recently stashed feature.\n\n`canaveral new <feature>` and `canaveral <feature>` also restore stashes.\n\nFlags:")
 		fs.PrintDefaults()
 	}
 	var (
@@ -96,6 +96,20 @@ func runPop(ctx context.Context, args []string) error {
 		return err
 	}
 	names := pos
+	if len(names) == 0 {
+		active, err := state.LoadProject(m.Name)
+		if err != nil {
+			return err
+		}
+		for _, f := range active {
+			if f.RestorePending {
+				names = append(names, f.Name)
+			}
+		}
+		if len(names) > 1 {
+			return fmt.Errorf("multiple unfinished restores in %s; specify one: %s", m.Name, strings.Join(names, ", "))
+		}
+	}
 	if len(names) == 0 {
 		// Newest first, like `git stash pop` — LoadStashes orders by when
 		// each was parked precisely so this line can mean something.
@@ -119,6 +133,17 @@ func runPop(ctx context.Context, args []string) error {
 		s, err := state.LoadStash(m.Name, name)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
+				if f, loadErr := state.Load(m.Name, name); loadErr == nil && f.RestorePending {
+					r.Step("retrying restore %s", color(cBold, f.Key()))
+					res, err := feature.Pop(ctx, m, name, opt, r)
+					if err != nil {
+						return err
+					}
+					if err := reportFeature(ctx, res, r, *focus && !*noWindows); err != nil {
+						return err
+					}
+					continue
+				}
 				return unknownStash(m.Name, name)
 			}
 			return err

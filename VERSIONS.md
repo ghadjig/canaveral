@@ -14,6 +14,14 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 ## Unreleased
 
+**Fixed**
+
+- A failed stash restore can be retried with `pop` even after its record has
+  transferred to active state. Stashed conversation pointers survive failed
+  startup and headless restores, so reopening does not silently start a new
+  conversation. With no name, `pop` retries a single unfinished restore before
+  selecting another stash.
+
 **Changed**
 
 - `share/quickshell/LauncherWindow.qml` catches up with the copy running in

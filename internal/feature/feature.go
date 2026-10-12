@@ -209,7 +209,10 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		}
 		f.Worktree, f.Branch = opt.Adopt, branch
 	}
-	res := &Result{Feature: f, Created: created}
+	res := &Result{Feature: f, Created: created, Restored: f.RestorePending}
+	if opt.Resume == nil {
+		opt.Resume = f.RestoreSessions
+	}
 
 	vars := varsFor(ctx, m, f, created, opt.Resume)
 	tcMode := m.ToolchainMode()
@@ -286,6 +289,15 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		}
 		if err := state.Save(f); err != nil {
 			return nil, fmt.Errorf("save state: %w", err)
+		}
+	}
+	if f.RestorePending || (!opt.NoWindows && len(f.RestoreSessions) > 0) {
+		f.RestorePending = false
+		if !opt.NoWindows {
+			f.RestoreSessions = nil
+		}
+		if err := state.Save(f); err != nil {
+			return nil, fmt.Errorf("save completed restore: %w", err)
 		}
 	}
 	return res, nil
