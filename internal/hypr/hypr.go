@@ -379,7 +379,10 @@ func shellQuote(s string) string {
 
 // Monitor is an output as reported by hyprctl.
 type Monitor struct {
-	Name            string `json:"name"`
+	Name string `json:"name"`
+	// Description is make, model and serial, which is what a `desc:`
+	// workspace rule matches against.
+	Description     string `json:"description"`
 	Width           int    `json:"width"`
 	Height          int    `json:"height"`
 	X               int    `json:"x"`
@@ -485,11 +488,12 @@ func MoveWorkspaceToMonitor(ctx context.Context, workspace, monitor string) erro
 // feature's last window closes, its named workspace lingers on whatever
 // monitor last displayed it — showing up as a phantom canaveral waybar pill,
 // and leaving that monitor's active-window-title module with nothing to
-// show. Switching the monitor to a brand new numbered workspace (found by
-// focusing it, then dispatching one past the highest ID currently known —
-// dispatching a relative "empty workspace" instead was tried and found to
-// land on the wrong monitor entirely) lets Hyprland reap the abandoned one
-// immediately, exactly as if the user had switched away from it themselves.
+// show. Switching the monitor to a brand new numbered workspace lets
+// Hyprland reap the abandoned one immediately, exactly as if the user had
+// switched away from it themselves. Which number is FreeWorkspaceID's
+// business: dispatching a relative "empty workspace" instead was tried and
+// landed on the wrong monitor entirely, because Hyprland honours a workspace
+// rule binding that number elsewhere over the monitor that asked for it.
 func ReleaseWorkspace(ctx context.Context, workspace string) error {
 	ms, err := Monitors(ctx)
 	if err != nil {
@@ -502,7 +506,7 @@ func ReleaseWorkspace(ctx context.Context, workspace string) error {
 		if err := focusMonitor(ctx, m.Name); err != nil {
 			return fmt.Errorf("release %s: %w", workspace, err)
 		}
-		id, err := nextFreeWorkspaceID(ctx)
+		id, err := FreeWorkspaceID(ctx, m.Name)
 		if err != nil {
 			return fmt.Errorf("release %s: %w", workspace, err)
 		}
@@ -533,28 +537,103 @@ func switchToWorkspaceID(ctx context.Context, id int) error {
 	return nil
 }
 
-// nextFreeWorkspaceID returns a numeric workspace ID guaranteed not to
-// collide with any workspace Hyprland currently knows about, named or
-// numbered, so switching a monitor to it always lands on a genuinely new,
-// empty workspace rather than one that already has real content elsewhere.
-func nextFreeWorkspaceID(ctx context.Context) (int, error) {
-	out, err := exec.CommandContext(ctx, "hyprctl", "workspaces", "-j").Output()
+// FreeWorkspaceID returns the lowest numbered workspace that does not exist
+// yet and that Hyprland would create on monitor, for somewhere guaranteed
+// empty to switch a monitor to or to put windows on. An empty monitor means
+// the focused one.
+//
+// The lowest, not one past the highest. Highest-plus-one handed out 11 on a
+// machine whose keybinds stop at 10, and every later call climbed further,
+// leaving the user's own windows on a workspace no key reaches — and since
+// those are exactly the windows rm and stash rehome, the user's own windows
+// were the ones that got stranded.
+//
+// Numbers a workspace rule binds to another connected monitor are skipped:
+// Hyprland creates a workspace on its bound monitor whatever monitor asked
+// for it, so taking one would put the windows, or the view, on a screen
+// nobody was looking at. A rule naming a monitor that is not connected binds
+// nothing — Hyprland falls back to the asking monitor too.
+func FreeWorkspaceID(ctx context.Context, monitor string) (int, error) {
+	ws, err := Workspaces(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("hyprctl workspaces: %w", err)
+		return 0, err
 	}
-	var ws []struct {
-		ID int `json:"id"`
+	ms, err := Monitors(ctx)
+	if err != nil {
+		return 0, err
 	}
-	if err := json.Unmarshal(out, &ws); err != nil {
-		return 0, fmt.Errorf("parse hyprctl workspaces: %w", err)
-	}
-	max := 0
-	for _, w := range ws {
-		if w.ID > max {
-			max = w.ID
+	if monitor == "" {
+		for _, m := range ms {
+			if m.Focused {
+				monitor = m.Name
+			}
 		}
 	}
-	return max + 1, nil
+	// Advisory: without rules the worst case is the old behaviour of
+	// ignoring them, which beats refusing to rehome anything at all.
+	rules, _ := workspaceRules(ctx)
+	return lowestFreeWorkspaceID(ws, rules, ms, monitor), nil
+}
+
+// workspaceRule is one entry of `hyprctl workspacerules -j`.
+type workspaceRule struct {
+	Workspace string `json:"workspaceString"`
+	Monitor   string `json:"monitor"`
+}
+
+func workspaceRules(ctx context.Context) ([]workspaceRule, error) {
+	out, err := exec.CommandContext(ctx, "hyprctl", "workspacerules", "-j").Output()
+	if err != nil {
+		return nil, fmt.Errorf("hyprctl workspacerules: %w", err)
+	}
+	var rules []workspaceRule
+	if err := json.Unmarshal(out, &rules); err != nil {
+		return nil, fmt.Errorf("parse hyprctl workspacerules: %w", err)
+	}
+	return rules, nil
+}
+
+func lowestFreeWorkspaceID(ws []Workspace, rules []workspaceRule, ms []Monitor, monitor string) int {
+	taken := map[int]bool{}
+	for _, w := range ws {
+		taken[w.ID] = true
+	}
+	// Hyprland merges rules for the same workspace with the later one
+	// winning, so the last binding seen for a number is the one in force.
+	bound := map[int]string{}
+	for _, r := range rules {
+		id, err := strconv.Atoi(r.Workspace)
+		if err != nil || r.Monitor == "" {
+			continue
+		}
+		bound[id] = r.Monitor
+	}
+	for id := 1; ; id++ {
+		if taken[id] {
+			continue
+		}
+		if on := ruleMonitor(bound[id], ms); on != "" && on != monitor {
+			continue
+		}
+		return id
+	}
+}
+
+// ruleMonitor resolves a workspace rule's monitor selector to a connected
+// monitor's name, or "" when it names none. `desc:` matches a description
+// prefix, as Hyprland's own getMonitorFromDesc does.
+func ruleMonitor(sel string, ms []Monitor) string {
+	if sel == "" {
+		return ""
+	}
+	desc, isDesc := strings.CutPrefix(sel, "desc:")
+	desc = strings.TrimSpace(desc)
+	for _, m := range ms {
+		if (isDesc && strings.HasPrefix(m.Description, desc)) || (!isDesc && m.Name == sel) {
+			return m.Name
+		}
+	}
+	return ""
 }
 
 // ActiveWorkspaceName returns the name of the currently visible workspace.
@@ -831,10 +910,6 @@ func MoveWindowToWorkspace(ctx context.Context, address string, workspace int) e
 	}
 	return nil
 }
-
-// NextFreeWorkspaceID is the exported form of nextFreeWorkspaceID, for
-// callers that need somewhere guaranteed empty to put windows.
-func NextFreeWorkspaceID(ctx context.Context) (int, error) { return nextFreeWorkspaceID(ctx) }
 
 // MoveWindowToNamedWorkspace moves a window onto a named workspace without
 // following it there.

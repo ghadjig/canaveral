@@ -459,7 +459,7 @@ func rehomeStrays(ctx context.Context, f *state.Feature, r Reporter) {
 	if target == 0 {
 		// Nothing ordinary on that monitor; a fresh workspace still beats
 		// leaving them on one named after a feature that is gone.
-		if target, err = hypr.NextFreeWorkspaceID(ctx); err != nil {
+		if target, err = hypr.FreeWorkspaceID(ctx, monitor); err != nil {
 			return
 		}
 	}

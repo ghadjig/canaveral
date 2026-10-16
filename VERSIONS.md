@@ -12,6 +12,19 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Windows you added to a feature's workspace are no longer stranded on a
+  workspace no keybind reaches when the feature is stashed or removed.
+  canaveral picked "one past the highest workspace number" whenever it
+  needed a fresh one, which on a setup bound to 1-10 meant 11, then 12. It
+  now takes the lowest free number, skipping any that a workspace rule
+  binds to a different connected monitor, since Hyprland would create
+  those on that other screen. The same applies when a monitor showing a
+  removed feature is switched to an empty workspace.
+
 ## v0.14.0 — 2026-10-12
 
 **Fixed**
