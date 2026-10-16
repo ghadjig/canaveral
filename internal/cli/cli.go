@@ -64,6 +64,7 @@ func commands() []command {
 		{"path", "print a feature's worktree path", runPath},
 		{"exec", "run a command inside a feature's worktree", runExec},
 		{"space", "define and open workspaces that have no project behind them", runSpace},
+		{"save", "add the windows open on a space's workspace to its definition", runSave},
 		{"projects", "list the projects canaveral knows about, and where they live", runProjects},
 		{"complete", "list completion candidates for a partial command line", runComplete},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},

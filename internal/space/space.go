@@ -143,6 +143,17 @@ func List() ([]string, error) {
 // overwrite an existing one: a space is something you have edited, and the
 // only copy of it is this file.
 func Create(name string) (string, error) {
+	return create(name, starter(name))
+}
+
+// CreateEmpty writes a definition with nothing in it, for a space you mean to
+// fill by opening windows on its workspace and then running `canaveral save`.
+// A starter browser and terminal would only be two windows to close first.
+func CreateEmpty(name string) (string, error) {
+	return create(name, empty(name))
+}
+
+func create(name, body string) (string, error) {
 	p, err := Path(name)
 	if err != nil {
 		return "", err
@@ -158,7 +169,7 @@ func Create(name string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	if _, err := f.WriteString(starter(name)); err != nil {
+	if _, err := f.WriteString(body); err != nil {
 		return "", err
 	}
 	return p, nil
@@ -228,4 +239,25 @@ run  = ""
 # browser  = 0.6
 # terminal = 0.4
 `, name, name)
+}
+
+// empty is the file CreateEmpty writes: no windows, and a note on how they
+// get there.
+func empty(name string) string {
+	return fmt.Sprintf(`# canaveral space: %s
+#
+# A workspace with no project behind it. Open it from anywhere with
+#
+#     canaveral %s
+#
+# Open the windows you want on its Hyprland workspace, then run
+#
+#     canaveral save %s
+#
+# to add them here. Anything can also be written by hand — see
+# `+"`canaveral space new`"+` for a commented starter.
+
+# Where windows, services and agents open. Defaults to your home directory.
+# dir = "~/models"
+`, name, name, name)
 }

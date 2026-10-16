@@ -814,8 +814,21 @@ func parentPID(pid int) (int, error) {
 // spawned, which is not the same thing once anything has drifted, and the
 // point of asking is precisely to catch drift.
 func Cmdline(pid int) (string, bool) {
-	if pid <= 0 {
+	args, ok := Argv(pid)
+	if !ok {
 		return "", false
+	}
+	return strings.Join(args, " "), true
+}
+
+// Argv returns the arguments pid was started with, unjoined.
+//
+// Cmdline's joined form is fine for searching but loses the boundaries
+// between arguments, so anything that has to run the command again — saving
+// a window into a space definition — needs them separately to quote.
+func Argv(pid int) ([]string, bool) {
+	if pid <= 0 {
+		return nil, false
 	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil || len(data) == 0 {
@@ -823,11 +836,10 @@ func Cmdline(pid int) (string, bool) {
 		// has exited, or one caught mid-exec: it exists but says nothing.
 		// Reporting that as an answer would let a caller conclude the
 		// process is running something it is not.
-		return "", false
+		return nil, false
 	}
 	// Arguments are NUL-separated, with a trailing NUL.
-	args := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
-	return strings.Join(args, " "), true
+	return strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"), true
 }
 
 var classSafe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)

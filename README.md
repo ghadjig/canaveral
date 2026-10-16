@@ -62,6 +62,7 @@ $ canaveral new small-fixes
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral projects` | List the projects canaveral knows about, and where they live |
 | `canaveral space <cmd>` | Define and open workspaces that have no project behind them |
+| `canaveral save [space]` | Add the windows open on a space's workspace to its definition; with no name, the space you are in |
 | `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -382,7 +383,8 @@ anything.
 | Command | Purpose |
 | --- | --- |
 | `canaveral space` | List the spaces you have defined |
-| `canaveral space new <name>` | Write a starter definition and open `$EDITOR`; `--no-edit` to skip |
+| `canaveral space new <name>` | Write a starter definition and open `$EDITOR`; `--no-edit` to skip, `--empty` for one with no windows, `--open --focus` to go straight there |
+| `canaveral save [name]` | Write the windows open on the space's workspace into its definition |
 | `canaveral space edit <name>` | Open an existing definition in `$EDITOR` |
 | `canaveral space path <name>` | Print the definition's path, for scripts |
 | `canaveral space open <name>` | Open it, unambiguously |
@@ -393,6 +395,33 @@ anything.
 made nothing on disk for a space, so there is nothing to delete, and the
 definition is something you wrote and it cannot rebuild. Deleting that is
 `canaveral space rm`, which asks first.
+
+### Building one by hand, then saving it
+
+Writing TOML is not the only way to define a space. Start an empty one, open
+what you want on its workspace, and have canaveral write it down:
+
+```
+canaveral space new 3d-printing --empty --no-edit --open --focus
+# ... open the slicer, a browser, a terminal on that workspace ...
+canaveral save              # or: canaveral save 3d-printing
+```
+
+`save` adds every window on the space's workspace that its definition does not
+already declare, as a `[[window]]` with the `exec` read from the window's
+process and a `match_class` for its class. Terminals are saved the same way,
+rather than as `run`, so the next open adopts the terminal already there
+instead of spawning a second one. The new entries are appended, so the
+comments in the file survive, and the result is checked before it replaces
+the original. Read the commands over afterwards: a process's command line is
+what it was started with, which for an AppImage or a Flatpak is not always
+what you would have typed.
+
+With no name, `save` uses the space this shell was started in, then the one
+whose workspace is focused. A name with no definition yet gets one, so a
+named Hyprland workspace you set up by hand can be saved as a space as it is.
+A definition with a `[layout]` is refused, because the layout has to list
+every window and appending cannot edit it.
 
 ### Names, and what happens when they clash
 
@@ -423,6 +452,20 @@ Flags follow if you want them (`--no-windows`, `--focus` and friends), and
 that is all that can: the name was the verb. The launcher adds nothing of its
 own, so opening from it means the same thing as opening from a terminal: it
 happens behind you, and `--focus` is how you ask to be taken there.
+
+Two words start a line of their own, for the space actions that have no
+project to run against:
+
+```
+new 3d-printing     ->  canaveral space new --empty --no-edit --open --focus 3d-printing
+save                ->  canaveral save               (the focused space)
+save 3d-printing    ->  canaveral save 3d-printing
+```
+
+`new` is the one launcher line that takes you to its workspace, since an
+empty space is only there to be filled. Both are offered once you start
+typing, and a registered project that happens to be called `new` or `save`
+keeps the word.
 
 Space names are flat: no `/`, so they take no part in the [namespace](#namespaces)
 syntax below. There is nothing there for them — a namespace shares a skill
