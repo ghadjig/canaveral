@@ -157,6 +157,8 @@ func runSpaceNew(ctx context.Context, args []string) error {
 	var (
 		noEdit = fs.Bool("no-edit", false, "just write the file, do not open an editor")
 		open   = fs.Bool("open", false, "open the space once the definition is written")
+		focus  = fs.Bool("focus", false, "with --open, switch to the space's workspace")
+		empty  = fs.Bool("empty", false, "write a definition with no windows, to fill with `canaveral save`")
 	)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -166,12 +168,16 @@ func runSpaceNew(ctx context.Context, args []string) error {
 		fs.Usage()
 		return errors.New("specify one name, e.g. `canaveral space new 3d-printing`")
 	}
-	name := spaceName(pos[0])
-	if reserved()[name] {
-		return fmt.Errorf("%q is a canaveral command; space names cannot shadow commands", name)
+	name, err := newSpaceName(pos[0])
+	if err != nil {
+		return err
 	}
 
-	path, err := space.Create(name)
+	create := space.Create
+	if *empty {
+		create = space.CreateEmpty
+	}
+	path, err := create(name)
 	if err != nil {
 		return err
 	}
@@ -188,10 +194,27 @@ func runSpaceNew(ctx context.Context, args []string) error {
 		}
 	}
 	if *open {
-		return openSpace(ctx, name, feature.Options{}, false)
+		if err := openSpace(ctx, name, feature.Options{}, *focus); err != nil {
+			return err
+		}
+		if *empty {
+			r.Info("open windows on it, then run: canaveral save %s", name)
+		}
+		return nil
 	}
 	r.Info("open it with: canaveral %s", name)
 	return nil
+}
+
+// newSpaceName normalises a name for a space about to be created and refuses
+// one that a command would shadow: bare dispatch tries commands first, so a
+// space called "status" could never be opened by name.
+func newSpaceName(s string) (string, error) {
+	name := spaceName(s)
+	if reserved()[name] {
+		return "", fmt.Errorf("%q is a canaveral command; space names cannot shadow commands", name)
+	}
+	return name, nil
 }
 
 // editFile runs $EDITOR (then $VISUAL) on a path, inheriting the terminal so

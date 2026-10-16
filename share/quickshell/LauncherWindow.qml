@@ -219,6 +219,18 @@ PanelWindow {
         if (w.length === 0)
             return [];
 
+        // A launcher keyword (`new <space>`, `save [space]`) maps onto no
+        // project at all, so canaveral spells out the argv itself in
+        // `result.run` and an empty one means "not a command yet". Only
+        // trusted while it answers the line on screen: a result still
+        // describing the previous keystroke would run the name as it was a
+        // character ago.
+        if (result && result.keyword) {
+            if (!result.run || result.prefix !== lastWord())
+                return [];
+            return [root.bin].concat(result.run);
+        }
+
         // A space is not a project, and the difference is the whole reason
         // canaveral reports it. `canaveral space` defines a workspace with no
         // repository behind it, so there is no checkout to point `-C` at, and

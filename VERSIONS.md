@@ -12,6 +12,22 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `canaveral save [space]` writes the windows open on a space's workspace
+  into its definition, so a space can be built by hand and saved rather than
+  written in TOML first. Each window is saved as `exec` plus `match_class`,
+  read from its process, and appended so the file's comments survive. With
+  no name it saves the space you are in, or the focused one. `save` is now a
+  command name, so new features and spaces can no longer be called that.
+- `canaveral space new --empty` writes a definition with no windows, and
+  `--focus` goes with `--open` to switch to it.
+- The launcher takes `new <name>` to create an empty space, open it and
+  switch to it, and `save [name]` to save one. Re-run
+  `scripts/install-launcher.sh` to pick up the launcher change.
+
 ## v0.15.0 — 2026-10-16
 
 **Fixed**

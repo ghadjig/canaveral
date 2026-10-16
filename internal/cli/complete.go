@@ -100,6 +100,14 @@ type completion struct {
 	// completer that exits non-zero mid-keystroke is useless to a UI, so
 	// problems are reported in-band.
 	Error string `json:"error,omitempty"`
+	// Keyword is set when the launcher line starts with one of the
+	// launcher's own words (see launcherKeywords) rather than a project or a
+	// space. Such a line does not map onto `-C <project> <argv>` at all, so
+	// the launcher must run Run verbatim, and nothing when Run is empty.
+	Keyword string `json:"keyword,omitempty"`
+	// Run is the argv, after the binary, that a Keyword line runs — or
+	// nothing while the line is not yet a complete command.
+	Run []string `json:"run,omitempty"`
 }
 
 // destructive lists commands that remove work.
@@ -165,6 +173,7 @@ var commandArgs = map[string][]argKind{
 	"path":     {argFeature, argNone},
 	"exec":     {argFeature, argNone},
 	"space":    {argSpaceVerb, argSpace, argNone},
+	"save":     {argSpace, argNone},
 	"projects": {argNone},
 	"complete": {argNone},
 	"ws-slot":  {argNone},
@@ -202,6 +211,7 @@ var commandFlags = map[string]map[string]string{
 	// space's flags belong to its subcommands rather than to itself, and
 	// completion resolves one word at a time, so there are none here.
 	"space":   {},
+	"save":    {},
 	"restart": {},
 	"path":    {},
 	"exec":    {},
@@ -312,6 +322,9 @@ func complete(words []string, launcher bool) completion {
 		if space.Exists(spaceName(done[0])) {
 			return inSpace(spaceName(done[0]), done[1:], prefix)
 		}
+		if launcherKeyword(done[0]) {
+			return inKeyword(done[0], done[1:], prefix)
+		}
 		return inProject(done[0], done[1:], prefix)
 	}
 
@@ -401,7 +414,129 @@ func completeLauncherStart(prefix string) completion {
 	// word" with one when there is only one word so far replaces the entire
 	// input, exactly as if it had been retyped.
 	all = append(all, historyCandidates()...)
-	return finish(prefix, all, spaceStart(prefix))
+	base := spaceStart(prefix)
+	if !base.Space {
+		// Not offered on an empty line, which is the launcher's view of
+		// "what was I working on" — projects, spaces, recent lines — and has
+		// eight rows to say it in. Typing the first letter is enough to see
+		// them.
+		if prefix != "" {
+			all = append(all, keywordCandidates()...)
+		}
+		if launcherKeyword(prefix) {
+			// A keyword alone may already be a command — `save` saves the
+			// focused space — so the line has to be marked before a second
+			// word exists, for the same reason a space name is.
+			k := inKeyword(prefix, nil, "")
+			base.Keyword, base.Command, base.Run = k.Keyword, k.Command, k.Run
+		}
+	}
+	return finish(prefix, all, base)
+}
+
+// launcherKeywords are the words a launcher line can start with besides a
+// project or a space: the space actions that, by definition, have no project
+// to be run against.
+//
+// Offered after projects and spaces, and only honoured when no registered
+// project has the same name, so a project called "new" keeps working exactly
+// as it did. Spaces cannot clash: both words are commands, and space names
+// may not shadow those.
+var launcherKeywords = map[string]string{
+	"new":  "create an empty space and go to it",
+	"save": "save the windows on a space's workspace (the focused one by default)",
+}
+
+func launcherKeyword(word string) bool {
+	if _, ok := launcherKeywords[word]; !ok {
+		return false
+	}
+	projects, _ := projectCandidates()
+	for _, p := range projects {
+		if p.Value == word {
+			return false
+		}
+	}
+	return true
+}
+
+func keywordCandidates() []candidate {
+	out := make([]candidate, 0, len(launcherKeywords))
+	for _, k := range []string{"new", "save"} {
+		if launcherKeyword(k) {
+			out = append(out, candidate{Value: k, Kind: candCommand, Desc: launcherKeywords[k]})
+		}
+	}
+	return out
+}
+
+// inKeyword completes a launcher line that starts with a keyword, and says
+// what it runs.
+//
+// `new <name>` is the launcher's way to start a space from nothing: an empty
+// definition, opened and focused at once, because the whole point is to go
+// there and open windows by hand — unlike opening a project's feature, which
+// the launcher deliberately leaves in the background. `canaveral save` then
+// writes those windows down.
+func inKeyword(kw string, done []string, prefix string) completion {
+	base := completion{Prefix: prefix, Keyword: kw, Candidates: []candidate{}, Common: prefix}
+	args := append([]string{}, done...)
+	if prefix != "" {
+		args = append(args, prefix)
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			base.Error = fmt.Sprintf("%s takes no flags from the launcher", kw)
+			return base
+		}
+	}
+	if len(args) > 1 {
+		base.Error = fmt.Sprintf("%s takes one space name", kw)
+		return base
+	}
+
+	switch kw {
+	case "new":
+		base.Command = "space"
+		if len(args) == 0 {
+			return base
+		}
+		name, err := newSpaceName(args[0])
+		if err == nil {
+			_, err = space.Path(name)
+		}
+		if err != nil {
+			base.Error = err.Error()
+			return base
+		}
+		if space.Exists(name) {
+			base.Error = fmt.Sprintf("space %q already exists; open it by name", name)
+			return finish(prefix, []candidate{{Value: name, Kind: candSpace, Desc: "already exists"}}, base)
+		}
+		base.Run = []string{"space", "new", "--empty", "--no-edit", "--open", "--focus", name}
+		if prefix == "" {
+			return base
+		}
+		return finish(prefix, []candidate{{Value: name, Kind: candNew, Desc: "create this space"}}, base)
+
+	case "save":
+		base.Command = "save"
+		base.Run = []string{"save"}
+		if len(args) == 1 {
+			name, err := newSpaceName(args[0])
+			if err != nil {
+				base.Error = err.Error()
+				base.Run = nil
+				return base
+			}
+			base.Run = append(base.Run, name)
+		}
+		if len(done) > 0 {
+			return base // the name is settled; nothing further to offer
+		}
+		return finish(prefix, spaceCandidates(), base)
+	}
+	return base
 }
 
 // spaceStart marks a first word that already names a space exactly.
