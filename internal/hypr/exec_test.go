@@ -45,6 +45,10 @@ case "$1" in
   keyword)
     exit "${FAKE_HYPRCTL_KEYWORD_EXIT:-0}"
     ;;
+  workspacerules)
+    printf '%s' "$FAKE_HYPRCTL_WORKSPACERULES_JSON"
+    exit "${FAKE_HYPRCTL_WORKSPACERULES_EXIT:-0}"
+    ;;
   *)
     exit 1
     ;;
@@ -379,27 +383,30 @@ func TestMoveWindowToWorkspaceSucceedsAndFails(t *testing.T) {
 	}
 }
 
-func TestNextFreeWorkspaceIDSkipsPastTheHighestKnown(t *testing.T) {
+func TestFreeWorkspaceIDTakesTheLowestGap(t *testing.T) {
 	installFakeHyprctl(t)
-	t.Setenv("FAKE_HYPRCTL_WORKSPACES_JSON", `[{"id":1},{"id":5},{"id":3}]`)
-	got, err := NextFreeWorkspaceID(context.Background())
+	t.Setenv("FAKE_HYPRCTL_WORKSPACES_JSON", `[{"id":1},{"id":5},{"id":3},{"id":-1337,"name":"p:f"}]`)
+	t.Setenv("FAKE_HYPRCTL_MONITORS_JSON", `[{"name":"DP-4","focused":true}]`)
+	t.Setenv("FAKE_HYPRCTL_WORKSPACERULES_JSON", `[]`)
+	got, err := FreeWorkspaceID(context.Background(), "")
 	if err != nil {
-		t.Fatalf("NextFreeWorkspaceID: %v", err)
+		t.Fatalf("FreeWorkspaceID: %v", err)
 	}
-	if got != 6 {
-		t.Errorf("got = %d, want 6", got)
+	if got != 2 {
+		t.Errorf("got = %d, want 2 — the lowest gap, not one past the highest", got)
 	}
 }
 
-func TestNextFreeWorkspaceIDWithNoneKnown(t *testing.T) {
+// Rules are advisory: a hyprctl that cannot list them must not stop windows
+// being rehomed.
+func TestFreeWorkspaceIDSurvivesUnreadableRules(t *testing.T) {
 	installFakeHyprctl(t)
 	t.Setenv("FAKE_HYPRCTL_WORKSPACES_JSON", `[]`)
-	got, err := NextFreeWorkspaceID(context.Background())
-	if err != nil {
-		t.Fatalf("NextFreeWorkspaceID: %v", err)
-	}
-	if got != 1 {
-		t.Errorf("got = %d, want 1", got)
+	t.Setenv("FAKE_HYPRCTL_MONITORS_JSON", `[{"name":"DP-4","focused":true}]`)
+	t.Setenv("FAKE_HYPRCTL_WORKSPACERULES_EXIT", "1")
+	got, err := FreeWorkspaceID(context.Background(), "DP-4")
+	if err != nil || got != 1 {
+		t.Errorf("FreeWorkspaceID = %d, %v; want 1, nil", got, err)
 	}
 }
 

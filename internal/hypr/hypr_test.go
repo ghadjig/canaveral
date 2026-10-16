@@ -408,3 +408,33 @@ func TestWriteEnvFileSweepsAbandonedFiles(t *testing.T) {
 		t.Error("only canaveral's own env files may be swept")
 	}
 }
+
+// The layout this was written against: 1-3 bound to the external monitor,
+// 4 and 6-10 to the laptop panel, 1 and 5 free. A number bound to the other
+// monitor would be created there, so it is skipped; one bound to a monitor
+// that is not connected binds nothing.
+func TestLowestFreeWorkspaceIDHonoursRulesForOtherMonitors(t *testing.T) {
+	ms := []Monitor{
+		{Name: "eDP-1", Description: "BOE NE135A1M-NY1"},
+		{Name: "DP-4", Description: "Technical Concepts Ltd 57R94 000000000001"},
+	}
+	ws := []Workspace{{ID: 2}, {ID: 3}, {ID: -1337, Name: "p:f"}}
+	rules := []workspaceRule{
+		{Workspace: "1", Monitor: "DP-3"},
+		{Workspace: "1", Monitor: "DP-4"}, // later wins, as in Hyprland
+		{Workspace: "4", Monitor: "eDP-1"},
+		{Workspace: "5", Monitor: "desc:BOE NE135A1M"},
+		{Workspace: "6", Monitor: "DP-3"}, // not connected: binds nothing
+		{Workspace: "name:x", Monitor: "eDP-1"},
+	}
+	if got := lowestFreeWorkspaceID(ws, rules, ms, "DP-4"); got != 1 {
+		t.Errorf("on DP-4: got %d, want 1", got)
+	}
+	if got := lowestFreeWorkspaceID(ws, rules, ms, "eDP-1"); got != 4 {
+		t.Errorf("on eDP-1: got %d, want 4 (1 is bound to DP-4)", got)
+	}
+	ws = append(ws, Workspace{ID: 1})
+	if got := lowestFreeWorkspaceID(ws, rules, ms, "DP-4"); got != 6 {
+		t.Errorf("on DP-4 with 1 taken: got %d, want 6 (4 and 5 bound to eDP-1, 6's monitor absent)", got)
+	}
+}
