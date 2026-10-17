@@ -126,3 +126,28 @@ func TestLauncherProjectOutranksKeyword(t *testing.T) {
 		t.Errorf("Keyword=%q Project=%q, want the project", c.Keyword, c.Project)
 	}
 }
+
+func TestLauncherSaveReplace(t *testing.T) {
+	isolateDirs(t)
+	if _, err := space.CreateEmpty("knx"); err != nil {
+		t.Fatal(err)
+	}
+	// Half-typed: offered, not yet runnable.
+	c := complete([]string{"save", "--rep"}, true)
+	if c.Run != nil || len(c.Candidates) != 1 || c.Candidates[0].Value != "--replace" {
+		t.Errorf("partial flag: Run=%v candidates=%+v", c.Run, c.Candidates)
+	}
+	c = complete([]string{"save", "--replace"}, true)
+	if !reflect.DeepEqual(c.Run, []string{"save", "--replace"}) {
+		t.Errorf("Run = %v", c.Run)
+	}
+	// The name may still follow the flag, and spaces are offered for it.
+	c = complete([]string{"save", "--replace", "kn"}, true)
+	if !reflect.DeepEqual(c.Run, []string{"save", "--replace", "kn"}) || len(c.Candidates) != 1 {
+		t.Errorf("Run=%v candidates=%+v", c.Run, c.Candidates)
+	}
+	c = complete([]string{"save", "--force"}, true)
+	if c.Run != nil || c.Error == "" {
+		t.Errorf("unknown flag: Run=%v Error=%q", c.Run, c.Error)
+	}
+}

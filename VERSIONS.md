@@ -12,6 +12,28 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Added**
+
+- `canaveral save --replace` rewrites a space's windows from what is open on
+  its workspace, keeping everything else in the file. Plain `save` only adds
+  windows the file does not have yet, so it could never pick up a change to
+  one it did — and once one Chrome window was saved, every Chrome window
+  counted as that. The launcher's `save` line takes `--replace` too.
+- `save` warns when a window's process also draws other windows, as Chrome's
+  and ChatGPT's do. The command saved for such a window is how the app was
+  started, not what that window shows, so it usually wants a URL put in by
+  hand.
+
+**Fixed**
+
+- `save` wrote Chrome's command as one quoted word, such as
+  `'/opt/google/chrome/chrome --new-window …'`, which names a program that
+  does not exist, so the window never opened again. Chrome rewrites its
+  process title into a single argument; `save` now splits that back into
+  words. Re-save, or remove the outer `'…'` from definitions saved by v0.16.0.
+
 ## v0.16.0 — 2026-10-16
 
 **Added**

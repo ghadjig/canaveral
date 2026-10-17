@@ -211,7 +211,7 @@ var commandFlags = map[string]map[string]string{
 	// space's flags belong to its subcommands rather than to itself, and
 	// completion resolves one word at a time, so there are none here.
 	"space":   {},
-	"save":    {},
+	"save":    {"--replace": "make the open windows the space's only windows"},
 	"restart": {},
 	"path":    {},
 	"exec":    {},
@@ -480,13 +480,27 @@ func keywordCandidates() []candidate {
 // writes those windows down.
 func inKeyword(kw string, done []string, prefix string) completion {
 	base := completion{Prefix: prefix, Keyword: kw, Candidates: []candidate{}, Common: prefix}
-	args := append([]string{}, done...)
-	if prefix != "" {
-		args = append(args, prefix)
-	}
-	for _, a := range args {
+	var args, flags []string
+	for i, a := range append(append([]string{}, done...), prefix) {
+		if a == "" && i == len(done) {
+			continue // the word being started; nothing typed yet
+		}
 		if strings.HasPrefix(a, "-") {
-			base.Error = fmt.Sprintf("%s takes no flags from the launcher", kw)
+			flags = append(flags, a)
+		} else {
+			args = append(args, a)
+		}
+	}
+	// save --replace is the one flag a keyword line takes. Half of it is
+	// still being typed, not an unknown flag: offered, and not yet runnable.
+	if kw == "save" && strings.HasPrefix(prefix, "-") && prefix != "--replace" &&
+		strings.HasPrefix("--replace", prefix) {
+		base.Command = "save"
+		return finish(prefix, []candidate{{Value: "--replace", Kind: candFlag, Desc: commandFlags["save"]["--replace"]}}, base)
+	}
+	for _, f := range flags {
+		if kw != "save" || f != "--replace" {
+			base.Error = fmt.Sprintf("%s takes no %s from the launcher", kw, f)
 			return base
 		}
 	}
@@ -521,7 +535,7 @@ func inKeyword(kw string, done []string, prefix string) completion {
 
 	case "save":
 		base.Command = "save"
-		base.Run = []string{"save"}
+		base.Run = append([]string{"save"}, flags...)
 		if len(args) == 1 {
 			name, err := newSpaceName(args[0])
 			if err != nil {
@@ -531,8 +545,15 @@ func inKeyword(kw string, done []string, prefix string) completion {
 			}
 			base.Run = append(base.Run, name)
 		}
-		if len(done) > 0 {
-			return base // the name is settled; nothing further to offer
+		if strings.HasPrefix(prefix, "-") {
+			return finish(prefix, []candidate{{Value: "--replace", Kind: candFlag, Desc: commandFlags["save"]["--replace"]}}, base)
+		}
+		// Spaces are offered for the one name the line takes, until a
+		// settled word has already taken it.
+		for _, d := range done {
+			if !strings.HasPrefix(d, "-") {
+				return base
+			}
 		}
 		return finish(prefix, spaceCandidates(), base)
 	}

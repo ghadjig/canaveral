@@ -62,7 +62,7 @@ $ canaveral new small-fixes
 | `canaveral restart [feature] <service>...` | Stop and restart named services, waiting on their `ready` probes |
 | `canaveral projects` | List the projects canaveral knows about, and where they live |
 | `canaveral space <cmd>` | Define and open workspaces that have no project behind them |
-| `canaveral save [space]` | Add the windows open on a space's workspace to its definition; with no name, the space you are in |
+| `canaveral save [space]` | Add the windows open on a space's workspace to its definition; with no name, the space you are in; `--replace` to rewrite them all |
 | `canaveral complete -- <words>` | Completion candidates for a partial command line, for shells and the launcher |
 | `canaveral ws-slot [n]` | Map a stable slot number to a feature's workspace, for status bars |
 | `canaveral watch` | Stream feature/agent state as JSON for a status widget |
@@ -384,7 +384,7 @@ anything.
 | --- | --- |
 | `canaveral space` | List the spaces you have defined |
 | `canaveral space new <name>` | Write a starter definition and open `$EDITOR`; `--no-edit` to skip, `--empty` for one with no windows, `--open --focus` to go straight there |
-| `canaveral save [name]` | Write the windows open on the space's workspace into its definition |
+| `canaveral save [name]` | Write the windows open on the space's workspace into its definition; `--replace` to rewrite them from scratch |
 | `canaveral space edit <name>` | Open an existing definition in `$EDITOR` |
 | `canaveral space path <name>` | Print the definition's path, for scripts |
 | `canaveral space open <name>` | Open it, unambiguously |
@@ -416,6 +416,20 @@ comments in the file survive, and the result is checked before it replaces
 the original. Read the commands over afterwards: a process's command line is
 what it was started with, which for an AppImage or a Flatpak is not always
 what you would have typed.
+
+A browser needs reading most of all. One Chrome process draws every Chrome
+window, on every workspace, so the command saved for a Chrome window is how
+Chrome was first started — not the page that window has open, which nothing
+outside the browser can see. `save` warns about any window whose process
+draws others too (Electron apps such as ChatGPT are the same); put the URL
+you want into its `exec` by hand.
+
+`save` only ever adds, so saving again after the workspace has changed adds
+nothing for a window the file already has — and once one Chrome window is
+saved, every Chrome window counts as that. `canaveral save --replace` is the
+way to catch up: every `[[window]]` in the file is replaced by what is open
+now, and `dir`, ports, services, agents and the comments around them are
+kept.
 
 With no name, `save` uses the space this shell was started in, then the one
 whose workspace is focused. A name with no definition yet gets one, so a
@@ -460,6 +474,7 @@ project to run against:
 new 3d-printing     ->  canaveral space new --empty --no-edit --open --focus 3d-printing
 save                ->  canaveral save               (the focused space)
 save 3d-printing    ->  canaveral save 3d-printing
+save --replace      ->  canaveral save --replace     (rewrite, rather than add)
 ```
 
 `new` is the one launcher line that takes you to its workspace, since an
