@@ -22,13 +22,16 @@ import (
 func runSave(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("save", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: canaveral save [space]\n\n"+
+		fmt.Fprintln(os.Stderr, "Usage: canaveral save [space] [--replace]\n\n"+
 			"Add the windows open on a space's Hyprland workspace to its definition,\n"+
 			"so the next `canaveral <space>` opens them again. Windows the definition\n"+
-			"already declares are left as they are; only the others are added.\n\n"+
+			"already declares are left as they are; only the others are added.\n"+
+			"--replace rewrites them all from what is open instead.\n\n"+
 			"With no name, save the space you are in — by $CANAVERAL_FEATURE, or by\n"+
-			"focused workspace. A name with no definition yet creates one.")
+			"focused workspace. A name with no definition yet creates one.\n\nFlags:")
+		fs.PrintDefaults()
 	}
+	replace := fs.Bool("replace", false, "make the open windows the space's only windows, rather than adding to them")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -66,13 +69,20 @@ func runSave(ctx context.Context, args []string) error {
 	case err != nil:
 		return err
 	}
+	declared := m
+	if *replace {
+		// Nothing counts as already saved: every window on the workspace is
+		// captured afresh, which is the point of replacing.
+		declared = &manifest.Manifest{Name: name, Space: true}
+	}
 
-	windows, skipped := space.Capture(m, name, clients, hypr.Argv)
-	for _, s := range skipped {
+	got := space.Capture(declared, name, clients, hypr.Argv)
+	for _, s := range got.Skipped {
 		r.Warn("skipped %s: its command line could not be read", s)
 	}
+	windows := got.Windows
 	if len(windows) == 0 {
-		if len(m.Windows) > 0 {
+		if len(m.Windows) > 0 && !*replace {
 			r.Info("%s: every open window is already saved", name)
 			return nil
 		}
@@ -86,12 +96,19 @@ func runSave(ctx context.Context, args []string) error {
 		}
 		r.OK("wrote %s", homeTilde(path))
 	}
-	path, err := space.Append(name, windows)
+	write := space.Append
+	if *replace {
+		write = space.Replace
+	}
+	path, err := write(name, windows)
 	if err != nil {
 		return err
 	}
 	for _, w := range windows {
 		r.OK("saved window %s  %s", color(cBold, w.Name), dim(oneLine(w.Exec)))
+	}
+	for _, w := range got.Shared {
+		r.Warn("%s: its process draws other windows too, so this is how the app was started, not what the window shows; edit in the URL or arguments you want", w)
 	}
 	r.Info("edit %s to tidy the commands up", homeTilde(path))
 
