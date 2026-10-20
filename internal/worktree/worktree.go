@@ -177,7 +177,17 @@ func changedPaths(ctx context.Context, dir string, ignore []string) ([]string, e
 	// container (e.g. "?? .claude/" instead of "?? .claude/skills/onboarding"),
 	// which would never match an ignore entry for the specific path inside
 	// it, and get misreported as dirty.
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain", "--untracked-files=all").Output()
+	//
+	// --no-optional-locks because this runs every few seconds per feature
+	// under `canaveral watch`, and a plain `git status` takes index.lock to
+	// write back the stat information it refreshed. That lock is optional —
+	// the answer is the same without it — but while held it makes the user's
+	// own index-writing commands fail outright: a rebase step in the feature
+	// died with "Unable to create '.../index.lock': File exists" whenever it
+	// landed on one of those moments. Exactly the case git's docs describe
+	// the flag for: a background process that only reads.
+	out, err := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", dir,
+		"status", "--porcelain", "--untracked-files=all").Output()
 	if err != nil {
 		return nil, err
 	}

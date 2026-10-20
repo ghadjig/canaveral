@@ -760,3 +760,120 @@ func (f *Feature) ResetPhase() {
 	f.PhaseDetail, f.PhaseLine = "", ""
 	f.PhasePID = 0
 }
+
+// RemoveWindowProfiles deletes the private profile directories of f's
+// declared windows, then any directory that leaves empty.
+//
+// Only the named windows, never the feature's directory as a whole: a
+// namespaced sibling nests inside it (profiles/p/x/<window> sits beside
+// profiles/p/x/child/<window>), and wiping x would wipe the child's browser
+// logins with it.
+func RemoveWindowProfiles(f *Feature) error {
+	d, err := Dir()
+	if err != nil {
+		return err
+	}
+	root := filepath.Join(d, "profiles")
+	var errs []error
+	for _, w := range f.Windows {
+		p, err := WindowProfile(f.Project, f.Name, w.Name)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(p); err != nil {
+			errs = append(errs, err)
+		}
+		pruneEmptyDirs(filepath.Dir(p), root)
+	}
+	return errors.Join(errs...)
+}
+
+// OrphanedProfiles returns profile directories that belong to no workspace
+// canaveral still knows about, for `prune`.
+//
+// A profile is kept while any record — active or stashed — names its
+// feature, since a stash keeps its browser logins to be popped with. keep
+// answers for the projects a record cannot speak for: a space has no record
+// while it is closed, yet its profile is exactly what reopening it wants.
+//
+// Directories are walked as the feature names they spell. One that is a
+// recorded feature is kept whole; one that is merely a prefix of recorded
+// names is a namespace, descended into; anything else holds nothing a
+// record could reach, and is returned whole.
+func OrphanedProfiles(keep func(project string) bool) ([]string, error) {
+	d, err := Dir()
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Join(d, "profiles")
+	projects, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range projects {
+		if !p.IsDir() || keep(p.Name()) {
+			continue
+		}
+		known := map[string]bool{}
+		active, err := List(p.Name())
+		if err != nil {
+			return nil, err
+		}
+		stashed, err := ListStashes(p.Name())
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range append(active, stashed...) {
+			known[n] = true
+		}
+		dir := filepath.Join(root, p.Name())
+		if len(known) == 0 {
+			out = append(out, dir)
+			continue
+		}
+		var walk func(rel string) error
+		walk = func(rel string) error {
+			entries, err := os.ReadDir(filepath.Join(dir, filepath.FromSlash(rel)))
+			if err != nil {
+				return err
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if rel != "" {
+					name = rel + "/" + name
+				}
+				switch {
+				case known[name]:
+				case namespaceOf(name, known):
+					if err := walk(name); err != nil {
+						return err
+					}
+				default:
+					out = append(out, filepath.Join(dir, filepath.FromSlash(name)))
+				}
+			}
+			return nil
+		}
+		if err := walk(""); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// namespaceOf reports whether some known feature name lies under prefix.
+func namespaceOf(prefix string, known map[string]bool) bool {
+	for n := range known {
+		if strings.HasPrefix(n, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}

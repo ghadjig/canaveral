@@ -398,10 +398,22 @@ func runSpaceRm(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	// The definition is read for its window names before it goes, because
+	// those are the only profiles that are the space's own: a project may
+	// share the name, and its features' profiles nest in the same directory.
+	var windows []state.Window
+	if m, err := space.Load(name); err == nil {
+		for _, w := range m.Windows {
+			windows = append(windows, state.Window{Name: w.Name})
+		}
+	}
 	if err := space.Remove(name); err != nil {
 		return err
 	}
 	r.OK("deleted %s", homeTilde(path))
+	if err := state.RemoveWindowProfiles(&state.Feature{Project: name, Name: name, Windows: windows}); err != nil {
+		r.Warn("could not delete browser profiles: %v", err)
+	}
 	return nil
 }
 
