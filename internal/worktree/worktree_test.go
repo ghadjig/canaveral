@@ -938,3 +938,63 @@ func TestParseWorktreeList(t *testing.T) {
 		}
 	}
 }
+
+// CountDirty runs on a timer under `canaveral watch`, alongside the user's
+// own git commands in the same worktree. It must never take index.lock,
+// which a plain `git status` does to save its refreshed stat cache — and
+// which made a rebase step fail whenever the two coincided.
+func TestCountDirtyTakesNoIndexLock(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	f := filepath.Join(dir, "a")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a")
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+	// Make the index's stat cache stale, so a locking status would want to
+	// write it back.
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(f, future, future); err != nil {
+		t.Fatal(err)
+	}
+	idx := filepath.Join(dir, ".git", "index")
+	before, err := os.Stat(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the lock the way an in-progress rebase step would. A status that
+	// wanted it would fail outright or skip the write; either way the index
+	// below must be untouched and CountDirty must still answer.
+	lock := idx + ".lock"
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(lock)
+
+	if _, err := CountDirty(context.Background(), dir, nil); err != nil {
+		t.Fatalf("CountDirty with index.lock held: %v", err)
+	}
+	os.Remove(lock)
+	if _, err := CountDirty(context.Background(), dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("CountDirty rewrote the index: it took index.lock")
+	}
+}

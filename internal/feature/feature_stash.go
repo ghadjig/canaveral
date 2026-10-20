@@ -223,5 +223,10 @@ func DiscardStash(ctx context.Context, s *state.Stash, keepWorktree, force, keep
 	if err := removeWorktreeAndBranch(ctx, f, keepWorktree, force, keepBranch, r); err != nil {
 		return err
 	}
+	// Stash kept the browser profiles so a pop would come back logged in;
+	// discarding the stash is the end of that.
+	if err := state.RemoveWindowProfiles(f); err != nil {
+		r.Warn("could not delete browser profiles: %v — `canaveral prune` will retry", err)
+	}
 	return state.RemoveStash(f.Project, f.Name)
 }

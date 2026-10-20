@@ -949,3 +949,73 @@ func TestSetPhaseRecordsTheOwnerAndClearPhaseForgetsIt(t *testing.T) {
 		t.Errorf("PhasePID = %d, want it cleared with the rest of the phase", f.PhasePID)
 	}
 }
+
+func mkProfile(t *testing.T, project, feature, window string) string {
+	t.Helper()
+	p, err := WindowProfile(project, feature, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(p, "Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestOrphanedProfilesKeepsOwnedAndFindsTheRest(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, f := range []*Feature{{Project: "p", Name: "live"}, {Project: "p", Name: "ns/child"}} {
+		if err := Save(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SaveStash(&Stash{Feature: &Feature{Project: "p", Name: "parked"}}); err != nil {
+		t.Fatal(err)
+	}
+	mkProfile(t, "p", "live", "chrome")
+	mkProfile(t, "p", "parked", "chrome")
+	mkProfile(t, "p", "ns/child", "chrome")
+	gone := mkProfile(t, "p", "gone", "chrome")
+	// The namespace once had a feature of its own name, since removed: its
+	// window sits beside the surviving child and must go without it.
+	nsOld := mkProfile(t, "p", "ns", "chrome")
+	mkProfile(t, "myspace", "myspace", "chrome")
+	noRecords := filepath.Dir(filepath.Dir(mkProfile(t, "dead", "x", "chrome")))
+
+	got, err := OrphanedProfiles(func(project string) bool { return project == "myspace" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{filepath.Dir(gone): true, nsOld: true, noRecords: true}
+	if len(got) != len(want) {
+		t.Fatalf("OrphanedProfiles = %v, want %v", got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected orphan %s", g)
+		}
+	}
+}
+
+func TestRemoveWindowProfilesLeavesNestedSiblings(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mine := mkProfile(t, "p", "x", "chrome")
+	child := mkProfile(t, "p", "x/child", "chrome")
+	if err := RemoveWindowProfiles(&Feature{Project: "p", Name: "x", Windows: []Window{{Name: "chrome"}, {Name: "term"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mine); !os.IsNotExist(err) {
+		t.Errorf("own profile survived: %v", err)
+	}
+	if _, err := os.Stat(child); err != nil {
+		t.Errorf("nested sibling's profile was deleted: %v", err)
+	}
+	// Removing the last one prunes the now-empty directories above it.
+	if err := RemoveWindowProfiles(&Feature{Project: "p", Name: "x/child", Windows: []Window{{Name: "chrome"}}}); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := Dir()
+	if _, err := os.Stat(filepath.Join(d, "profiles", "p")); !os.IsNotExist(err) {
+		t.Errorf("empty project directory left behind: %v", err)
+	}
+}

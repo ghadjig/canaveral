@@ -12,6 +12,28 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- `canaveral watch` no longer makes your own git commands fail in a feature
+  worktree. Its periodic `git status` briefly held `index.lock` to save the
+  stat cache it refreshed, so a rebase step or commit landing on that moment
+  died with "Unable to create '.../index.lock': File exists". It now runs
+  git with `--no-optional-locks`, which reads the same answer without
+  writing anything.
+- Removing a feature deletes its windows' browser profiles, and discarding
+  a stash does too. Nothing ever deleted them, at a few hundred megabytes
+  each, so removed features had filled tens of gigabytes. Stashing keeps
+  them, so a pop comes back logged in; closing a space keeps its own, and
+  `space rm` deletes them.
+
+**Added**
+
+- `canaveral prune` deletes browser profiles that no feature, stash or
+  space owns any more, reporting how much it freed. `--dry-run` lists them
+  and deletes nothing.
+
 ## v0.16.1 — 2026-10-17
 
 **Added**

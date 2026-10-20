@@ -128,8 +128,13 @@ func defaultBranch(ctx context.Context, dir string) (string, error) {
 	return "", fmt.Errorf("could not determine the project's default branch (tried origin/HEAD, main, master)")
 }
 
+// gitOutput runs a read-only git command in dir.
+//
+// Without optional locks, for the reason changedPaths gives: these run on a
+// timer under `canaveral watch`, alongside whatever the user is doing in the
+// same worktree, and must never be the reason one of their commands fails.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-C", dir}, args...)...)
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr

@@ -216,6 +216,18 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 		return err
 	}
 	closeFeatureWindows(ctx, f, r)
+	// Browser profiles, now that nothing is running from them: a profile
+	// deleted under a live Chrome is partly rewritten on its way out. Each
+	// one is hundreds of megabytes and nothing ever deleted them, so removed
+	// features had quietly filled the disk. Not for a space, which close
+	// also reaches: its logins are what reopening it wants, and `space rm`
+	// is what discards them. If this process dies with the windows above,
+	// `prune` sweeps what was left.
+	if !f.Space {
+		if err := state.RemoveWindowProfiles(f); err != nil {
+			r.Warn("could not delete browser profiles: %v — `canaveral prune` will retry", err)
+		}
+	}
 	// After the windows, and in the same late slot as them, for the same
 	// reason: this can kill the terminal the teardown was typed into, so it
 	// must not happen until everything durable has been written. Windows
