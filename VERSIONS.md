@@ -12,6 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- `reset`, and anything else that reads a feature's branch, works in a
+  repository with no commits yet. It failed with `read branch of …: exit
+  status 128`, so a feature in a freshly `git init`ed project could be
+  created but never brought back up.
+
 ## v0.17.0 — 2026-10-22
 
 **Fixed**

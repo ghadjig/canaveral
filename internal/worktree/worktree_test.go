@@ -520,6 +520,34 @@ func gitRunner(t *testing.T, dir string) func(...string) {
 	}
 }
 
+func TestCurrentBranchBeforeFirstCommit(t *testing.T) {
+	dir := t.TempDir()
+	git := gitRunner(t, dir)
+	git("init", "-q", "-b", "trunk")
+	got, err := CurrentBranch(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if got != "trunk" {
+		t.Errorf("CurrentBranch = %q, want trunk", got)
+	}
+}
+
+func TestCurrentBranchDetached(t *testing.T) {
+	dir := t.TempDir()
+	git := gitRunner(t, dir)
+	git("init", "-q", "-b", "trunk")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c")
+	git("checkout", "-q", "--detach")
+	got, err := CurrentBranch(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if got != "HEAD" {
+		t.Errorf("CurrentBranch = %q, want HEAD", got)
+	}
+}
+
 func TestFetchAndRemoteDefaultBranch(t *testing.T) {
 	ctx := context.Background()
 	upstream := t.TempDir()

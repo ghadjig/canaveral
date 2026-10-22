@@ -319,6 +319,13 @@ func branchExists(ctx context.Context, repo, branch string) bool {
 }
 
 func currentBranch(ctx context.Context, dir string) (string, error) {
+	// symbolic-ref first because it reads HEAD without resolving it, so it
+	// still names the branch in a repository with no commits yet, where
+	// rev-parse fails. It fails on a detached HEAD instead, which rev-parse
+	// reports as "HEAD".
+	if out, err := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "--short", "-q", "HEAD").Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return "", fmt.Errorf("read branch of %s: %w", dir, err)
