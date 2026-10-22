@@ -180,7 +180,7 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 		}
 	}
 
-	slot, err := state.AllocateSlotPreferring(m.Name, name, f.Slot)
+	slot, err := state.AllocateSlotWhere(m.Name, name, f.Slot, slotUsable(m))
 	if err != nil {
 		return nil, err
 	}

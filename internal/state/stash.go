@@ -243,6 +243,26 @@ func LoadAllStashes() ([]*Stash, error) {
 //
 // prefer < 0 means no preference, which is exactly AllocateSlot.
 func AllocateSlotPreferring(project, feature string, prefer int) (int, error) {
+	return AllocateSlotWhere(project, feature, prefer, nil)
+}
+
+// maxSlot bounds the search in AllocateSlotWhere, so a usable check that
+// never passes (every port above a base taken, or a base so high that every
+// offset overflows) fails instead of spinning.
+const maxSlot = 1000
+
+// AllocateSlotWhere is AllocateSlotPreferring that also skips any slot usable
+// rejects.
+//
+// Another feature's record is not the only thing that can make a slot
+// unusable: its ports may be held by something canaveral does not know
+// about at all — another tool's port-forward, a server started by hand —
+// and a feature given those ports fails on its first service with "address
+// already in use". usable is how the caller says so; nil accepts every slot.
+//
+// An existing record still wins unconditionally: moving a feature is the
+// caller's decision, not something allocation does behind its back.
+func AllocateSlotWhere(project, feature string, prefer int, usable func(slot int) bool) (int, error) {
 	existing, err := LoadProject(project)
 	if err != nil {
 		return 0, err
@@ -254,12 +274,14 @@ func AllocateSlotPreferring(project, feature string, prefer int) (int, error) {
 		}
 		used[f.Slot] = true
 	}
-	if prefer >= 0 && !used[prefer] {
+	ok := func(slot int) bool { return !used[slot] && (usable == nil || usable(slot)) }
+	if prefer >= 0 && ok(prefer) {
 		return prefer, nil
 	}
-	for slot := 0; ; slot++ {
-		if !used[slot] {
+	for slot := 0; slot < maxSlot; slot++ {
+		if ok(slot) {
 			return slot, nil
 		}
 	}
+	return 0, fmt.Errorf("no free slot for %s/%s among the first %d", project, feature, maxSlot)
 }

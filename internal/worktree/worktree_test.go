@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1024,5 +1025,32 @@ func TestCountDirtyTakesNoIndexLock(t *testing.T) {
 	}
 	if !after.ModTime().Equal(before.ModTime()) {
 		t.Error("CountDirty rewrote the index: it took index.lock")
+	}
+}
+
+// A Rails crash puts its message above forty frames of backtrace, so a plain
+// tail showed only frames — the exact screen norules failed with when its
+// port was taken.
+func TestIndentTailFoldsBacktraceSoTheMessageSurvives(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Exiting\n")
+	b.WriteString("puma/binder.rb:344:in 'TCPServer#initialize': Address already in use (Errno::EADDRINUSE)\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "\tfrom /gems/frame%d.rb:%d:in 'x'\n", i, i)
+	}
+	b.WriteString("\tfrom bin/rails:4:in '<main>'\n")
+
+	got := IndentTail(b.String(), 15)
+	for _, want := range []string{"Address already in use", "frame0.rb", "bin/rails:4", "... 39 more frames ..."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("IndentTail lost %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIndentTailKeepsShortRunsAndPlainOutput(t *testing.T) {
+	in := "error: thing\n  at a\n  at b\nplain\n"
+	if got, want := IndentTail(in, 15), "    error: thing\n      at a\n      at b\n    plain"; got != want {
+		t.Errorf("IndentTail = %q, want %q", got, want)
 	}
 }

@@ -196,6 +196,11 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 	if err != nil {
 		return nil, err
 	}
+	if !created {
+		if err := relocateBusySlot(ctx, m, f, r); err != nil {
+			return nil, err
+		}
+	}
 	if opt.Scratch {
 		if !created {
 			return nil, fmt.Errorf("scratch feature %q already exists", name)
@@ -338,7 +343,7 @@ func ensureRecord(ctx context.Context, m *manifest.Manifest, name string) (*stat
 		return f, false, nil
 	}
 
-	slot, err := state.AllocateSlot(m.Name, name)
+	slot, err := state.AllocateSlotWhere(m.Name, name, -1, slotUsable(m))
 	if err != nil {
 		return nil, false, err
 	}
@@ -591,14 +596,7 @@ func tailIndent(path string, n int) string {
 	if err != nil {
 		return "    (no log available)"
 	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	for i := range lines {
-		lines[i] = "    " + lines[i]
-	}
-	return strings.Join(lines, "\n")
+	return worktree.IndentTail(string(b), n)
 }
 
 // EnvFor returns the environment a command run inside a feature's worktree

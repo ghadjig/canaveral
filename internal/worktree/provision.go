@@ -228,7 +228,18 @@ func copyDir(from, to string) (int, error) {
 }
 
 func indent(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return IndentTail(s, n)
+}
+
+// IndentTail returns the last n lines of a command's output, indented for
+// nesting under an error message, with stack traces folded first.
+//
+// The fold is what makes the tail worth showing. A crash prints its message
+// first and its backtrace after, so the last lines of a Ruby or Node failure
+// are forty frames of framework internals and the one line that says what
+// went wrong — "Address already in use" — is exactly the one cut off.
+func IndentTail(s string, n int) string {
+	lines := foldFrames(strings.Split(strings.TrimRight(s, "\n"), "\n"))
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -236,4 +247,42 @@ func indent(s string, n int) string {
 		lines[i] = "    " + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// foldFrames keeps the first and last frame of every run of stack frames and
+// replaces the rest with a count: enough to see where a failure started and
+// where it was raised from, without the frames crowding out the message.
+func foldFrames(lines []string) []string {
+	const keep = 2 // first and last
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		j := i
+		for j < len(lines) && isFrame(lines[j]) {
+			j++
+		}
+		if run := j - i; run > keep+1 {
+			out = append(out, lines[i],
+				fmt.Sprintf("        ... %d more frames ...", run-keep),
+				lines[j-1])
+			i = j
+			continue
+		}
+		if j == i {
+			j++
+		}
+		out = append(out, lines[i:j]...)
+		i = j
+	}
+	return out
+}
+
+// isFrame recognises a backtrace line from runtimes that print the message
+// before the frames: Ruby ("from file:line:in") and Node or the JVM ("at
+// ..."). Python prints its message last, so its tail is already right.
+func isFrame(line string) bool {
+	t := strings.TrimLeft(line, " \t")
+	if t == line {
+		return false
+	}
+	return strings.HasPrefix(t, "from ") || strings.HasPrefix(t, "at ")
 }

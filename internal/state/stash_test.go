@@ -249,3 +249,26 @@ func TestLoadAllStashesSpansProjects(t *testing.T) {
 		t.Errorf("first = %s, want the most recently stashed across every project", got[0].Feature.Project)
 	}
 }
+
+func TestAllocateSlotWhereSkipsUnusableSlots(t *testing.T) {
+	// Slot 1 is free as far as canaveral knows, but its ports are held by
+	// something else on the machine.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := Save(newFeature("norules", "a", 0)); err != nil {
+		t.Fatal(err)
+	}
+	slot, err := AllocateSlotWhere("norules", "new", 1, func(s int) bool { return s != 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot != 2 {
+		t.Errorf("AllocateSlotWhere = %d, want 2: 0 is taken and 1 is unusable", slot)
+	}
+}
+
+func TestAllocateSlotWhereGivesUpInsteadOfSpinning(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if _, err := AllocateSlotWhere("norules", "new", -1, func(int) bool { return false }); err == nil {
+		t.Error("AllocateSlotWhere succeeded with no usable slot")
+	}
+}

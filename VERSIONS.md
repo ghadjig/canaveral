@@ -12,6 +12,19 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- A new feature no longer gets ports that something outside canaveral is
+  already listening on (a `devspace dev` port-forward, a server started by
+  hand); slot allocation skips them. An existing feature whose ports have been
+  taken since moves to a free slot on its next open, as long as none of its
+  own services is running, and says which ports pushed it.
+- Service, precheck and setup failures fold stack traces before showing the
+  last lines of output, so the error message itself (`Address already in
+  use`, say) is no longer cut off by forty lines of Ruby backtrace.
+
 ## v0.18.0 — 2026-10-22
 
 **Fixed**
