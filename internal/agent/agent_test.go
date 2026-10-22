@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,78 +25,131 @@ func resetShellPATHCacheForTest() {
 	}{}
 }
 
-// asst builds one assistant message in the real wire shape: a
-// {"info": {...}} entry, with "role" and "modelID", returned in a bare
-// array ordered oldest-first.
+// asst builds one assistant message in opencode 2's wire shape: flat and
+// typed, with the model as an object rather than a bare "modelID".
 func asst(created int64, completed string, tokensIn, tokensOut int, cost float64, extra string) string {
 	comp := ""
 	if completed != "" {
 		comp = `,"completed":` + completed
 	}
-	return fmt.Sprintf(`{"info":{"role":"assistant","modelID":"m1","time":{"created":%d%s},`+
-		`"tokens":{"input":%d,"output":%d,"reasoning":0,"cache":{"read":0,"write":0}},"cost":%v%s}}`,
-		created, comp, tokensIn, tokensOut, cost, extra)
+	return fmt.Sprintf(`{"id":"msg_%d","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},`+
+		`"time":{"created":%d%s},"content":[],`+
+		`"tokens":{"input":%d,"output":%d,"reasoning":0,"cache":{"read":0,"write":0}},"cost":%v%s}`,
+		created, created, comp, tokensIn, tokensOut, cost, extra)
 }
 
-func msgList(msgs ...string) string { return "[" + strings.Join(msgs, ",") + "]" }
+// msgList builds a GET /api/session/{id}/message response from messages
+// given oldest-first, the way a conversation reads. The server is asked for
+// newest-first, so that is the order they go out in.
+func msgList(msgs ...string) string {
+	msgs = slices.Clone(msgs)
+	slices.Reverse(msgs)
+	return `{"data":[` + strings.Join(msgs, ",") + `],"cursor":{}}`
+}
 
 // msgWithID builds an assistant message carrying an explicit "id" and,
 // optionally, extra top-level fields (e.g. "error":{...}) — needed to
 // exercise classify's staleness check, which matches a question or
-// permission's tool.messageID against a specific message.
+// permission's source messageID against a specific message.
 func msgWithID(id string, created int64, completed string, extra string) string {
 	comp := ""
 	if completed != "" {
 		comp = `,"completed":` + completed
 	}
-	return fmt.Sprintf(`{"info":{"id":%q,"role":"assistant","modelID":"m1","time":{"created":%d%s}%s}}`,
+	return fmt.Sprintf(`{"id":%q,"type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},`+
+		`"time":{"created":%d%s},"content":[]%s}`,
 		id, created, comp, extra)
 }
 
-// fakeServer serves the endpoints Probe depends on, on the same API surface
-// the real server uses: /api/session for the session list, but the bare
-// /session/{id}/message, /question and /permission for everything else.
+// form builds one entry of GET /api/session/{id}/form as the question tool
+// raises it: one field per question, the header as its title. messageID is
+// the tool call's message, "" for a form that did not come from one.
+func form(session, messageID, header, question string, options ...string) string {
+	var opts []string
+	for _, o := range options {
+		opts = append(opts, fmt.Sprintf(`{"value":%q,"label":%q}`, o, o))
+	}
+	tool := ""
+	if messageID != "" {
+		tool = fmt.Sprintf(`,"tool":{"messageID":%q,"id":"call_1"}`, messageID)
+	}
+	return fmt.Sprintf(`{"id":"frm_1","sessionID":%q,"title":"Questions","metadata":{"kind":"question"%s},`+
+		`"fields":[{"key":"q0","type":"string","title":%q,"description":%q,"options":[%s],"custom":true}]}`,
+		session, tool, header, question, strings.Join(opts, ","))
+}
+
+// perm builds one entry of GET /api/permission/request.
+func perm(session, messageID, action string, resources ...string) string {
+	source := ""
+	if messageID != "" {
+		source = fmt.Sprintf(`,"source":{"type":"tool","messageID":%q,"id":"call_1"}`, messageID)
+	}
+	if resources == nil {
+		resources = []string{}
+	}
+	res := make([]string, len(resources))
+	for i, r := range resources {
+		res[i] = fmt.Sprintf("%q", r)
+	}
+	return fmt.Sprintf(`{"id":"per_1","sessionID":%q,"action":%q,"resources":[%s]%s}`,
+		session, action, strings.Join(res, ","), source)
+}
+
+func list(items ...string) string { return "[" + strings.Join(items, ",") + "]" }
+
+// running builds a GET /api/session/active response naming the given
+// sessions as running.
+func running(ids ...string) string {
+	var entries []string
+	for _, id := range ids {
+		entries = append(entries, fmt.Sprintf(`%q:{"type":"running"}`, id))
+	}
+	return `{"data":{` + strings.Join(entries, ",") + `}}`
+}
+
+// fakeServer serves the endpoints Probe depends on, all under /api as on a
+// real opencode 2 server.
 func fakeServer(t *testing.T, sessions, messages string) *httptest.Server {
 	t.Helper()
-	return fakeServerQ(t, sessions, messages, `{}`, `[]`, `[]`)
+	return fakeServerQ(t, sessions, messages, "", `[]`, `[]`)
 }
 
-func fakeServerFull(t *testing.T, sessions, messages, status, permissions string) *httptest.Server {
+func fakeServerFull(t *testing.T, sessions, messages, active, permissions string) *httptest.Server {
 	t.Helper()
-	return fakeServerQ(t, sessions, messages, status, permissions, `[]`)
+	return fakeServerQ(t, sessions, messages, active, permissions, `[]`)
 }
 
-func fakeServerQ(t *testing.T, sessions, messages, status, permissions, questions string) *httptest.Server {
-	t.Helper()
-	return fakeServerT(t, sessions, messages, status, permissions, questions, `[]`)
-}
-
-func fakeServerT(t *testing.T, sessions, messages, status, permissions, questions, todos string) *httptest.Server {
+// fakeServerQ is fakeServer with every input spelled out. active is the
+// /api/session/active body, or "" for a server that cannot say, which
+// leaves the transcript to decide whether a turn is running. permissions and
+// forms are JSON arrays; the forms are listed for whichever session is
+// asked, as a real server would only for their own.
+func fakeServerQ(t *testing.T, sessions, messages, active, permissions, forms string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(sessions))
 	})
-	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/todo") {
-			_, _ = w.Write([]byte(todos))
+	mux.HandleFunc("/api/session/active", func(w http.ResponseWriter, r *http.Request) {
+		if active == "" {
+			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(active))
+	})
+	mux.HandleFunc("/api/session/{id}/message", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(messages))
 	})
-	mux.HandleFunc("/session/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/session/{id}/form", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(status))
+		_, _ = w.Write([]byte(`{"data":` + forms + `}`))
 	})
-	mux.HandleFunc("/permission", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/permission/request", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(permissions))
-	})
-	mux.HandleFunc("/question", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(questions))
+		_, _ = w.Write([]byte(`{"location":{"directory":"/w/mine"},"data":` + permissions + `}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -108,12 +163,12 @@ func sess(id, dir string, updated int64, parent string, in, out int, cost float6
 	if parent != "" {
 		pid = fmt.Sprintf(`,"parentID":%q`, parent)
 	}
-	return fmt.Sprintf(`{"id":%q,"location":{"directory":%q},"time":{"updated":%d}%s,`+
+	return fmt.Sprintf(`{"id":%q,"projectID":"prj","location":{"directory":%q},"time":{"created":1,"updated":%d}%s,`+
 		`"tokens":{"input":%d,"output":%d,"reasoning":0,"cache":{"read":0,"write":0}},"cost":%v}`,
 		id, dir, updated, pid, in, out, cost)
 }
 
-func sessList(ss ...string) string { return `{"data":[` + strings.Join(ss, ",") + `]}` }
+func sessList(ss ...string) string { return `{"data":[` + strings.Join(ss, ",") + `],"cursor":{}}` }
 
 var twoDirSessions = sessList(
 	sess("ses_mine", "/w/mine", 200, "", 11, 5, 0.25),
@@ -121,13 +176,51 @@ var twoDirSessions = sessList(
 	sess("ses_other", "/w/other", 300, "", 0, 0, 0),
 )
 
+// The server refuses everything without its password; a probe that forgot
+// it would see nothing but 401s.
+func TestProbeAuthenticatesEveryRequest(t *testing.T) {
+	inner := fakeServerQ(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)),
+		running(), list(), list(form("ses_mine", "", "Q", "?")))
+	var mu sync.Mutex
+	var unauthenticated []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != "opencode" || p != "pw" {
+			mu.Lock()
+			unauthenticated = append(unauthenticated, r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		r.URL.Scheme, r.URL.Host = "http", strings.TrimPrefix(inner.URL, "http://")
+		resp, err := http.DefaultTransport.RoundTrip(r.Clone(r.Context()))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		buf := make([]byte, 64*1024)
+		n, _ := resp.Body.Read(buf)
+		_, _ = w.Write(buf[:n])
+	}))
+	defer srv.Close()
+
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine", Password: "pw"})
+	if !h.Reachable {
+		t.Fatalf("not reachable: %v", h.Err)
+	}
+	if len(unauthenticated) > 0 {
+		t.Errorf("requests sent without the password: %v", unauthenticated)
+	}
+}
+
 func TestProbeStateWaitingOnQuestion(t *testing.T) {
 	// The assistant asked something via the question tool. opencode keeps
-	// the session "busy" (the tool call is still open), but the agent
+	// the session running (the tool call is still open), but the agent
 	// cannot proceed without an answer, so waiting must win over busy.
 	msgs := msgList(asst(1, "", 0, 0, 0, ""))
-	questions := `[{"sessionID":"ses_mine","questions":[{"header":"Fork trigger","question":"When should canaveral fork a session?","options":[{"label":"Always"},{"label":"Never"}]}]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+	forms := list(form("ses_mine", "", "Fork trigger", "When should canaveral fork a session?", "Always", "Never"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, running("ses_mine"), `[]`, forms)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -139,17 +232,19 @@ func TestProbeStateWaitingOnQuestion(t *testing.T) {
 	if h.Pending.Kind != BlockQuestion || h.Pending.Header != "Fork trigger" {
 		t.Errorf("Pending = %+v", h.Pending)
 	}
+	if h.Pending.Detail != "When should canaveral fork a session?" {
+		t.Errorf("Detail = %q, want the question itself", h.Pending.Detail)
+	}
 	if len(h.Pending.Options) != 2 || h.Pending.Options[0] != "Always" {
 		t.Errorf("Options = %v", h.Pending.Options)
 	}
 }
 
 func TestProbeIgnoresPendingForAnotherSession(t *testing.T) {
-	// /question and /permission are server-wide; another session's pending
-	// item must not make this agent look blocked.
+	// Another session's pending item must not make this agent look blocked.
 	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
-	questions := `[{"sessionID":"ses_somebody_else","questions":[{"header":"Nope","question":"?","options":[]}]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+	forms := list(form("ses_somebody_else", "", "Nope", "?"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", `[]`, forms)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
@@ -159,9 +254,9 @@ func TestProbeIgnoresPendingForAnotherSession(t *testing.T) {
 
 func TestProbeQuestionOutranksPermission(t *testing.T) {
 	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
-	questions := `[{"sessionID":"ses_mine","questions":[{"header":"Pick one","question":"Which?","options":[]}]}]`
-	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["rm -rf /"]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, questions)
+	forms := list(form("ses_mine", "", "Pick one", "Which?"))
+	perms := list(perm("ses_mine", "", "bash", "rm -rf /"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", perms, forms)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Pending == nil || h.Pending.Kind != BlockQuestion {
@@ -171,18 +266,16 @@ func TestProbeQuestionOutranksPermission(t *testing.T) {
 
 func TestProbeIgnoresAStaleQuestionFromAnAbortedTurn(t *testing.T) {
 	// Regression test: opencode crashing (or being killed) mid-question can
-	// leave /question listing that request forever — there is no live TUI
-	// left to answer it, and nothing times it out. Once the message the
-	// request names has actually completed (here, aborted) and the
-	// conversation has moved on, the request is stale and must not keep
-	// reporting the agent as blocked.
+	// leave the request listed with no live TUI left to answer it, and
+	// nothing times it out. Once the message the request names has actually
+	// completed (here, aborted) and the conversation has moved on, the
+	// request is stale and must not keep reporting the agent as blocked.
 	msgs := msgList(
-		msgWithID("msg_aborted", 1, "2", `,"error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}`),
+		msgWithID("msg_aborted", 1, "2", `,"finish":"error","error":{"type":"aborted","message":"Aborted"}`),
 		asst(3, "4", 0, 0, 0, `,"finish":"stop"`), // the conversation continued past it
 	)
-	questions := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_aborted"},` +
-		`"questions":[{"header":"Stale","question":"Still here?","options":[]}]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+	forms := list(form("ses_mine", "msg_aborted", "Stale", "Still here?"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", `[]`, forms)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
@@ -198,9 +291,8 @@ func TestProbeHonoursAQuestionStillOpen(t *testing.T) {
 	// completed: the question is genuinely still pending and must still
 	// block.
 	msgs := msgList(msgWithID("msg_open", 1, "", ""))
-	questions := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_open"},` +
-		`"questions":[{"header":"Pick","question":"Which?","options":[]}]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, `[]`, questions)
+	forms := list(form("ses_mine", "msg_open", "Pick", "Which?"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", `[]`, forms)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -210,14 +302,13 @@ func TestProbeHonoursAQuestionStillOpen(t *testing.T) {
 
 func TestProbeIgnoresAStalePermissionFromAnAbortedTurn(t *testing.T) {
 	// Same bug, on the permission side: a crash mid-permission-request can
-	// leave /permission listing it forever even though its turn is long
-	// over.
+	// leave it listed forever even though its turn is long over.
 	msgs := msgList(
-		msgWithID("msg_aborted", 1, "2", `,"error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}`),
+		msgWithID("msg_aborted", 1, "2", `,"finish":"error","error":{"type":"aborted","message":"Aborted"}`),
 		asst(3, "4", 0, 0, 0, `,"finish":"stop"`),
 	)
-	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_aborted"},"permission":"bash","patterns":["rm -rf /"]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+	perms := list(perm("ses_mine", "msg_aborted", "bash", "rm -rf /"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
@@ -230,8 +321,8 @@ func TestProbeIgnoresAStalePermissionFromAnAbortedTurn(t *testing.T) {
 
 func TestProbeHonoursAPermissionStillOpen(t *testing.T) {
 	msgs := msgList(msgWithID("msg_open", 1, "", ""))
-	perms := `[{"sessionID":"ses_mine","tool":{"messageID":"msg_open"},"permission":"bash","patterns":["echo hi"]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+	perms := list(perm("ses_mine", "msg_open", "bash", "echo hi"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -241,8 +332,8 @@ func TestProbeHonoursAPermissionStillOpen(t *testing.T) {
 
 func TestProbePendingPermissionDetails(t *testing.T) {
 	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
-	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":["echo hi"]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, `{}`, perms, `[]`)
+	perms := list(perm("ses_mine", "", "bash", "echo hi"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, "", perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -251,16 +342,42 @@ func TestProbePendingPermissionDetails(t *testing.T) {
 	if h.Pending == nil || h.Pending.Kind != BlockPermission {
 		t.Fatalf("Pending = %+v, want a permission block", h.Pending)
 	}
+	if h.Pending.Header != "bash" {
+		t.Errorf("Header = %q, want the action", h.Pending.Header)
+	}
 	if len(h.Pending.Resources) != 1 || h.Pending.Resources[0] != "echo hi" {
 		t.Errorf("Resources = %v", h.Pending.Resources)
 	}
 }
 
+// Permission requests are listed per location; asking without one gets the
+// server's own directory, which is not the feature's.
+func TestProbeAsksForPermissionsInTheAgentsDirectory(t *testing.T) {
+	var got string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, twoDirSessions)
+	})
+	mux.HandleFunc("/api/session/{id}/message", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, msgList(asst(1, "2", 0, 0, 0, "")))
+	})
+	mux.HandleFunc("/api/permission/request", func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("location[directory]")
+		fmt.Fprint(w, `{"data":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_ = Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
+	if got != "/w/mine" {
+		t.Errorf("location[directory] = %q, want the agent's directory", got)
+	}
+}
+
 func TestProbeWaitingOutranksRetrying(t *testing.T) {
-	msgs := msgList(asst(1, "", 0, 0, 0, ""))
-	status := `{"ses_mine":{"type":"retry","attempt":1,"message":"rate limited","next":5}}`
-	perms := `[{"sessionID":"ses_mine","permission":"bash","patterns":[]}]`
-	srv := fakeServerQ(t, twoDirSessions, msgs, status, perms, `[]`)
+	msgs := msgList(asst(1, "", 0, 0, 0, `,"retry":{"attempt":1,"at":5,"error":{"type":"rate_limit","message":"rate limited"}}`))
+	perms := list(perm("ses_mine", "", "bash"))
+	srv := fakeServerQ(t, twoDirSessions, msgs, running("ses_mine"), perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -270,7 +387,7 @@ func TestProbeWaitingOutranksRetrying(t *testing.T) {
 
 func TestProbeNoPendingLeavesPendingNil(t *testing.T) {
 	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`))
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgs, "", `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Pending != nil {
@@ -279,36 +396,46 @@ func TestProbeNoPendingLeavesPendingNil(t *testing.T) {
 }
 
 func TestProbeStateBusy(t *testing.T) {
-	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), running("ses_mine"), `[]`)
 	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateBusy {
 		t.Errorf("State = %q, want busy", h.State)
 	}
 }
 
 func TestProbeStateIdle(t *testing.T) {
-	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), running(), `[]`)
 	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateIdle {
 		t.Errorf("State = %q, want idle", h.State)
 	}
 }
 
+// A turn a crash left without a completed time looks open in the
+// transcript, but the server knows it is not running anything.
+func TestProbeTrustsTheServerOverAnUnfinishedTranscript(t *testing.T) {
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), running("ses_other"), `[]`)
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
+	if h.State != StateIdle || h.Busy {
+		t.Errorf("State = %q, Busy = %v, want idle: the session is not running", h.State, h.Busy)
+	}
+}
+
 func TestProbeStateRetrying(t *testing.T) {
-	status := `{"ses_mine":{"type":"retry","attempt":1,"message":"rate limited","next":5}}`
-	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "", 0, 0, 0, "")), status, `[]`)
+	msgs := msgList(asst(1, "", 0, 0, 0, `,"retry":{"attempt":2,"at":5,"error":{"type":"rate_limit","message":"rate limited"}}`))
+	srv := fakeServerFull(t, twoDirSessions, msgs, running("ses_mine"), `[]`)
 	if h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"}); h.State != StateRetrying {
 		t.Errorf("State = %q, want retrying", h.State)
 	}
 }
 
 func TestProbeUsesTheLastAssistantMessageAsTheCurrentTurn(t *testing.T) {
-	// Regression test: messages come back oldest-first. Treating the first
-	// as "current" reported the state of the session's opening turn
-	// forever, so a working agent looked permanently idle.
+	// Regression test: a conversation reads oldest-first. Treating the
+	// first message as "current" reported the state of the session's
+	// opening turn forever, so a working agent looked permanently idle.
 	msgs := msgList(
-		asst(1000, "2000", 5, 5, 0.01, `,"finish":"stop","modelID":"old-model"`),
+		asst(1000, "2000", 5, 5, 0.01, `,"finish":"stop"`),
 		asst(3000, "", 0, 0, 0, ""), // newest, still generating
 	)
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgs, "", `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if !h.Busy {
@@ -328,7 +455,7 @@ func TestProbeWorkedSumsCompletedTurnsOnly(t *testing.T) {
 		asst(2000, "4000", 0, 0, 0, `,"finish":"stop"`),
 		asst(5000, "", 0, 0, 0, ""),
 	)
-	srv := fakeServerFull(t, twoDirSessions, msgs, `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgs, "", `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if want := 3 * time.Second; h.Worked != want {
@@ -342,9 +469,7 @@ func TestProbeWorkedSumsCompletedTurnsOnly(t *testing.T) {
 func TestProbeFiltersByDirectory(t *testing.T) {
 	// The server exposes the user's whole global history; only sessions rooted
 	// in this agent's directory may be counted.
-	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1,"completed":2},"finish":"stop",` +
-		`"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":1,"write":0}},"cost":0.25}}`)
-	srv := fakeServer(t, twoDirSessions, msgs)
+	srv := fakeServer(t, twoDirSessions, msgList(asst(1, "2", 10, 5, 0.25, `,"finish":"stop"`)))
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if !h.Reachable {
@@ -360,7 +485,7 @@ func TestProbeFiltersByDirectory(t *testing.T) {
 		t.Errorf("Model = %q, want m1", h.Model)
 	}
 	if got := h.Tokens.Total(); got != 16 {
-		t.Errorf("Tokens.Total = %d, want 16", got)
+		t.Errorf("Tokens.Total = %d, want 16 (from the session list)", got)
 	}
 	if h.Cost != 0.25 {
 		t.Errorf("Cost = %v, want 0.25", h.Cost)
@@ -368,8 +493,9 @@ func TestProbeFiltersByDirectory(t *testing.T) {
 }
 
 func TestProbeExposesModelVariantAndProvider(t *testing.T) {
-	msgs := msgList(`{"info":{"role":"assistant","modelID":"claude-sonnet-5","variant":"high",` +
-		`"providerID":"github-copilot","time":{"created":1,"completed":2},"finish":"stop"}}`)
+	msgs := msgList(`{"id":"m","type":"assistant","agent":"build",` +
+		`"model":{"id":"claude-sonnet-5","providerID":"github-copilot","variant":"high"},` +
+		`"time":{"created":1,"completed":2},"content":[],"finish":"stop"}`)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
@@ -384,8 +510,22 @@ func TestProbeExposesModelVariantAndProvider(t *testing.T) {
 	}
 }
 
+// A conversation with no turn yet still has a model: the one its first turn
+// will use, which is what the TUI shows.
+func TestProbeFallsBackToTheSessionsModel(t *testing.T) {
+	sessions := `{"data":[{"id":"ses_mine","location":{"directory":"/w/mine"},"time":{"updated":1},` +
+		`"model":{"id":"gpt-6","providerID":"openai","variant":"low"},` +
+		`"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}]}`
+	srv := fakeServer(t, sessions, msgList())
+
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
+	if h.Model != "gpt-6" || h.Provider != "openai" || h.Variant != "low" {
+		t.Errorf("model = %q/%q/%q, want the session's", h.Provider, h.Model, h.Variant)
+	}
+}
+
 func TestProbeExcludesSubagentSessionsFromTheCount(t *testing.T) {
-	// The Task tool gives every subagent its own session in the same
+	// The subagent tool gives every subagent its own session in the same
 	// directory, so one conversation with three helpers must not read as
 	// four separate things you started.
 	sessions := sessList(
@@ -460,7 +600,8 @@ func TestProbeWorkedExcludesSubagentTurns(t *testing.T) {
 }
 
 func TestProbeBusyWhenNotCompleted(t *testing.T) {
-	// A missing time.completed is the signal that generation is in flight.
+	// A missing time.completed is the signal that generation is in flight,
+	// when the server cannot be asked directly.
 	msgs := msgList(asst(1, "", 0, 0, 0, ""))
 	srv := fakeServer(t, twoDirSessions, msgs)
 
@@ -471,8 +612,7 @@ func TestProbeBusyWhenNotCompleted(t *testing.T) {
 }
 
 func TestProbeSurfacesError(t *testing.T) {
-	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1,"completed":2},"finish":"error",` +
-		`"error":{"name":"UnknownError","data":{"message":"HTTP 401 bad model"}}}}`)
+	msgs := msgList(asst(1, "2", 0, 0, 0, `,"finish":"error","error":{"type":"api","message":"HTTP 401 bad model","status":401}`))
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
@@ -482,19 +622,23 @@ func TestProbeSurfacesError(t *testing.T) {
 }
 
 func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
-	// User messages must not be mistaken for turns when finding the current
-	// one, and a non-error finish on an older message must not be reported
-	// as an error.
+	// Other message types must not be mistaken for turns when finding the
+	// current one, and a non-error finish on an older message must not be
+	// reported as an error.
 	msgs := msgList(
 		asst(1, "2", 5, 5, 0.05, `,"finish":"tool-calls"`),
-		`{"info":{"role":"user","time":{"created":2}}}`,
+		`{"id":"u","type":"user","time":{"created":2},"text":"go on"}`,
 		asst(3, "4", 10, 10, 0.1, `,"finish":"stop"`),
+		`{"id":"i","type":"idle","time":{"created":5},"outcome":"succeeded"}`,
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Worked != 2*time.Millisecond {
 		t.Errorf("Worked = %v, want 2ms across the two completed turns", h.Worked)
+	}
+	if h.Busy {
+		t.Error("Busy = true; the current turn has finished")
 	}
 	// finish=="tool-calls" on an older message must not be reported as an error.
 	if h.LastError != "" {
@@ -503,7 +647,7 @@ func TestProbeSumsAssistantMessagesOnly(t *testing.T) {
 }
 
 func TestProbeNoSessionsForDirectory(t *testing.T) {
-	srv := fakeServer(t, twoDirSessions, `[]`)
+	srv := fakeServer(t, twoDirSessions, msgList())
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/nothing-here"})
 	if !h.Reachable {
 		t.Fatal("want reachable")
@@ -529,15 +673,65 @@ func TestProbeEmptyURL(t *testing.T) {
 	}
 }
 
-func TestListenReMatchesOpencodeOutput(t *testing.T) {
-	log := "Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.\n" +
-		"opencode server listening on http://127.0.0.1:39777\n"
-	m := listenRe.FindStringSubmatch(log)
-	if m == nil {
-		t.Fatal("listenRe did not match real opencode output")
+// The web UI answers any path outside /api with a 200 and an HTML page. A
+// probe that lands there must say it failed rather than report an empty,
+// idle agent.
+func TestProbeReportsAnHTMLAnswerAsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		fmt.Fprint(w, "<!doctype html><html></html>")
+	}))
+	defer srv.Close()
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w"})
+	if h.Reachable || h.Err == nil {
+		t.Errorf("Reachable = %v, Err = %v; want an error", h.Reachable, h.Err)
 	}
-	if m[1] != "http://127.0.0.1:39777" {
-		t.Errorf("url = %q", m[1])
+}
+
+// The log of a real opencode 2.1 server, started the way ServeCmd starts
+// one.
+const serveLog = "server listening on http://127.0.0.1:39777\n" +
+	"server password zHXKQC4fGQ4JKuGnzlUxkbo2cDHc9WE66zkIRo8Fk3Y\n"
+
+func TestDiscoverReadsAddressAndPassword(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "agent.log")
+	if err := os.WriteFile(log, []byte(serveLog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := (opencode{}).Discover(context.Background(), log, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.URL != "http://127.0.0.1:39777" {
+		t.Errorf("URL = %q", ep.URL)
+	}
+	if ep.Password != "zHXKQC4fGQ4JKuGnzlUxkbo2cDHc9WE66zkIRo8Fk3Y" {
+		t.Errorf("Password = %q", ep.Password)
+	}
+}
+
+// opencode 1 printed an address and no password. Waiting it out must end in
+// an error that says what is wrong, not a generic timeout.
+func TestDiscoverNamesAnOpencodeWithoutAPassword(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "agent.log")
+	if err := os.WriteFile(log, []byte("opencode server listening on http://127.0.0.1:39777\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (opencode{}).Discover(context.Background(), log, 300*time.Millisecond, nil)
+	if err == nil || !strings.Contains(err.Error(), "opencode 2") {
+		t.Errorf("err = %v, want it to name the version needed", err)
+	}
+}
+
+// Without the blank override, a password in a manifest's [env] would reach
+// the server, which then prints none — and Discover would wait for one in
+// vain.
+func TestEnvForBlanksTheServerPassword(t *testing.T) {
+	env := (opencode{}).EnvFor(Selection{})
+	for _, k := range []string{"OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD"} {
+		if v, ok := env[k]; !ok || v != "" {
+			t.Errorf("%s = %q (set: %v), want explicitly blank", k, v, ok)
+		}
 	}
 }
 
@@ -549,16 +743,99 @@ func TestServeCmdQuotesPath(t *testing.T) {
 	}
 }
 
+// opencode 2 has no `attach`: the TUI connects with --server, and takes its
+// directory as an argument.
+func TestAttachArgvConnectsToTheServer(t *testing.T) {
+	c := Conn{URL: "http://127.0.0.1:4096", Dir: "/wt", Password: "pw"}
+	if got, want := strings.Join((opencode{}).AttachArgv(c, false), " "), "opencode --server http://127.0.0.1:4096 /wt"; got != want {
+		t.Errorf("AttachArgv = %q, want %q", got, want)
+	}
+	if got, want := strings.Join((opencode{}).AttachArgv(c, true), " "), "opencode --server http://127.0.0.1:4096 /wt --continue"; got != want {
+		t.Errorf("AttachArgv --continue = %q, want %q", got, want)
+	}
+	for _, a := range (opencode{}).AttachArgv(c, true) {
+		if strings.Contains(a, "pw") {
+			t.Errorf("the password is in argv, where any user can read it: %q", a)
+		}
+	}
+	if env := (opencode{}).ClientEnv(c); env["OPENCODE_PASSWORD"] != "pw" {
+		t.Errorf("ClientEnv = %v, want the password in OPENCODE_PASSWORD", env)
+	}
+}
+
+func TestAttachCommandQuotesOnlyWhatNeedsIt(t *testing.T) {
+	c := Conn{URL: "http://127.0.0.1:4096", Dir: "/home/me/my project"}
+	got := AttachCommand(opencode{}, c, "--session ses_1")
+	want := "opencode --server http://127.0.0.1:4096 '/home/me/my project' --session ses_1"
+	if got != want {
+		t.Errorf("AttachCommand = %q, want %q", got, want)
+	}
+	if got := AttachCommand(claude{}, Conn{Dir: "/wt"}, ""); got != "claude" {
+		t.Errorf("AttachCommand(claude) = %q, want %q", got, "claude")
+	}
+}
+
+func TestForkMovesTheCopyIntoTheNewWorktree(t *testing.T) {
+	var moved string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/session/ses_src/fork", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"id":"ses_copy","location":{"directory":"/wt/old"}}}`)
+	})
+	mux.HandleFunc("POST /api/session/ses_copy/move", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Directory string `json:"directory"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		moved = body.Directory
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	id, err := (opencode{}).Fork(context.Background(), Conn{URL: srv.URL}, "ses_src", "/wt/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "ses_copy" {
+		t.Errorf("id = %q, want ses_copy", id)
+	}
+	if moved != "/wt/new" {
+		t.Errorf("moved to %q, want /wt/new", moved)
+	}
+}
+
+// todos builds a finished todowrite call carrying items, each a
+// "status:content" pair.
+func todos(created int64, items ...string) string {
+	var out []string
+	for _, it := range items {
+		status, content, _ := strings.Cut(it, ":")
+		out = append(out, fmt.Sprintf(`{"content":%q,"status":%q,"priority":"medium"}`, content, status))
+	}
+	return fmt.Sprintf(`{"id":"msg_todo_%d","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},`+
+		`"time":{"created":%d,"completed":%d},"finish":"tool-calls","content":[`+
+		`{"type":"tool","id":"call_t","name":"todowrite","state":{"status":"completed","input":{"todos":[%s]},`+
+		`"content":[{"type":"text","text":"ok"}]},"time":{"created":%d,"ran":%d,"completed":%d}}]}`,
+		created, created, created+1, strings.Join(out, ","), created, created, created+1)
+}
+
+// opencode 2 has no todo endpoint: the list is the newest finished
+// todowrite call's, which is also how its own TUI finds it.
 func TestProbeReadsTodos(t *testing.T) {
-	todos := `[
-      {"content":"Verify schemas","status":"completed","priority":"high"},
-      {"content":"Fix parsing","status":"completed","priority":"high"},
-      {"content":"Wire the widget","status":"in_progress","priority":"medium"},
-      {"content":"Update README","status":"pending","priority":"low"},
-      {"content":"Dropped idea","status":"cancelled","priority":"low"}
-    ]`
-	srv := fakeServerT(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)),
-		`{}`, `[]`, `[]`, todos)
+	msgs := msgList(
+		todos(1, "completed:Stale list", "pending:Superseded"),
+		todos(2,
+			"completed:Verify schemas",
+			"completed:Fix parsing",
+			"in_progress:Wire the widget",
+			"pending:Update README",
+			"cancelled:Dropped idea",
+		),
+		asst(5, "6", 0, 0, 0, `,"finish":"stop"`),
+	)
+	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	got := h.Todos
@@ -574,6 +851,10 @@ func TestProbeReadsTodos(t *testing.T) {
 	}
 }
 
+func userMsg(text string) string {
+	return fmt.Sprintf(`{"id":"msg_u","type":"user","time":{"created":1},"text":%q}`, text)
+}
+
 // A todo list opencode reports as fully resolved (nothing in_progress or
 // pending) describes a task that has already wrapped up. If the
 // conversation has since moved on — a new user prompt arrived with no
@@ -581,15 +862,11 @@ func TestProbeReadsTodos(t *testing.T) {
 // must not keep reporting as if it were live progress on whatever the agent
 // is doing now.
 func TestProbeClearsStaleCompletedTodos(t *testing.T) {
-	allDone := `[
-      {"content":"Verify schemas","status":"completed","priority":"high"},
-      {"content":"Fix parsing","status":"completed","priority":"high"}
-    ]`
 	msgs := msgList(
-		msgWithTool("todowrite", "completed", "", 1),
-		textMsg("user", "totally different follow-up ask"),
+		todos(1, "completed:Verify schemas", "completed:Fix parsing"),
+		userMsg("totally different follow-up ask"),
 	)
-	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
+	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 0 {
@@ -600,15 +877,11 @@ func TestProbeClearsStaleCompletedTodos(t *testing.T) {
 // The same finished list, but with no prompt after the last todowrite call,
 // must still be reported: the task just finished and nothing has moved on.
 func TestProbeKeepsCompletedTodosWithoutNewerPrompt(t *testing.T) {
-	allDone := `[
-      {"content":"Verify schemas","status":"completed","priority":"high"},
-      {"content":"Fix parsing","status":"completed","priority":"high"}
-    ]`
 	msgs := msgList(
-		textMsg("user", "do the thing"),
-		msgWithTool("todowrite", "completed", "", 1),
+		userMsg("do the thing"),
+		todos(1, "completed:Verify schemas", "completed:Fix parsing"),
 	)
-	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, allDone)
+	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 2 || h.Todos.Completed != 2 {
@@ -620,15 +893,11 @@ func TestProbeKeepsCompletedTodosWithoutNewerPrompt(t *testing.T) {
 // prompt: follow-up guidance on an in-flight task does not make that task's
 // own list stale.
 func TestProbeKeepsInProgressTodosDespiteNewerPrompt(t *testing.T) {
-	stillGoing := `[
-      {"content":"Verify schemas","status":"completed","priority":"high"},
-      {"content":"Wire the widget","status":"in_progress","priority":"medium"}
-    ]`
 	msgs := msgList(
-		msgWithTool("todowrite", "completed", "", 1),
-		textMsg("user", "also handle the edge case"),
+		todos(1, "completed:Verify schemas", "in_progress:Wire the widget"),
+		userMsg("also handle the edge case"),
 	)
-	srv := fakeServerT(t, twoDirSessions, msgs, `{}`, `[]`, `[]`, stillGoing)
+	srv := fakeServer(t, twoDirSessions, msgs)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 2 || h.Todos.Current != "Wire the widget" {
@@ -637,7 +906,7 @@ func TestProbeKeepsInProgressTodosDespiteNewerPrompt(t *testing.T) {
 }
 
 func TestProbeNoTodosIsZeroed(t *testing.T) {
-	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, `[]`)
+	srv := fakeServerFull(t, twoDirSessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), "", `[]`)
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Todos.Total != 0 || h.Todos.Current != "" {
 		t.Errorf("Todos = %+v, want zeroed when the agent uses no list", h.Todos)
@@ -655,22 +924,24 @@ func TestTodosDoneCountsCancelledAsResolved(t *testing.T) {
 	}
 }
 
-// msgWithTool builds an assistant message carrying one tool part.
-func msgWithTool(tool, status, title string, start int64) string {
-	return fmt.Sprintf(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},`+
-		`"parts":[{"type":"text"},{"type":"tool","tool":%q,"state":{"status":%q,"title":%q,"time":{"start":%d}}}]}`,
-		tool, status, title, start)
+// msgWithTool builds an assistant message carrying one tool part, whose
+// input describes the call as command.
+func msgWithTool(tool, status, command string, start int64) string {
+	return fmt.Sprintf(`{"id":"msg_%d","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},"time":{"created":1},`+
+		`"content":[{"type":"text","text":""},{"type":"tool","id":"call_1","name":%q,`+
+		`"state":{"status":%q,"input":{"command":%q},"metadata":{}},"time":{"created":%d,"ran":%d}}]}`,
+		start, tool, status, command, start, start)
 }
 
 func TestProbeReportsTheRunningToolAsActivity(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions,
-		msgList(msgWithTool("bash", "running", "bin/rails test", 1700000000000)))
+		msgList(msgWithTool("shell", "running", "bin/rails test", 1700000000000)))
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil {
 		t.Fatal("Activity = nil, want the running tool call")
 	}
-	if h.Activity.Tool != "bash" || h.Activity.Title != "bin/rails test" {
+	if h.Activity.Tool != "shell" || h.Activity.Title != "bin/rails test" {
 		t.Errorf("Activity = %+v", h.Activity)
 	}
 	if h.Activity.Since.UnixMilli() != 1700000000000 {
@@ -678,16 +949,25 @@ func TestProbeReportsTheRunningToolAsActivity(t *testing.T) {
 	}
 }
 
-func TestProbeTreatsPendingToolsAsActivity(t *testing.T) {
-	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("edit", "pending", "app/models/user.rb", 1)))
+// While the model is still writing a call's arguments they arrive as the
+// raw partial string, not an object. That must neither fail the decode of
+// the whole transcript nor hide that a call is under way.
+func TestProbeTreatsStreamingToolsAsActivity(t *testing.T) {
+	msgs := msgList(`{"id":"m","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},"time":{"created":1},` +
+		`"content":[{"type":"tool","id":"call_1","name":"edit","state":{"status":"streaming","input":"{\"filePath\":\"app/mo"},` +
+		`"time":{"created":7}}]}`)
+	srv := fakeServer(t, twoDirSessions, msgs)
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil || h.Activity.Tool != "edit" {
-		t.Errorf("Activity = %+v, want the pending call", h.Activity)
+		t.Fatalf("Activity = %+v, want the streaming call", h.Activity)
+	}
+	if h.Activity.Since.UnixMilli() != 7 {
+		t.Errorf("Since = %v, want the call's creation before it has run", h.Activity.Since)
 	}
 }
 
 func TestProbeNoActivityWhenToolsHaveFinished(t *testing.T) {
-	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("bash", "completed", "ls", 1)))
+	srv := fakeServer(t, twoDirSessions, msgList(msgWithTool("shell", "completed", "ls", 1)))
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity != nil {
 		t.Errorf("Activity = %+v, want nil once the call has completed", h.Activity)
@@ -698,7 +978,7 @@ func TestProbeActivityIgnoresEarlierTurns(t *testing.T) {
 	// Only the newest turn can have a call in flight; a stale "running"
 	// left on an older message must not be reported as current.
 	srv := fakeServer(t, twoDirSessions, msgList(
-		msgWithTool("bash", "running", "old and stuck", 1),
+		msgWithTool("shell", "running", "old and stuck", 1),
 		msgWithTool("grep", "completed", "done", 2),
 	))
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
@@ -709,30 +989,13 @@ func TestProbeActivityIgnoresEarlierTurns(t *testing.T) {
 
 func TestProbeActivityTitleIsTrimmedToOneLine(t *testing.T) {
 	srv := fakeServer(t, twoDirSessions,
-		msgList(msgWithTool("bash", "running", "cd /somewhere \u0026\u0026 \\n  bin/rails test \\n  --verbose", 1)))
+		msgList(msgWithTool("shell", "running", "cd /somewhere && \n  bin/rails test \n  --verbose", 1)))
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.Activity == nil {
 		t.Fatal("Activity = nil")
 	}
 	if strings.Contains(h.Activity.Title, "\n") {
 		t.Errorf("Title still multi-line: %q", h.Activity.Title)
-	}
-}
-
-func TestProbeActivityFallsBackToInputWhileRunning(t *testing.T) {
-	// A running call has no title yet — only its arguments — and that is
-	// exactly the call worth describing.
-	msgs := msgList(`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},` +
-		`"parts":[{"type":"tool","tool":"bash","state":{"status":"running",` +
-		`"input":{"command":"bin/rails test","timeout":120000},"time":{"start":5}}}]}`)
-	srv := fakeServer(t, twoDirSessions, msgs)
-
-	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
-	if h.Activity == nil {
-		t.Fatal("Activity = nil")
-	}
-	if h.Activity.Title != "bin/rails test" {
-		t.Errorf("Title = %q, want the command from the input", h.Activity.Title)
 	}
 }
 
@@ -756,8 +1019,11 @@ func TestDescribeInputPrefersKnownKeys(t *testing.T) {
 }
 
 func textMsg(role, text string) string {
-	return fmt.Sprintf(`{"info":{"role":%q,"modelID":"m1","time":{"created":1,"completed":2}},`+
-		`"parts":[{"type":"text","text":%q}]}`, role, text)
+	if role == "user" {
+		return userMsg(text)
+	}
+	return fmt.Sprintf(`{"id":"msg_a","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},`+
+		`"time":{"created":1,"completed":2},"content":[{"type":"text","text":%q}]}`, text)
 }
 
 func TestProbeReportsLastMessageFromEachSide(t *testing.T) {
@@ -817,8 +1083,8 @@ func TestProbeSeesAPermissionBlockingASubagent(t *testing.T) {
 		sess("ses_root", "/w/mine", 200, "", 0, 0, 0),
 		sess("ses_sub", "/w/mine", 100, "ses_root", 0, 0, 0),
 	)
-	perms := `[{"sessionID":"ses_sub","permission":"external_directory","patterns":["/gems/ruby_llm/*"]}]`
-	srv := fakeServerQ(t, sessions, msgList(asst(1, "", 0, 0, 0, "")), `{}`, perms, `[]`)
+	perms := list(perm("ses_sub", "", "external_directory", "/gems/ruby_llm/*"))
+	srv := fakeServerQ(t, sessions, msgList(asst(1, "", 0, 0, 0, "")), running("ses_root", "ses_sub"), perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateWaiting {
@@ -832,6 +1098,48 @@ func TestProbeSeesAPermissionBlockingASubagent(t *testing.T) {
 	}
 }
 
+// Forms are listed one session at a time, so a subagent's question is only
+// found by asking that subagent.
+func TestProbeSeesAQuestionFromASubagent(t *testing.T) {
+	sessions := sessList(
+		sess("ses_root", "/w/mine", 200, "", 0, 0, 0),
+		sess("ses_sub", "/w/mine", 100, "ses_root", 0, 0, 0),
+		sess("ses_done", "/w/mine", 90, "ses_root", 0, 0, 0),
+	)
+	var asked []string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, sessions) })
+	mux.HandleFunc("/api/session/active", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, running("ses_root", "ses_sub"))
+	})
+	mux.HandleFunc("/api/session/{id}/message", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, msgList(asst(1, "", 0, 0, 0, "")))
+	})
+	mux.HandleFunc("/api/session/{id}/form", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		mu.Lock()
+		asked = append(asked, id)
+		mu.Unlock()
+		if id == "ses_sub" {
+			fmt.Fprint(w, `{"data":`+list(form("ses_sub", "", "Which DB?", "Pick one", "pg"))+`}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[]}`)
+	})
+	mux.HandleFunc("/api/permission/request", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"data":[]}`) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
+	if h.State != StateWaiting || h.Pending == nil || h.Pending.Header != "Which DB?" {
+		t.Fatalf("State = %q, Pending = %+v; want the subagent's question", h.State, h.Pending)
+	}
+	if slices.Contains(asked, "ses_done") {
+		t.Errorf("asked a finished subagent for forms: %v; only running sessions can have one", asked)
+	}
+}
+
 func TestProbeIgnoresPendingFromAnUnrelatedConversation(t *testing.T) {
 	// Widening the match to the family must not widen it to the whole
 	// server: another conversation's prompt is not this one's problem.
@@ -840,8 +1148,8 @@ func TestProbeIgnoresPendingFromAnUnrelatedConversation(t *testing.T) {
 		sess("ses_other_root", "/w/mine", 100, "", 0, 0, 0),
 		sess("ses_other_sub", "/w/mine", 50, "ses_other_root", 0, 0, 0),
 	)
-	perms := `[{"sessionID":"ses_other_sub","permission":"bash","patterns":[]}]`
-	srv := fakeServerQ(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), `{}`, perms, `[]`)
+	perms := list(perm("ses_other_sub", "", "bash"))
+	srv := fakeServerQ(t, sessions, msgList(asst(1, "2", 0, 0, 0, `,"finish":"stop"`)), "", perms, `[]`)
 
 	h := Probe(context.Background(), "opencode", Conn{URL: srv.URL, Dir: "/w/mine"})
 	if h.State != StateIdle {
@@ -887,9 +1195,9 @@ func TestProbeShowsPartialReplyDuringTheSameTurn(t *testing.T) {
 	// the current prompt, so it should show even while it is still working.
 	msgs := msgList(
 		textMsg("user", "do the thing"),
-		`{"info":{"role":"assistant","modelID":"m1","time":{"created":1}},`+
-			`"parts":[{"type":"text","text":"Looking into it now."},`+
-			`{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls"},"time":{"start":1}}}]}`,
+		`{"id":"m","type":"assistant","agent":"build","model":{"id":"m1","providerID":"p1"},"time":{"created":1},`+
+			`"content":[{"type":"text","text":"Looking into it now."},`+
+			`{"type":"tool","id":"c","name":"shell","state":{"status":"running","input":{"command":"ls"},"metadata":{}},"time":{"created":1}}]}`,
 	)
 	srv := fakeServer(t, twoDirSessions, msgs)
 
@@ -912,7 +1220,7 @@ func TestProbeSincePromptMeasuresFromTheUserMessage(t *testing.T) {
 	// sub-turn happens to be generating.
 	start := time.Now().Add(-5 * time.Minute).UnixMilli()
 	msgs := msgList(
-		fmt.Sprintf(`{"info":{"role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"do it"}]}`, start),
+		fmt.Sprintf(`{"id":"u","type":"user","time":{"created":%d},"text":"do it"}`, start),
 		asst(start+1000, fmt.Sprint(start+2000), 0, 0, 0, `,"finish":"stop"`),
 		asst(time.Now().Add(-2*time.Second).UnixMilli(), "", 0, 0, 0, ""),
 	)

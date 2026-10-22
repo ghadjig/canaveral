@@ -49,8 +49,8 @@ func (claude) Serves() bool { return false }
 
 func (claude) ServeCmd(string) string { return "" }
 
-func (claude) DiscoverURL(context.Context, string, time.Duration, func() error) (string, error) {
-	return "", fmt.Errorf("claude has no server to discover")
+func (claude) Discover(context.Context, string, time.Duration, func() error) (Endpoint, error) {
+	return Endpoint{}, fmt.Errorf("claude has no server to discover")
 }
 
 // EnvFor maps the manifest's model onto ANTHROPIC_MODEL, which is what
@@ -78,6 +78,9 @@ func (claude) AttachArgv(_ Conn, cont bool) []string {
 	}
 	return argv
 }
+
+// ClientEnv is empty: there is no server to authenticate to.
+func (claude) ClientEnv(Conn) map[string]string { return nil }
 
 func (claude) SessionFlag(id string) string {
 	if id == "" {

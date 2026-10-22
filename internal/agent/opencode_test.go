@@ -4,12 +4,14 @@ import "testing"
 
 func TestRelevantEventFiltersTheFirehose(t *testing.T) {
 	want := []string{
-		"session.idle", "session.error", "session.status",
-		"permission.asked", "permission.v2.asked",
-		"question.asked", "question.v2.asked", "question.v2.replied",
+		"session.execution.started", "session.execution.succeeded",
+		"session.execution.failed", "session.execution.interrupted",
+		"session.retry.scheduled",
+		"permission.asked", "permission.replied",
+		"form.created", "form.replied", "form.cancelled",
 		// Todo progress moves a progress gauge even while the headline
-		// status stays "working".
-		"todo.updated",
+		// status stays "working", and arrives as a finished tool call.
+		"session.tool.success",
 		"server.connected",
 	}
 	for _, e := range want {
@@ -20,8 +22,8 @@ func TestRelevantEventFiltersTheFirehose(t *testing.T) {
 	// The high-frequency streaming events must be ignored, or every token
 	// would trigger a re-probe of every agent.
 	ignore := []string{
-		"message.part.delta", "message.part.updated", "session.next.text.delta",
-		"session.next.reasoning.delta", "plugin.added", "server.heartbeat",
+		"session.text.delta", "session.reasoning.delta", "session.tool.input.delta",
+		"session.tool.progress", "project.updated", "server.heartbeat",
 		"file.watcher.updated",
 	}
 	for _, e := range ignore {

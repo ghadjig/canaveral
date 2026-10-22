@@ -6,15 +6,19 @@ package agent
 // questions and permission requests, retry state, and per-session token and
 // cost totals all come straight from the running process.
 //
-// Note the mixed API surface below: the session list lives under /api, while
-// messages, todos, questions and permissions do not. That is opencode's, not
-// a typo — the bare paths are the ones verified to actually return data.
+// This speaks opencode 2's API, which lives entirely under /api and refuses
+// any request without HTTP Basic auth. Everything outside /api belongs to the
+// bundled web UI, which answers any path at all with 200 and an HTML page —
+// so a path that has moved does not fail with a 404 here, it fails to
+// decode. That is how the first opencode 2 release left canaveral blind
+// without a single error that said why.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,8 +46,25 @@ func (opencode) ServeCmd(bin string) string {
 	return fmt.Sprintf("exec %s serve --hostname 127.0.0.1 --port 0", shellQuote(bin))
 }
 
+// serverUser is the Basic auth username opencode's server accepts. Only the
+// password varies.
+const serverUser = "opencode"
+
+// passwordEnv is the variable an opencode client reads the server password
+// from. The server reads it too, along with the older spelling below.
+const passwordEnv = "OPENCODE_PASSWORD"
+
 func (opencode) EnvFor(sel Selection) map[string]string {
-	env := map[string]string{}
+	env := map[string]string{
+		// Blank rather than absent, so a password set in a manifest's [env]
+		// cannot reach the server. Given none, opencode generates a fresh
+		// one on every start and prints it next to its address, which is
+		// where Discover reads it from — exactly as it does the port, and
+		// for the same reason: a unit adopted after canaveral lost its
+		// state can still be reached.
+		passwordEnv:                "",
+		"OPENCODE_SERVER_PASSWORD": "",
+	}
 	if sel.Model != "" {
 		env["OPENCODE_MODEL"] = sel.Model
 	}
@@ -55,15 +76,27 @@ func (opencode) EnvFor(sel Selection) map[string]string {
 
 // AttachArgv opens an opencode TUI against the running server.
 //
-// --dir is passed even though the caller already runs this in c.Dir: an
-// opencode client takes its session scope from the flag, not from its own
-// working directory.
+// The directory is passed even though the caller already runs this in
+// c.Dir: an opencode client takes its session scope from the argument, not
+// from its own working directory.
 func (opencode) AttachArgv(c Conn, cont bool) []string {
-	argv := []string{"opencode", "attach", c.URL, "--dir", c.Dir}
+	argv := []string{"opencode", "--server", c.URL}
+	if c.Dir != "" {
+		argv = append(argv, c.Dir)
+	}
 	if cont {
 		argv = append(argv, "--continue")
 	}
 	return argv
+}
+
+// ClientEnv hands the TUI the server's password. A client connecting with
+// --server reads it only from the environment; there is no flag for it.
+func (opencode) ClientEnv(c Conn) map[string]string {
+	if c.Password == "" {
+		return nil
+	}
+	return map[string]string{passwordEnv: c.Password}
 }
 
 func (opencode) SessionFlag(id string) string {
@@ -77,18 +110,8 @@ func (opencode) Watch(ctx context.Context, c Conn, fn func()) error {
 	if c.URL == "" {
 		return ErrNoEvents
 	}
-	return ocevents.Watch(ctx, c.URL, func(ev ocevents.Event) {
-		relevant := relevantEvent(ev.Type)
-		if ev.Type == "message.part.updated" {
-			var payload struct {
-				Part struct {
-					Type string `json:"type"`
-				} `json:"part"`
-			}
-			_ = json.Unmarshal(ev.Payload(), &payload)
-			relevant = payload.Part.Type == "tool"
-		}
-		if relevant {
+	return ocevents.Watch(ctx, c.URL, c.Password, func(ev ocevents.Event) {
+		if relevantEvent(ev.Type) {
 			invalidateRecent(c.URL)
 			fn()
 		}
@@ -98,22 +121,28 @@ func (opencode) Watch(ctx context.Context, c Conn, fn func()) error {
 // relevantEvent filters opencode's event firehose down to the ones that can
 // change a feature's headline state.
 //
-// opencode emits a great deal per turn (token deltas, individual message
-// parts); reacting to all of it would mean re-probing every agent dozens of
-// times a second for no visible difference. The list is deliberately broad
-// because an event only triggers a re-read — being slightly over-inclusive
-// costs one HTTP round trip, while being under-inclusive would mean missing
-// a state change entirely.
+// opencode emits a great deal per turn (text and reasoning deltas, tool
+// input as it streams); reacting to all of it would mean re-probing every
+// agent dozens of times a second for no visible difference. The list is
+// deliberately broad because an event only triggers a re-read — being
+// slightly over-inclusive costs one HTTP round trip, while being
+// under-inclusive would mean missing a state change entirely.
+//
+// Todo progress has no event of its own: it is a todowrite tool call, and
+// arrives as session.tool.success.
 func relevantEvent(t string) bool {
 	switch t {
-	case "session.idle", "session.error", "session.status", "session.created", "session.deleted",
-		"permission.asked", "permission.replied",
-		"permission.v2.asked", "permission.v2.replied",
-		"question.asked", "question.replied", "question.rejected",
-		"question.v2.asked", "question.v2.replied", "question.v2.rejected",
-		"todo.updated", "message.updated",
-		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
-		"server.connected":
+	case "server.connected",
+		"session.created", "session.deleted", "session.moved",
+		"session.execution.started", "session.execution.succeeded",
+		"session.execution.failed", "session.execution.interrupted",
+		"session.step.started", "session.step.ended", "session.step.failed",
+		"session.text.ended",
+		"session.tool.called", "session.tool.success", "session.tool.failed",
+		"session.retry.scheduled",
+		"session.compaction.started", "session.compaction.ended",
+		"permission.asked", "permission.replied", "permission.rejected",
+		"form.created", "form.replied", "form.cancelled":
 		return true
 	}
 	return false
@@ -122,31 +151,48 @@ func relevantEvent(t string) bool {
 // listenRe matches the line opencode prints once its HTTP server is bound.
 var listenRe = regexp.MustCompile(`listening on (https?://[^\s]+)`)
 
-// DiscoverURL polls the agent log until opencode reports its listen address.
+// passwordRe matches the line opencode prints with the password it
+// generated, right after listenRe's.
+var passwordRe = regexp.MustCompile(`(?m)^server password (\S+)`)
+
+// Discover polls the agent log until opencode reports its listen address
+// and password.
 //
 // Parsing the log rather than pre-allocating a port avoids a TOCTOU race where
 // another process claims the port between our probe and opencode's bind.
-func (opencode) DiscoverURL(ctx context.Context, logPath string, timeout time.Duration, alive func() error) (string, error) {
+func (opencode) Discover(ctx context.Context, logPath string, timeout time.Duration, alive func() error) (Endpoint, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
+	var ep Endpoint
 	for {
 		if alive != nil {
 			if err := alive(); err != nil {
-				return "", err
+				return Endpoint{}, err
 			}
 		}
 		if b, err := os.ReadFile(logPath); err == nil {
 			if m := listenRe.FindSubmatch(b); m != nil {
-				return string(m[1]), nil
+				ep.URL = string(m[1])
+			}
+			if m := passwordRe.FindSubmatch(b); m != nil {
+				ep.Password = string(m[1])
+			}
+			if ep.URL != "" && ep.Password != "" {
+				return ep, nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("timed out after %s waiting for opencode to report a listen address (see %s)", timeout, logPath)
+			if ep.URL != "" {
+				// Every opencode 2 server prints one; an address with no
+				// password is opencode 1, whose API this no longer speaks.
+				return Endpoint{}, fmt.Errorf("opencode reported %s but no server password after %s; canaveral needs opencode 2 or later (see %s)", ep.URL, timeout, logPath)
+			}
+			return Endpoint{}, fmt.Errorf("timed out after %s waiting for opencode to report a listen address (see %s)", timeout, logPath)
 		case <-ticker.C:
 		}
 	}
@@ -154,16 +200,26 @@ func (opencode) DiscoverURL(ctx context.Context, logPath string, timeout time.Du
 
 var client = &http.Client{Timeout: 4 * time.Second}
 
+// modelRef names a model the way opencode does everywhere: on a session, on
+// each assistant message.
+type modelRef struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+	Variant    string `json:"variant"`
+}
+
 type sessionInfo struct {
 	ID string `json:"id"`
-	// ParentID is set on subagent sessions, which the Task tool creates in
-	// the same directory as the conversation that spawned them.
+	// ParentID is set on subagent sessions, which the subagent tool creates
+	// in the same directory as the conversation that spawned them. A fork
+	// has none: it is a conversation of its own.
 	ParentID string `json:"parentID"`
 	Location struct {
 		Directory string `json:"directory"`
 	} `json:"location"`
-	Tokens Tokens  `json:"tokens"`
-	Cost   float64 `json:"cost"`
+	Model  modelRef `json:"model"`
+	Tokens Tokens   `json:"tokens"`
+	Cost   float64  `json:"cost"`
 	Time   struct {
 		Updated int64 `json:"updated"`
 	} `json:"time"`
@@ -173,63 +229,64 @@ type sessionListResp struct {
 	Data []sessionInfo `json:"data"`
 }
 
-type sessionStatusInfo struct {
-	Type string `json:"type"`
+// structuredError is how opencode reports a failure on a message or a tool
+// call.
+type structuredError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
-// messageInfo is the "info" half of a session message.
+// sessionMessage is one entry of GET /api/session/{id}/message.
 //
-// Note the field names: the role is "role" (not "type") and the model is a
-// flat "modelID" (not a nested object). Getting these wrong is silent — the
-// JSON simply decodes to zero values — which is exactly how token, cost and
-// busy reporting stayed broken while looking fine.
-type messageInfo struct {
+// Messages are a tagged union on Type. Only "user" and "assistant" carry
+// anything Probe reads; the rest ("idle" closing a run, "location-switched"
+// after a move, "shell", "synthetic" and so on) are bookkeeping, and are
+// kept only so that "the newest message" means the same thing here as it
+// does to opencode.
+type sessionMessage struct {
 	ID   string `json:"id"`
-	Role string `json:"role"`
+	Type string `json:"type"`
 	Time struct {
 		Created   int64  `json:"created"`
 		Completed *int64 `json:"completed"`
 	} `json:"time"`
-	Finish     string  `json:"finish"`
-	Tokens     Tokens  `json:"tokens"`
-	Cost       float64 `json:"cost"`
-	ModelID    string  `json:"modelID"`
-	Variant    string  `json:"variant"`
-	ProviderID string  `json:"providerID"`
-	Error      *struct {
-		Name string `json:"name"`
-		Data struct {
-			Message string `json:"message"`
-		} `json:"data"`
-	} `json:"error"`
+	Model modelRef `json:"model"`
+	// Text is a user message's prompt. An assistant's text is in Content.
+	Text    string           `json:"text"`
+	Content []messagePart    `json:"content"`
+	Finish  string           `json:"finish"`
+	Error   *structuredError `json:"error"`
+	// Retry is set while the turn is waiting to retry a failed provider
+	// call, and replaced on the next attempt.
+	Retry *struct {
+		Attempt int `json:"attempt"`
+	} `json:"retry"`
 }
 
-// sessionMessage is one entry of GET /session/{id}/message, which returns a
-// bare array of {info, parts} — not a {"data": [...]} envelope, and not the
-// flat message objects the /api/session/{id}/message surface implies.
-type sessionMessage struct {
-	Info  messageInfo   `json:"info"`
-	Parts []messagePart `json:"parts"`
-}
-
-// messagePart is one part of a message. Only tool parts are used, to report
-// what the agent is executing right now; the rest (text, reasoning,
-// step markers) carry nothing a status view needs.
+// messagePart is one piece of an assistant message's content. Only text and
+// tool parts are used; reasoning carries nothing a status view needs.
 type messagePart struct {
-	Type  string `json:"type"`
-	Text  string `json:"text"`
-	Tool  string `json:"tool"`
+	Type string `json:"type"`
+	Text string `json:"text"`
+	// Name is the tool's name, for a tool part.
+	Name  string `json:"name"`
 	State struct {
-		Status string `json:"status"` // pending | running | completed | error
-		// Title is only filled in once a call finishes, so a call that is
-		// still running — precisely the one worth reporting — has none, and
-		// its arguments have to stand in. Confirmed against a live server.
-		Title string         `json:"title"`
-		Input map[string]any `json:"input"`
-		Time  struct {
-			Start int64 `json:"start"`
-		} `json:"time"`
+		// Status is streaming | running | completed | error.
+		Status string `json:"status"`
+		// Input is the call's arguments: an object, except while the
+		// model is still streaming it, when it is the raw partial string.
+		Input json.RawMessage `json:"input"`
 	} `json:"state"`
+	Time struct {
+		Created int64 `json:"created"`
+		Ran     int64 `json:"ran"`
+	} `json:"time"`
+
+	// Title describes the call and Todos holds a todowrite call's list.
+	// Both are derived from Input by recentMessages, which then drops
+	// Input: it can be an entire file's contents.
+	Title string     `json:"-"`
+	Todos []todoItem `json:"-"`
 }
 
 // requestTool identifies the message and tool call a question or
@@ -239,36 +296,38 @@ type requestTool struct {
 	MessageID string `json:"messageID"`
 }
 
-// permissionRequest is one entry of GET /permission, the server-wide list of
-// pending permission requests.
+// permissionRequest is one entry of GET /api/permission/request.
 type permissionRequest struct {
-	SessionID  string      `json:"sessionID"`
-	Permission string      `json:"permission"`
-	Patterns   []string    `json:"patterns"`
-	Tool       requestTool `json:"tool"`
+	SessionID string      `json:"sessionID"`
+	Action    string      `json:"action"`
+	Resources []string    `json:"resources"`
+	Message   string      `json:"message"`
+	Source    requestTool `json:"source"`
 }
 
-// questionRequest is one entry of GET /question, the server-wide list of
-// pending questions. A request can carry several questions; only the first
-// is surfaced, since a compact widget has room for one headline and the
-// rest are visible in the TUI anyway.
-type questionRequest struct {
-	SessionID string      `json:"sessionID"`
-	Tool      requestTool `json:"tool"`
-	Questions []struct {
-		Question string `json:"question"`
-		Header   string `json:"header"`
-		Options  []struct {
+// formInfo is one entry of GET /api/session/{id}/form: something the agent
+// is waiting for a person to fill in. The question tool is the usual source,
+// with one field per question; an MCP server asking for authorization is
+// another.
+type formInfo struct {
+	SessionID string `json:"sessionID"`
+	Title     string `json:"title"`
+	Metadata  struct {
+		Tool requestTool `json:"tool"`
+	} `json:"metadata"`
+	Fields []struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Options     []struct {
 			Label string `json:"label"`
 		} `json:"options"`
-	} `json:"questions"`
+	} `json:"fields"`
 }
 
-// todoItem is one entry of GET /session/{id}/todo.
+// todoItem is one entry of a todowrite call's list.
 type todoItem struct {
-	Content  string `json:"content"`
-	Status   string `json:"status"`
-	Priority string `json:"priority"`
+	Content string `json:"content"`
+	Status  string `json:"status"`
 }
 
 // Probe reports what the agent rooted at c.Dir is currently doing.
@@ -276,13 +335,13 @@ type todoItem struct {
 // Sessions are filtered by location.directory because an opencode server
 // exposes the user's entire global session history, not just this workspace's.
 func (opencode) Probe(ctx context.Context, c Conn) Health {
-	baseURL, dir := c.URL, c.Dir
-	if baseURL == "" {
+	if c.URL == "" {
 		return Health{Err: fmt.Errorf("no url")}
 	}
+	dir := c.Dir
 
 	var list sessionListResp
-	if err := getJSON(ctx, baseURL+"/api/session?limit=100&order=desc&directory="+url.QueryEscape(dir), &list); err != nil {
+	if err := getJSON(ctx, c, "/api/session?limit=100&order=desc&directory="+url.QueryEscape(dir), &list); err != nil {
 		return Health{Err: err}
 	}
 	// A server that answered is by definition running, so Live and
@@ -291,13 +350,12 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 
 	mine := sessionsInDir(list.Data, dir)
 
-	// Subagent sessions (the Task tool spawns one per subagent) live in the
-	// same directory as the conversation that created them, so a single
-	// conversation can look like several sessions. Only top-level ones are
-	// candidates for "the" current session: a subagent updates at almost
-	// the same instant as its parent, so picking the newest of everything
-	// would flip between them and make the reported model, state and
-	// numbers jump around at random.
+	// Subagent sessions live in the same directory as the conversation that
+	// created them, so a single conversation can look like several
+	// sessions. Only top-level ones are candidates for "the" current
+	// session: a subagent updates at almost the same instant as its parent,
+	// so picking the newest of everything would flip between them and make
+	// the reported model, state and numbers jump around at random.
 	roots := topLevelSessions(mine)
 	h.Sessions = len(roots)
 	if len(roots) == 0 {
@@ -308,6 +366,9 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 	newest := roots[0]
 	h.Updated = time.UnixMilli(newest.Time.Updated)
 	h.SessionID = newest.ID
+	// The session's own model is what its next turn will use. The current
+	// turn's, when there is one, overrides it below.
+	h.Model, h.Variant, h.Provider = newest.Model.ID, newest.Model.Variant, newest.Model.ProviderID
 
 	// Cost and tokens are summed over the whole family — the conversation
 	// plus every subagent beneath it. Subagent work is real spend on this
@@ -327,13 +388,14 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 		h.Cost += x.Cost
 	}
 
-	msgs, err := recentMessages(ctx, baseURL, newest)
+	active := activeSessions(ctx, c)
+
+	msgs, err := recentMessages(ctx, c, newest)
 	if err != nil {
 		// Large or unavailable message previews must not hide live state.
 		h.RecentHistory = true
-		h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, false, nil)
+		h.State, h.Pending = classify(ctx, c, newest.ID, familyIDs, active, false, nil, nil)
 		h.Busy = h.State == StateBusy || h.State == StateRetrying
-		h.Todos = fetchTodos(ctx, baseURL, newest.ID)
 		return h
 	}
 
@@ -360,20 +422,24 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 	h.Activity = currentActivity(msgs)
 
 	if cur := turns.cur; cur != nil {
-		h.Model = cur.ModelID
-		h.Variant = cur.Variant
-		h.Provider = cur.ProviderID
+		if cur.Model.ID != "" {
+			h.Model, h.Variant, h.Provider = cur.Model.ID, cur.Model.Variant, cur.Model.ProviderID
+		}
 		h.Busy = cur.Time.Completed == nil
 		if h.Busy {
 			// Still generating; this turn has not contributed to Worked.
 			h.Working = now.Sub(time.UnixMilli(cur.Time.Created))
 		}
 		if cur.Error != nil {
-			h.LastError = cur.Error.Data.Message
+			h.LastError = cur.Error.Message
 		}
 	}
 
-	h.Todos = fetchTodos(ctx, baseURL, newest.ID)
+	// opencode has no endpoint for the task list: it is whatever the
+	// newest finished todowrite call said, which is also how its own TUI
+	// finds it. A list that old has scrolled out of the recent window
+	// simply is not reported.
+	h.Todos = turns.todos
 	// A list with nothing left in_progress or pending is a finished plan.
 	// opencode never clears it, so without this check it would go on
 	// reporting the same "N/N done" bar forever, including once the
@@ -384,7 +450,7 @@ func (opencode) Probe(ctx context.Context, c Conn) Health {
 	if h.Todos.resolved() && turns.lastUserIdx > turns.lastTodoWriteIdx {
 		h.Todos = Todos{}
 	}
-	h.State, h.Pending = classify(ctx, baseURL, newest.ID, familyIDs, h.Busy, turns.completedByID)
+	h.State, h.Pending = classify(ctx, c, newest.ID, familyIDs, active, h.Busy, turns.cur, turns.completedByID)
 	h.Busy = h.State == StateBusy || h.State == StateRetrying
 	return h
 }
@@ -446,30 +512,32 @@ type turnScan struct {
 	// worked is the sum of (completed − created) across every assistant
 	// turn that has finished — actual generation time, not wall-clock span.
 	worked time.Duration
-	// completedByID records whether each message has finished, keyed by
-	// message ID. classify uses it to tell a genuinely open question or
-	// permission request from one whose turn has already ended — see
-	// classify's comment for why /question and /permission cannot always
-	// be trusted alone.
+	// completedByID records whether each assistant message has finished,
+	// keyed by message ID. classify uses it to tell a genuinely open
+	// question or permission request from one whose turn has already
+	// ended — see classify's comment for why the pending lists cannot
+	// always be trusted alone.
 	completedByID map[string]bool
 	// cur is the last assistant message seen — the current turn, since
 	// messages arrive oldest-first.
-	cur                           *messageInfo
+	cur                           *sessionMessage
 	lastUser, lastAssistant       string
 	lastUserIdx, lastAssistantIdx int
 	lastTodoWriteIdx              int
-	sincePrompt                   time.Duration
+	// todos is the list from the newest finished todowrite call.
+	todos       Todos
+	sincePrompt time.Duration
 }
 
 // scanTurns walks a session's messages for the data Probe needs from the
 // current turn: how long assistant turns have taken so far, the current
-// (last) assistant message, the newest user/assistant text, and when the
-// todo list was last touched. now anchors SincePrompt.
+// (last) assistant message, the newest user/assistant text, and the newest
+// todo list and when it was written. now anchors SincePrompt.
 func scanTurns(msgs []sessionMessage, now time.Time) turnScan {
 	t := scanCompletedTurns(msgs)
 	scanConversationText(msgs, &t)
 	if t.lastUserIdx >= 0 {
-		if c := msgs[t.lastUserIdx].Info.Time.Created; c > 0 {
+		if c := msgs[t.lastUserIdx].Time.Created; c > 0 {
 			t.sincePrompt = now.Sub(time.UnixMilli(c))
 		}
 	}
@@ -478,16 +546,16 @@ func scanTurns(msgs []sessionMessage, now time.Time) turnScan {
 
 // scanCompletedTurns computes worked and completedByID, and finds the
 // current (last) assistant message. Messages arrive oldest-first, so the
-// last one seen with role "assistant" is the current turn.
+// last one seen with type "assistant" is the current turn.
 func scanCompletedTurns(msgs []sessionMessage) turnScan {
 	t := turnScan{lastUserIdx: -1, lastAssistantIdx: -1, lastTodoWriteIdx: -1}
 	t.completedByID = make(map[string]bool, len(msgs))
 	for i := range msgs {
-		m := &msgs[i].Info
-		t.completedByID[m.ID] = m.Time.Completed != nil
-		if m.Role != "assistant" {
+		m := &msgs[i]
+		if m.Type != "assistant" {
 			continue
 		}
+		t.completedByID[m.ID] = m.Time.Completed != nil
 		if m.Time.Completed != nil {
 			t.worked += time.UnixMilli(*m.Time.Completed).Sub(time.UnixMilli(m.Time.Created))
 		}
@@ -497,72 +565,66 @@ func scanCompletedTurns(msgs []sessionMessage) turnScan {
 }
 
 // scanConversationText fills in the newest text on each side of the
-// conversation, and when the todo list was last touched. A message can hold
-// several text parts, so simply keeping the last non-empty one seen lands
-// on the most recent.
+// conversation, and the newest todo list and when it was written. An
+// assistant message can hold several text parts, so simply keeping the last
+// non-empty one seen lands on the most recent.
 func scanConversationText(msgs []sessionMessage, t *turnScan) {
 	for i := range msgs {
-		role := msgs[i].Info.Role
-		if role != "user" && role != "assistant" {
-			continue
-		}
-		for _, part := range msgs[i].Parts {
-			if role == "assistant" && part.Type == "tool" && strings.EqualFold(part.Tool, "todowrite") {
-				t.lastTodoWriteIdx = i
-			}
-			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
-				continue
-			}
-			if role == "user" {
-				t.lastUser = previewText(part.Text)
+		switch msgs[i].Type {
+		case "user":
+			if strings.TrimSpace(msgs[i].Text) != "" {
+				t.lastUser = previewText(msgs[i].Text)
 				t.lastUserIdx = i
-			} else {
-				t.lastAssistant = previewText(part.Text)
-				t.lastAssistantIdx = i
+			}
+		case "assistant":
+			for _, part := range msgs[i].Content {
+				if part.Type == "tool" && strings.EqualFold(part.Name, "todowrite") {
+					t.lastTodoWriteIdx = i
+					// Only a finished call's list is the list: one still
+					// streaming has arguments that may not even parse yet.
+					if part.State.Status == "completed" {
+						t.todos = Todos{}
+						for _, it := range part.Todos {
+							t.todos.count(it.Status, it.Content)
+						}
+					}
+				}
+				if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+					t.lastAssistant = previewText(part.Text)
+					t.lastAssistantIdx = i
+				}
 			}
 		}
 	}
 }
 
-// currentActivity reports the tool call in flight in the newest turn, nil
-// if nothing is running or pending. Only the newest turn is inspected:
-// earlier turns' calls have all finished by definition.
+// currentActivity reports the tool call in flight in the newest message,
+// nil if nothing is running. Only the newest message is inspected: earlier
+// ones' calls have all finished by definition, and once a run has ended the
+// newest message is the "idle" marker, which has none.
 func currentActivity(msgs []sessionMessage) *Activity {
 	if len(msgs) == 0 {
 		return nil
 	}
 	var act *Activity
-	for _, part := range msgs[len(msgs)-1].Parts {
+	for _, part := range msgs[len(msgs)-1].Content {
 		if part.Type != "tool" {
 			continue
 		}
-		if st := part.State.Status; st == "running" || st == "pending" {
-			title := part.State.Title
-			if title == "" {
-				title = describeInput(part.State.Input)
+		switch part.State.Status {
+		case "streaming", "running", "pending":
+			since := part.Time.Ran
+			if since == 0 {
+				since = part.Time.Created
 			}
 			act = &Activity{
-				Tool:  part.Tool,
-				Title: firstLine(title),
-				Since: time.UnixMilli(part.State.Time.Start),
+				Tool:  part.Name,
+				Title: firstLine(part.Title),
+				Since: time.UnixMilli(since),
 			}
 		}
 	}
 	return act
-}
-
-// fetchTodos reads the session's task list. A missing or empty list is not
-// an error: most sessions never use one.
-func fetchTodos(ctx context.Context, baseURL, sessionID string) Todos {
-	var items []todoItem
-	if err := getJSON(ctx, baseURL+"/session/"+url.PathEscape(sessionID)+"/todo", &items); err != nil {
-		return Todos{}
-	}
-	var t Todos
-	for _, it := range items {
-		t.count(it.Status, it.Content)
-	}
-	return t
 }
 
 // count folds one task list entry into the tally, mapping the status
@@ -586,6 +648,25 @@ func (t *Todos) count(status, content string) {
 	}
 }
 
+// activeSessions returns the set of sessions currently running on the
+// server, or nil when it cannot be read — which callers must treat as
+// "unknown", not as "none".
+func activeSessions(ctx context.Context, c Conn) map[string]bool {
+	var resp struct {
+		Data map[string]struct {
+			Type string `json:"type"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, c, "/api/session/active", &resp); err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(resp.Data))
+	for id := range resp.Data {
+		out[id] = true
+	}
+	return out
+}
+
 // classify determines the fuller State beyond the plain busy/idle that
 // Health.Busy already carries, and what the agent is blocked on if
 // anything.
@@ -597,120 +678,160 @@ func (t *Todos) count(status, content string) {
 // as merely "busy" while the TUI was showing a permission prompt.
 //
 // Order matters. A pending question or permission wins over everything
-// else, including busy: opencode keeps the session "busy" while a tool call
-// sits waiting for your answer, but an agent that cannot move without you
-// is the thing worth surfacing.
+// else, including busy: opencode keeps the session running while a tool
+// call sits waiting for your answer, but an agent that cannot move without
+// you is the thing worth surfacing.
 //
 // Neither list can be trusted blindly, though: if opencode crashes (or is
-// killed) while a question or permission tool call is outstanding, restarting
-// it can leave that request listed forever — there is no one left to answer
-// it, and nothing left to time it out. The message the request names is
-// checked before honouring it: once that message has a completed time, its
-// turn has ended one way or another (answered through a channel this poll
-// missed, aborted, or superseded by a restart) and the request is stale,
-// no matter what /question or /permission still say.
-func classify(ctx context.Context, baseURL, sessionID string, family map[string]bool, busy bool, completedByID map[string]bool) (State, *Pending) {
-	if p := pendingQuestion(ctx, baseURL, sessionID, family, completedByID); p != nil {
+// killed) while a question or permission tool call is outstanding, a
+// restart can leave that request listed with no one left to answer it and
+// nothing to time it out. The message the request names is checked before
+// honouring it: once that message has a completed time, its turn has ended
+// one way or another (answered through a channel this poll missed, aborted,
+// or superseded by a restart) and the request is stale, no matter what the
+// list still says.
+//
+// active is the server's set of running sessions, nil if unknown. When
+// known it is authoritative over the transcript's own busy signal: a turn
+// left without a completed time by a crash is not running.
+func classify(ctx context.Context, c Conn, sessionID string, family, active map[string]bool, busy bool, cur *sessionMessage, completedByID map[string]bool) (State, *Pending) {
+	if p := pendingQuestion(ctx, c, sessionID, family, active, completedByID); p != nil {
 		return StateWaiting, p
 	}
-	if p := pendingPermission(ctx, baseURL, sessionID, family, completedByID); p != nil {
+	if p := pendingPermission(ctx, c, sessionID, family, completedByID); p != nil {
 		return StateWaiting, p
 	}
-	var statuses map[string]sessionStatusInfo
-	if getJSON(ctx, baseURL+"/session/status", &statuses) == nil {
-		switch statuses[sessionID].Type {
-		case "retry":
-			return StateRetrying, nil
-		case "busy":
-			return StateBusy, nil
-		case "idle":
-			return StateIdle, nil
-		}
+	if active != nil {
+		busy = active[sessionID]
 	}
-	if busy {
-		return StateBusy, nil
+	if !busy {
+		return StateIdle, nil
 	}
-	return StateIdle, nil
+	if cur != nil && cur.Retry != nil && cur.Time.Completed == nil {
+		return StateRetrying, nil
+	}
+	return StateBusy, nil
 }
 
-// pendingQuestion reports the first genuinely open question raised against
-// a session in family, nil if there is none.
+// formCandidates lists the family sessions worth asking for open forms,
+// newest conversation first.
 //
-// The server-wide list is used rather than a per-session one: it is a
-// single request no matter how many sessions exist, and it lives on the
-// same API surface as /session/{id}/message, which is the one verified to
-// actually return data.
-func pendingQuestion(ctx context.Context, baseURL, sessionID string, family map[string]bool, completedByID map[string]bool) *Pending {
-	var qs []questionRequest
-	if err := getJSON(ctx, baseURL+"/question", &qs); err != nil {
-		return nil
+// Forms can only be listed one session at a time, and a family can hold a
+// long tail of finished subagents. A form blocks a running tool call, so
+// only running sessions can have one; when the running set is unknown,
+// every family member is asked rather than risk missing a question.
+func formCandidates(sessionID string, family, active map[string]bool) []string {
+	var out []string
+	for id := range family {
+		if id == sessionID {
+			continue
+		}
+		if active == nil || active[id] {
+			out = append(out, id)
+		}
 	}
-	for _, req := range qs {
-		if !family[req.SessionID] {
+	sort.Strings(out)
+	if active == nil || active[sessionID] {
+		out = append([]string{sessionID}, out...)
+	}
+	return out
+}
+
+// pendingQuestion reports the first genuinely open form raised against a
+// session in family, nil if there is none.
+func pendingQuestion(ctx context.Context, c Conn, sessionID string, family, active map[string]bool, completedByID map[string]bool) *Pending {
+	for _, id := range formCandidates(sessionID, family, active) {
+		var forms struct {
+			Data []formInfo `json:"data"`
+		}
+		if err := getJSON(ctx, c, "/api/session/"+url.PathEscape(id)+"/form", &forms); err != nil {
 			continue
 		}
-		if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
-			continue
+		for _, form := range forms.Data {
+			if form.SessionID == "" {
+				form.SessionID = id
+			}
+			if !family[form.SessionID] {
+				continue
+			}
+			if !toolCallStillOpen(ctx, c, form.SessionID, form.Metadata.Tool.MessageID, sessionID, completedByID) {
+				continue
+			}
+			if p := form.pending(); p != nil {
+				return p
+			}
 		}
-		// A request can carry several questions; only the first is
-		// surfaced, since a compact widget has room for one headline and
-		// the rest are visible in the TUI anyway.
-		if len(req.Questions) == 0 {
-			continue
-		}
-		q := req.Questions[0]
-		p := &Pending{Kind: BlockQuestion, Header: q.Header, Detail: q.Question}
-		for _, o := range q.Options {
-			p.Options = append(p.Options, o.Label)
-		}
-		return p
 	}
 	return nil
+}
+
+// pending turns a form into the one headline a compact widget has room
+// for. A form can carry several questions; only the first is surfaced, and
+// the rest are visible in the TUI anyway.
+func (f formInfo) pending() *Pending {
+	if len(f.Fields) == 0 {
+		return nil
+	}
+	q := f.Fields[0]
+	p := &Pending{Kind: BlockQuestion, Header: q.Title, Detail: q.Description}
+	if p.Header == "" {
+		p.Header = f.Title
+	}
+	if p.Detail == "" {
+		p.Detail = f.Title
+	}
+	for _, o := range q.Options {
+		p.Options = append(p.Options, o.Label)
+	}
+	return p
 }
 
 // pendingPermission reports the first genuinely open permission request
 // raised against a session in family, nil if there is none.
-func pendingPermission(ctx context.Context, baseURL, sessionID string, family map[string]bool, completedByID map[string]bool) *Pending {
-	var perms []permissionRequest
-	if err := getJSON(ctx, baseURL+"/permission", &perms); err != nil {
+//
+// Requests are listed per location rather than per session, which suits:
+// a conversation and its subagents share a directory, so one request covers
+// the whole family.
+func pendingPermission(ctx context.Context, c Conn, sessionID string, family map[string]bool, completedByID map[string]bool) *Pending {
+	var perms struct {
+		Data []permissionRequest `json:"data"`
+	}
+	path := "/api/permission/request"
+	if c.Dir != "" {
+		path += "?" + url.QueryEscape("location[directory]") + "=" + url.QueryEscape(c.Dir)
+	}
+	if err := getJSON(ctx, c, path, &perms); err != nil {
 		return nil
 	}
-	for _, req := range perms {
+	for _, req := range perms.Data {
 		if !family[req.SessionID] {
 			continue
 		}
-		if !toolCallStillOpen(ctx, baseURL, req.SessionID, req.Tool.MessageID, sessionID, completedByID) {
+		if !toolCallStillOpen(ctx, c, req.SessionID, req.Source.MessageID, sessionID, completedByID) {
 			continue
+		}
+		detail := req.Message
+		if detail == "" {
+			detail = req.Action
 		}
 		return &Pending{
 			Kind:      BlockPermission,
-			Header:    req.Permission,
-			Detail:    req.Permission,
-			Resources: req.Patterns,
+			Header:    req.Action,
+			Detail:    detail,
+			Resources: req.Resources,
 		}
 	}
 	return nil
 }
 
-// isRetrying reports whether sessionID is currently auto-retrying after a
-// provider error.
-func isRetrying(ctx context.Context, baseURL, sessionID string) bool {
-	var statuses map[string]sessionStatusInfo
-	if err := getJSON(ctx, baseURL+"/session/status", &statuses); err != nil {
-		return false
-	}
-	st, ok := statuses[sessionID]
-	return ok && st.Type == "retry"
-}
-
 // toolCallStillOpen reports whether the message a question or permission
-// request names (via its "tool" field) is still an open turn, i.e. the
-// request is genuinely blocking rather than a leftover from a turn that has
-// already ended.
+// request names is still an open turn, i.e. the request is genuinely
+// blocking rather than a leftover from a turn that has already ended.
 //
-// messageID is empty on an opencode version that predates the tool field;
-// such a request is trusted as-is, since there is nothing to check it
-// against and treating "unknown" as "stale" would hide real blocks.
+// messageID is empty for a request that did not come from a tool call (an
+// MCP server's own form, say); such a request is trusted as-is, since there
+// is nothing to check it against and treating "unknown" as "stale" would
+// hide real blocks.
 //
 // newestSessionID/completedByID cover the one session Probe already fetched
 // the transcript for, which is the common case (the request belongs to the
@@ -718,7 +839,7 @@ func isRetrying(ctx context.Context, baseURL, sessionID string) bool {
 // request from a different family member — a subagent asking its own
 // question or permission — needs its own message fetched, which happens
 // rarely enough that the extra round trip is not worth avoiding.
-func toolCallStillOpen(ctx context.Context, baseURL, reqSessionID, messageID, newestSessionID string, completedByID map[string]bool) bool {
+func toolCallStillOpen(ctx context.Context, c Conn, reqSessionID, messageID, newestSessionID string, completedByID map[string]bool) bool {
 	if messageID == "" {
 		return true
 	}
@@ -728,15 +849,30 @@ func toolCallStillOpen(ctx context.Context, baseURL, reqSessionID, messageID, ne
 			return !done
 		}
 	}
-	var msg sessionMessage
-	if err := getBoundedJSON(ctx, baseURL+"/session/"+url.PathEscape(reqSessionID)+"/message/"+url.PathEscape(messageID), &msg); err != nil {
+	var msg struct {
+		Data sessionMessage `json:"data"`
+	}
+	if err := getBoundedJSON(ctx, c, "/api/session/"+url.PathEscape(reqSessionID)+"/message/"+url.PathEscape(messageID), &msg); err != nil {
 		return true
 	}
-	return msg.Info.Time.Completed == nil
+	return msg.Data.Time.Completed == nil
 }
 
-func getJSON(ctx context.Context, u string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+// newRequest builds a request to c's server, authenticated when c carries a
+// password.
+func newRequest(ctx context.Context, c Conn, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.URL, "/")+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.Password != "" {
+		req.SetBasicAuth(serverUser, c.Password)
+	}
+	return req, nil
+}
+
+func getJSON(ctx context.Context, c Conn, path string, out any) error {
+	req, err := newRequest(ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
@@ -746,9 +882,12 @@ func getJSON(ctx context.Context, u string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
+		return fmt.Errorf("GET %s: status %d", path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	return nil
 }
 
 // Fork copies a session and re-homes the copy to dir, returning the new
@@ -761,40 +900,37 @@ func getJSON(ctx context.Context, u string, out any) error {
 // and even when it still exists it is the wrong feature's, which hides the
 // session from anything scoping sessions by directory.
 //
-// Moving the copy afterwards fixes both. The move endpoint is experimental
-// and cannot cross projects, which is not a limit here: a project's features
-// all live under the same project root.
+// Moving the copy afterwards fixes both.
 func (opencode) Fork(ctx context.Context, c Conn, sessionID, dir string) (string, error) {
-	baseURL := c.URL
-	if baseURL == "" {
+	if c.URL == "" {
 		return "", fmt.Errorf("no url")
 	}
 	var forked struct {
-		ID string `json:"id"`
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
-	if err := postJSON(ctx, baseURL+"/session/"+url.PathEscape(sessionID)+"/fork", struct{}{}, &forked); err != nil {
+	if err := postJSON(ctx, c, "/api/session/"+url.PathEscape(sessionID)+"/fork", struct{}{}, &forked); err != nil {
 		return "", fmt.Errorf("fork %s: %w", sessionID, err)
 	}
-	if forked.ID == "" {
+	id := forked.Data.ID
+	if id == "" {
 		return "", fmt.Errorf("fork %s: no session id returned", sessionID)
 	}
 
-	body := map[string]any{
-		"sessionID":   forked.ID,
-		"destination": map[string]string{"directory": dir},
-	}
-	if err := postJSON(ctx, baseURL+"/experimental/control-plane/move-session", body, nil); err != nil {
+	body := map[string]string{"directory": dir}
+	if err := postJSON(ctx, c, "/api/session/"+url.PathEscape(id)+"/move", body, nil); err != nil {
 		return "", fmt.Errorf("move forked session into %s: %w", dir, err)
 	}
-	return forked.ID, nil
+	return id, nil
 }
 
-func postJSON(ctx context.Context, u string, in, out any) error {
+func postJSON(ctx context.Context, c Conn, path string, in, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+	req, err := newRequest(ctx, c, http.MethodPost, path, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -805,7 +941,7 @@ func postJSON(ctx context.Context, u string, in, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("POST %s: status %d", u, resp.StatusCode)
+		return fmt.Errorf("POST %s: status %d", path, resp.StatusCode)
 	}
 	if out == nil {
 		return nil

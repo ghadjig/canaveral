@@ -19,16 +19,19 @@ func TestProbeBoundsAndCachesTranscript(t *testing.T) {
 				t.Error("session list must be directory scoped")
 			}
 			fmt.Fprint(w, sessList(sess("s", "/target", updated, "", 20, 10, 5)))
-		case "/session/s/message":
+		case "/api/session/s/message":
 			reads++
 			if r.URL.Query().Get("limit") != "16" {
 				t.Error("unbounded history request")
 			}
-			fmt.Fprint(w, `[{"info":{"id":"m","role":"assistant","modelID":"test","time":{"created":1,"completed":2}},"parts":[{"type":"text","text":"done"}]}]`)
-		case "/session/status":
-			fmt.Fprint(w, `{}`)
+			if r.URL.Query().Get("order") != "desc" {
+				t.Error("history must be read newest first, or a limit keeps the oldest messages")
+			}
+			fmt.Fprint(w, msgList(`{"id":"m","type":"assistant","model":{"id":"test","providerID":"p"},"time":{"created":1,"completed":2},"content":[{"type":"text","text":"done"}]}`))
+		case "/api/session/active":
+			fmt.Fprint(w, running())
 		default:
-			fmt.Fprint(w, `[]`)
+			fmt.Fprint(w, `{"data":[]}`)
 		}
 	}))
 	defer srv.Close()
@@ -61,18 +64,18 @@ func TestOversizedHistoryStillReportsBusyAndWaiting(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/session":
 					fmt.Fprint(w, sessList(sess("s", "/target", 1, "", 1, 1, 1)))
-				case "/session/s/message":
-					fmt.Fprint(w, `[{"parts":[{"text":"`+strings.Repeat("x", maxRecentBytes)+`"}]}]`)
-				case "/session/status":
-					fmt.Fprint(w, `{"s":{"type":"busy"}}`)
-				case "/question":
+				case "/api/session/s/message":
+					fmt.Fprint(w, `{"data":[{"type":"user","text":"`+strings.Repeat("x", maxRecentBytes)+`"}]}`)
+				case "/api/session/active":
+					fmt.Fprint(w, running("s"))
+				case "/api/session/s/form":
 					if waiting {
-						fmt.Fprint(w, `[{"sessionID":"s","questions":[{"header":"Answer me"}]}]`)
+						fmt.Fprint(w, `{"data":`+list(form("s", "", "Answer me", "?"))+`}`)
 					} else {
-						fmt.Fprint(w, `[]`)
+						fmt.Fprint(w, `{"data":[]}`)
 					}
 				default:
-					fmt.Fprint(w, `[]`)
+					fmt.Fprint(w, `{"data":[]}`)
 				}
 			}))
 			defer srv.Close()
@@ -90,13 +93,13 @@ func TestOversizedHistoryStillReportsBusyAndWaiting(t *testing.T) {
 
 func TestPendingSubagentFetchesOnlyReferencedMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/session/child/message/m" {
+		if r.URL.Path != "/api/session/child/message/m" {
 			t.Errorf("unexpected history request: %s", r.URL)
 		}
-		fmt.Fprint(w, `{"info":{"id":"m","time":{"completed":2}}}`)
+		fmt.Fprint(w, `{"data":{"id":"m","type":"assistant","time":{"created":1,"completed":2}}}`)
 	}))
 	defer srv.Close()
-	if toolCallStillOpen(context.Background(), srv.URL, "child", "m", "parent", nil) {
+	if toolCallStillOpen(context.Background(), Conn{URL: srv.URL}, "child", "m", "parent", nil) {
 		t.Fatal("completed request should be stale")
 	}
 }
@@ -107,29 +110,32 @@ func TestBoundedProbeTracksGenerationAndCompletion(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/session":
 			fmt.Fprint(w, sessList(sess("s", "/target", int64(phase+1), "", 100, 20, 3)))
-		case "/session/s/message":
+		case "/api/session/s/message":
 			if r.URL.Query().Get("limit") == "" {
 				t.Error("unbounded message request")
 			}
 			if phase == 0 {
-				fmt.Fprint(w, `[{"info":{"id":"m","role":"assistant","modelID":"test","time":{"created":1}},"parts":[{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"go test ./..."},"time":{"start":1}}}]}]`)
+				fmt.Fprint(w, msgList(`{"id":"m","type":"assistant","model":{"id":"test","providerID":"p"},"time":{"created":1},"content":[{"type":"tool","id":"c","name":"shell","state":{"status":"running","input":{"command":"go test ./..."},"metadata":{}},"time":{"created":1,"ran":1}}]}`))
 			} else {
-				fmt.Fprint(w, `[{"info":{"id":"m","role":"assistant","modelID":"test","time":{"created":1,"completed":2}},"parts":[{"type":"text","text":"All tests passed"}]}]`)
+				fmt.Fprint(w, msgList(
+					`{"id":"m","type":"assistant","model":{"id":"test","providerID":"p"},"time":{"created":1,"completed":2},"content":[{"type":"text","text":"All tests passed"}]}`,
+					`{"id":"i","type":"idle","time":{"created":3},"outcome":"succeeded"}`,
+				))
 			}
-		case "/session/status":
+		case "/api/session/active":
 			if phase == 0 {
-				fmt.Fprint(w, `{"s":{"type":"busy"}}`)
+				fmt.Fprint(w, running("s"))
 			} else {
-				fmt.Fprint(w, `{}`)
+				fmt.Fprint(w, running())
 			}
 		default:
-			fmt.Fprint(w, `[]`)
+			fmt.Fprint(w, `{"data":[]}`)
 		}
 	}))
 	defer srv.Close()
 	c := Conn{URL: srv.URL, Dir: "/target"}
 	h := (opencode{}).Probe(context.Background(), c)
-	if h.State != StateBusy || h.Activity == nil || h.Activity.Tool != "bash" {
+	if h.State != StateBusy || h.Activity == nil || h.Activity.Tool != "shell" {
 		t.Fatalf("running status lost: %+v", h)
 	}
 	phase = 1

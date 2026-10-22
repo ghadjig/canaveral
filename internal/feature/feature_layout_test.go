@@ -295,15 +295,15 @@ func agents(url string) []state.Agent {
 // this was detected the window was adopted on its class alone and left in
 // place, failing on the first keystroke with "Creating a session failed".
 func TestIsStaleWhenTheAgentURLMoved(t *testing.T) {
-	c := clientRunning(t, "opencode attach http://127.0.0.1:38259 --dir /wt")
-	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	c := clientRunning(t, "opencode --server http://127.0.0.1:38259 /wt")
+	cmd := "opencode --server http://127.0.0.1:38231 /wt"
 	if !isStale(c, cmd, agents("http://127.0.0.1:38231")) {
 		t.Error("a window attached to the previous agent URL must be stale")
 	}
 }
 
 func TestIsStaleFalseWhenTheAgentDidNotMove(t *testing.T) {
-	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	cmd := "opencode --server http://127.0.0.1:38231 /wt"
 	c := clientRunning(t, cmd)
 	if isStale(c, cmd, agents("http://127.0.0.1:38231")) {
 		t.Error("an unchanged agent URL must leave its window alone")
@@ -316,8 +316,8 @@ func TestIsStaleFalseWhenTheAgentDidNotMove(t *testing.T) {
 // perfectly good window; comparing only the URL does not.
 func TestIsStaleIgnoresAForkArgumentTheWindowWasSpawnedWith(t *testing.T) {
 	url := "http://127.0.0.1:38231"
-	c := clientRunning(t, "opencode attach "+url+" --dir /wt --session ses_abc")
-	if isStale(c, "opencode attach "+url+" --dir /wt", agents(url)) {
+	c := clientRunning(t, "opencode --server "+url+" /wt --session ses_abc")
+	if isStale(c, "opencode --server "+url+" /wt", agents(url)) {
 		t.Error("a window differing only by its fork argument must be left alone")
 	}
 }
@@ -335,15 +335,15 @@ func TestIsStaleFalseForAWindowThatIgnoresAgents(t *testing.T) {
 // A window whose process cannot be read tells us nothing, and guessing wrong
 // here costs the user a window they were using.
 func TestIsStaleFalseWhenThePIDIsUnknown(t *testing.T) {
-	cmd := "opencode attach http://127.0.0.1:38231 --dir /wt"
+	cmd := "opencode --server http://127.0.0.1:38231 /wt"
 	if isStale(hypr.Client{}, cmd, agents("http://127.0.0.1:38231")) {
 		t.Error("an unreadable window must not be closed on a guess")
 	}
 }
 
 func TestIsStaleFalseWhenTheAgentHasNoURL(t *testing.T) {
-	c := clientRunning(t, "opencode attach http://127.0.0.1:38259 --dir /wt")
-	if isStale(c, "opencode attach  --dir /wt", []state.Agent{{Name: "main"}}) {
+	c := clientRunning(t, "opencode --server http://127.0.0.1:38259 /wt")
+	if isStale(c, "opencode --server  /wt", []state.Agent{{Name: "main"}}) {
 		t.Error("an agent with no URL gives nothing to compare and must not close a window")
 	}
 }

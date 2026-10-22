@@ -113,8 +113,8 @@ func TestStarterTemplateParsesForEveryTool(t *testing.T) {
 					run = *w.Run
 				}
 			}
-			if !strings.Contains(run, "{{.Agent.main.Session}}") {
-				t.Errorf("window %q run = %q, want it to splice in the session flags", tool, run)
+			if run != "{{.Agent.main.Attach}}" {
+				t.Errorf("window %q run = %q, want the harness's own attach command", tool, run)
 			}
 		})
 	}

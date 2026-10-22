@@ -651,23 +651,20 @@ func runInit(ctx context.Context, args []string) error {
 // starterAgent writes the [[agent]] block and the window that opens it, for
 // whichever agent this machine defaults to.
 //
-// The window command comes from the harness rather than being hardcoded,
-// because the two tools are opened in entirely different ways: opencode
-// attaches to the server canaveral started for it, while Claude Code *is*
-// the program the window runs. Deriving it from AttachArgv keeps the starter
-// manifest correct for any harness added later without anyone remembering to
-// come back here.
+// The window runs {{.Agent.main.Attach}} rather than a spelled-out command,
+// because the two tools are opened in entirely different ways — opencode
+// connects to the server canaveral started for it, while Claude Code *is*
+// the program the window runs — and because a tool can change how it is
+// opened: opencode 2 dropped the `opencode attach` this used to write.
 func starterAgent(tool string) string {
-	h, err := agent.For(tool)
-	if err != nil {
+	if _, err := agent.For(tool); err != nil {
 		// Unreachable via the config layer, which validates the name; a
 		// commented-out block is still a better starting point than nothing.
 		return "# [[agent]]\n# name = \"main\"\n# tool = \"opencode\"\n"
 	}
-	// The placeholders are manifest templates, rendered per feature at open
+	// The placeholder is a manifest template, rendered per feature at open
 	// time — see internal/tmpl.
-	argv := h.AttachArgv(agent.Conn{URL: "{{.Agent.main}}", Dir: "{{.Worktree}}"}, false)
-	cmd := strings.Join(append(argv, "{{.Agent.main.Session}}"), " ")
+	const cmd = "{{.Agent.main.Attach}}"
 
 	return fmt.Sprintf(`[[agent]]
 name = "main"

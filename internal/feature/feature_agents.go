@@ -35,7 +35,7 @@ func agentConn(f *state.Feature, a state.Agent) agent.Conn {
 	if dir == "" {
 		dir = f.Worktree
 	}
-	return agent.Conn{URL: a.URL, Dir: dir}
+	return agent.Conn{URL: a.URL, Dir: dir, Password: a.Password}
 }
 
 // forkedSessionFor returns the ID of a fresh fork of a namespace sibling's
@@ -75,7 +75,7 @@ func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) stri
 	// server can fork any session it can see and this feature's is the one
 	// we have, and the *source's* worktree, because a harness with no server
 	// finds the conversation by the directory it was held in.
-	c := agent.Conn{URL: a.URL, Dir: best.Worktree}
+	c := agent.Conn{URL: a.URL, Dir: best.Worktree, Password: a.Password}
 	forked, err := agent.Fork(ctx, a.Tool, c, best.SessionID, f.Worktree)
 	if err != nil {
 		// Continuity is a convenience; a fresh session is a fine outcome.
@@ -223,12 +223,14 @@ func adoptRunningAgent(ctx context.Context, h agent.Harness, f *state.Feature, a
 	unitName, dir, logPath string) state.Agent {
 	rec := state.Agent{Name: a.Name, Tool: a.Tool, Unit: unitName, Dir: dir, LogPath: logPath}
 	if prev, ok := f.Agent(a.Name); ok {
-		rec.URL, rec.Port = prev.URL, prev.Port
+		rec.URL, rec.Port, rec.Password = prev.URL, prev.Port, prev.Password
 	}
-	if rec.URL == "" {
-		// The unit is alive but we lost its URL; recover it from the log.
-		if u, err := h.DiscoverURL(ctx, logPath, 5*time.Second, nil); err == nil {
-			rec.URL, rec.Port = u, portOf(u)
+	if rec.URL == "" || rec.Password == "" {
+		// The unit is alive but we lost how to reach it; recover that from
+		// the log. A record from before agents had passwords lands here
+		// too, with a URL but nothing to authenticate with.
+		if ep, err := h.Discover(ctx, logPath, 5*time.Second, nil); err == nil {
+			rec.URL, rec.Port, rec.Password = ep.URL, portOf(ep.URL), ep.Password
 		}
 	}
 	return rec
@@ -265,14 +267,14 @@ func startAgent(ctx context.Context, h agent.Harness, f *state.Feature, a manife
 	}); err != nil {
 		return rec, err
 	}
-	url, err := h.DiscoverURL(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
+	ep, err := h.Discover(ctx, logPath, 45*time.Second, aliveCheck(ctx, unitName, logPath))
 	if err != nil {
 		_ = unit.Stop(ctx, unitName)
 		unit.Reset(ctx, unitName)
 		return rec, fmt.Errorf("agent %q: %w", a.Name, err)
 	}
-	rec.URL, rec.Port = url, portOf(url)
-	r.OK("agent %s listening on %s", a.Name, url)
+	rec.URL, rec.Port, rec.Password = ep.URL, portOf(ep.URL), ep.Password
+	r.OK("agent %s listening on %s", a.Name, ep.URL)
 	res.StartedAgent = append(res.StartedAgent, a.Name)
 	return rec, nil
 }

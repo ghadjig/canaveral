@@ -466,7 +466,9 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 		// The flag that reopens a session is the harness's to spell:
 		// opencode says --session, Claude Code says --resume.
 		if h, err := agent.For(a.Tool); err == nil {
-			ref = ref.WithSession(h.SessionFlag(session))
+			flags := h.SessionFlag(session)
+			ref = ref.WithSession(flags)
+			ref.Attach = agent.AttachCommand(h, agentConn(f, a), flags)
 		}
 		agents[a.Name] = ref
 	}

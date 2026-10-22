@@ -151,6 +151,9 @@ type Agent struct {
 	LogPath string `json:"log_path"`
 	URL     string `json:"url,omitempty"`
 	Port    int    `json:"port,omitempty"`
+	// Password is the agent server's, as it announced at startup. The
+	// state file is written 0600 for values like this one.
+	Password string `json:"password,omitempty"`
 }
 
 // Window is a declared GUI window belonging to the feature.

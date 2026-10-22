@@ -17,7 +17,7 @@ import (
 func TestLiveTraffic(t *testing.T) {
 	base := os.Getenv("CANAVERAL_TEST_WATCH_URL")
 	if base == "" {
-		t.Skip("set CANAVERAL_TEST_WATCH_URL and CANAVERAL_TEST_WATCH_DIR for live measurements")
+		t.Skip("set CANAVERAL_TEST_WATCH_URL, CANAVERAL_TEST_WATCH_DIR and CANAVERAL_TEST_WATCH_PASSWORD for live measurements")
 	}
 	original := http.DefaultTransport
 	tr := &trafficTransport{base: original, counts: map[string]int64{}, calls: map[string]int{}}
@@ -26,8 +26,10 @@ func TestLiveTraffic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	if os.Getenv("CANAVERAL_TEST_WATCH_PROJECT") == "" {
-		h := agent.Probe(ctx, "opencode", agent.Conn{URL: base, Dir: os.Getenv("CANAVERAL_TEST_WATCH_DIR")})
+		c := agent.Conn{URL: base, Dir: os.Getenv("CANAVERAL_TEST_WATCH_DIR"), Password: os.Getenv("CANAVERAL_TEST_WATCH_PASSWORD")}
+		h := agent.Probe(ctx, "opencode", c)
 		t.Logf("reachable=%v state=%s session=%s model=%s tokens=%d error=%v", h.Reachable, h.State, h.SessionID, h.Model, h.Tokens.Total(), h.Err)
+		t.Logf("last user=%q assistant=%q activity=%+v todos=%+v pending=%+v", h.LastUser, h.LastAssistant, h.Activity, h.Todos, h.Pending)
 	} else {
 		r := NewRunner(Options{Project: os.Getenv("CANAVERAL_TEST_WATCH_PROJECT")})
 		if err := r.Run(ctx, &liveStates{t: t}); err != nil {
