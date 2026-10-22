@@ -12,6 +12,16 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- `canaveral watch` exits once its binary has been replaced (by
+  `scripts/install.sh` or anything else), so a status bar that restarts it
+  picks up the new build instead of streaming the old one's view for days.
+  An old watch kept reading opencode 2 agents with a build that only spoke
+  opencode 1, so the bar showed nothing being worked on.
+
 ## v0.18.1 — 2026-10-22
 
 **Fixed**

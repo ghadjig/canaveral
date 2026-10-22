@@ -40,6 +40,20 @@ func runWatch(ctx context.Context, args []string) error {
 		project = m.Name
 	}
 
+	// A widget runs this for as long as the session lasts, which is days, so
+	// an upgrade of canaveral would otherwise leave it streaming whatever the
+	// old binary knew. That is how a bar went on reading every opencode 2
+	// agent with a build that only spoke opencode 1. Stop once our own
+	// executable has been replaced; whatever runs this starts the new one.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if exe, err := os.Executable(); err == nil {
+		go watchExecutable(ctx, exe, 10*time.Second, func() {
+			fmt.Fprintln(os.Stderr, "canaveral watch: this binary has been replaced; exiting so the new one can take over")
+			cancel()
+		})
+	}
+
 	r := watch.NewRunner(watch.Options{
 		Project:  project,
 		Debounce: *debounce,
@@ -54,4 +68,29 @@ func runWatch(ctx context.Context, args []string) error {
 	w := bufio.NewWriter(os.Stdout)
 	defer w.Flush()
 	return r.Run(ctx, w)
+}
+
+// watchExecutable calls replaced once the file at path is no longer the one
+// this process started from: renamed over (a new inode, which is how
+// scripts/install.sh installs), rewritten in place (a new mtime) or removed.
+func watchExecutable(ctx context.Context, path string, every time.Duration, replaced func()) {
+	before, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		now, err := os.Stat(path)
+		if err == nil && os.SameFile(before, now) && now.ModTime().Equal(before.ModTime()) {
+			continue
+		}
+		replaced()
+		return
+	}
 }
