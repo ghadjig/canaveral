@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,16 @@ type Conn struct {
 	// Dir is the directory the agent works in — the feature's worktree,
 	// unless the manifest's `dir` says otherwise.
 	Dir string
+	// Password authenticates to the agent's server, for a harness whose
+	// server requires one. opencode 2 refuses every request without it.
+	Password string
+}
+
+// Endpoint is what a serving harness announces once its server is up: where
+// it listens and the password it will accept.
+type Endpoint struct {
+	URL      string
+	Password string
 }
 
 // Selection is the manifest's per-agent choice of model and sub-agent
@@ -65,9 +76,10 @@ type Harness interface {
 	// when Serves reports true.
 	ServeCmd(bin string) string
 
-	// DiscoverURL waits for the server to announce its listen address in
-	// logPath. Only meaningful when Serves reports true.
-	DiscoverURL(ctx context.Context, logPath string, timeout time.Duration, alive func() error) (string, error)
+	// Discover waits for the server to announce its listen address, and
+	// the password it accepts, in logPath. Only meaningful when Serves
+	// reports true.
+	Discover(ctx context.Context, logPath string, timeout time.Duration, alive func() error) (Endpoint, error)
 
 	// EnvFor maps a manifest's model and agent selection onto the harness's
 	// own environment variables.
@@ -89,6 +101,12 @@ type Harness interface {
 	// The caller runs it with the working directory set to c.Dir, so a
 	// harness that keys sessions by directory needs no flag for it.
 	AttachArgv(c Conn, cont bool) []string
+
+	// ClientEnv is the environment AttachArgv's command needs on top of the
+	// caller's own. It carries credentials, which is why it is separate
+	// from argv: a process's arguments are world-readable in /proc, its
+	// environment is not.
+	ClientEnv(c Conn) map[string]string
 
 	// SessionFlag renders the flags that make AttachArgv's command reopen
 	// session id, for splicing into a manifest window's own command via
@@ -174,4 +192,38 @@ func Fork(ctx context.Context, tool string, c Conn, sessionID, dir string) (stri
 		return "", err
 	}
 	return h.Fork(ctx, c, sessionID, dir)
+}
+
+// AttachCommand renders h's attach command for c as a single shell line,
+// with session — flags as rendered by SessionFlag — appended when set. It is
+// what a manifest window gets from {{.Agent.<name>.Attach}}, so the window
+// does not have to know how each tool spells "open this agent".
+func AttachCommand(h Harness, c Conn, session string) string {
+	argv := h.AttachArgv(c, false)
+	words := make([]string, 0, len(argv)+1)
+	for _, a := range argv {
+		words = append(words, shellWord(a))
+	}
+	if session != "" {
+		words = append(words, session)
+	}
+	return strings.Join(words, " ")
+}
+
+// shellWord quotes s only when the shell would otherwise split or expand
+// it, so the common case — a URL, a plain path — stays readable in the
+// window's command line.
+func shellWord(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("-_./:=@,+%", r):
+		default:
+			return shellQuote(s)
+		}
+	}
+	return s
 }

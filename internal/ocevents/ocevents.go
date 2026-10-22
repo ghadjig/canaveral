@@ -1,7 +1,7 @@
 // Package ocevents subscribes to an opencode server's event stream.
 //
-// opencode exposes a Server-Sent Events endpoint at /event that pushes every
-// session, permission and question event as it happens. Watching it is what
+// opencode exposes a Server-Sent Events endpoint at /api/event that pushes
+// every session, permission and form event as it happens. Watching it is what
 // lets canaveral react the instant an agent starts working, finishes, or
 // blocks waiting for you — instead of polling every agent's HTTP API on a
 // timer, which costs a subprocess-and-request storm per tick and still adds
@@ -46,13 +46,17 @@ var streamClient = &http.Client{}
 
 // Subscribe streams events to fn until ctx is cancelled or the connection
 // drops. It blocks for the lifetime of the connection; use Watch for a
-// long-lived watcher that reconnects on its own.
-func Subscribe(ctx context.Context, baseURL string, fn func(Event)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(baseURL, "/")+"/event", nil)
+// long-lived watcher that reconnects on its own. password is the server's,
+// sent as Basic auth when set.
+func Subscribe(ctx context.Context, baseURL, password string, fn func(Event)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(baseURL, "/")+"/api/event", nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if password != "" {
+		req.SetBasicAuth("opencode", password)
+	}
 
 	resp, err := streamClient.Do(req)
 	if err != nil {
@@ -101,12 +105,12 @@ func Subscribe(ctx context.Context, baseURL string, fn func(Event)) error {
 // An agent's server restarts whenever its feature is reset, so dropping out
 // on the first disconnect would silently stop reporting that feature for the
 // rest of the session.
-func Watch(ctx context.Context, baseURL string, fn func(Event)) error {
+func Watch(ctx context.Context, baseURL, password string, fn func(Event)) error {
 	backoff := 500 * time.Millisecond
 	const maxBackoff = 10 * time.Second
 
 	for {
-		err := Subscribe(ctx, baseURL, fn)
+		err := Subscribe(ctx, baseURL, password, fn)
 		if ctx.Err() != nil {
 			return nil
 		}

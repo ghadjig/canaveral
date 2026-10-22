@@ -286,7 +286,7 @@ func TestRemoveRecordsNamespaceSessionBeforeTeardown(t *testing.T) {
 
 	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + f.Worktree + `"},"time":{"updated":` +
 		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
-	srv := agentFakeServer(t, sessions, `[]`)
+	srv := agentFakeServer(t, sessions, `{"data":[]}`)
 	f.Agents = []state.Agent{{Name: "main", Tool: "opencode", URL: srv.URL}}
 
 	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
@@ -315,7 +315,7 @@ func TestRemoveDoesNotRecordSessionForUnnamespacedFeature(t *testing.T) {
 
 	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + f.Worktree + `"},"time":{"updated":` +
 		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
-	srv := agentFakeServer(t, sessions, `[]`)
+	srv := agentFakeServer(t, sessions, `{"data":[]}`)
 	f.Agents = []state.Agent{{Name: "main", Tool: "opencode", URL: srv.URL}}
 
 	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {

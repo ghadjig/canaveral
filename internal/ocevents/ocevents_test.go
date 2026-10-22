@@ -41,7 +41,7 @@ func TestSubscribeDecodesEvents(t *testing.T) {
 	)
 
 	var got []Event
-	err := Subscribe(context.Background(), srv.URL, func(e Event) { got = append(got, e) })
+	err := Subscribe(context.Background(), srv.URL, "", func(e Event) { got = append(got, e) })
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestPayloadPrefersDataForV2Envelope(t *testing.T) {
 		"data: {\"id\":\"evt_1\",\"type\":\"question.v2.asked\",\"data\":{\"id\":\"que_1\"}}\n\n",
 	)
 	var got []Event
-	if err := Subscribe(context.Background(), srv.URL, func(e Event) { got = append(got, e) }); err != nil {
+	if err := Subscribe(context.Background(), srv.URL, "", func(e Event) { got = append(got, e) }); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if len(got) != 1 {
@@ -94,7 +94,7 @@ func TestSubscribeSkipsUnparseableFrames(t *testing.T) {
 		"data: {\"id\":\"evt_2\",\"type\":\"session.idle\"}\n\n",
 	)
 	var got []Event
-	if err := Subscribe(context.Background(), srv.URL, func(e Event) { got = append(got, e) }); err != nil {
+	if err := Subscribe(context.Background(), srv.URL, "", func(e Event) { got = append(got, e) }); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if len(got) != 1 || got[0].Type != "session.idle" {
@@ -109,7 +109,7 @@ func TestSubscribeIgnoresNonDataLines(t *testing.T) {
 		"data: {\"id\":\"evt_1\",\"type\":\"session.idle\"}\n\n",
 	)
 	var got []Event
-	if err := Subscribe(context.Background(), srv.URL, func(e Event) { got = append(got, e) }); err != nil {
+	if err := Subscribe(context.Background(), srv.URL, "", func(e Event) { got = append(got, e) }); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if len(got) != 1 {
@@ -125,7 +125,7 @@ func TestSubscribeHandlesLinesOverTheDefaultScannerLimit(t *testing.T) {
 		"data: {\"id\":\"evt_1\",\"type\":\"message.updated\",\"properties\":{\"blob\":\""+big+"\"}}\n\n",
 	)
 	var got []Event
-	if err := Subscribe(context.Background(), srv.URL, func(e Event) { got = append(got, e) }); err != nil {
+	if err := Subscribe(context.Background(), srv.URL, "", func(e Event) { got = append(got, e) }); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if len(got) != 1 {
@@ -138,14 +138,38 @@ func TestSubscribeErrorsOnBadStatus(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	if err := Subscribe(context.Background(), srv.URL, func(Event) {}); err == nil {
+	if err := Subscribe(context.Background(), srv.URL, "", func(Event) {}); err == nil {
 		t.Error("want an error for a non-200 response")
 	}
 }
 
 func TestSubscribeErrorsWhenServerIsDown(t *testing.T) {
-	if err := Subscribe(context.Background(), "http://127.0.0.1:1", func(Event) {}); err == nil {
+	if err := Subscribe(context.Background(), "http://127.0.0.1:1", "", func(Event) {}); err == nil {
 		t.Error("want an error for an unreachable server")
+	}
+}
+
+// opencode 2 serves its web UI on every path outside /api, with a 200 and
+// HTML, so subscribing anywhere else fails silently rather than loudly; and
+// it refuses the stream entirely without the server's password.
+func TestSubscribeAuthenticatesToTheAPIStream(t *testing.T) {
+	var gotPath, gotUser, gotPass string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUser, gotPass, _ = r.BasicAuth()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"evt_1\",\"type\":\"server.connected\",\"data\":{}}\n\n")
+	}))
+	defer srv.Close()
+
+	if err := Subscribe(context.Background(), srv.URL, "s3cret", func(Event) {}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if gotPath != "/api/event" {
+		t.Errorf("path = %q, want /api/event", gotPath)
+	}
+	if gotUser != "opencode" || gotPass != "s3cret" {
+		t.Errorf("basic auth = %q:%q, want opencode:s3cret", gotUser, gotPass)
 	}
 }
 
@@ -154,7 +178,7 @@ func TestSubscribeStopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Subscribe(ctx, srv.URL, func(Event) {}) }()
+	go func() { done <- Subscribe(ctx, srv.URL, "", func(Event) {}) }()
 
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -188,7 +212,7 @@ func TestWatchReconnectsAfterTheStreamDrops(t *testing.T) {
 	var seen sync.WaitGroup
 	seen.Add(2)
 	count := 0
-	go Watch(ctx, srv.URL, func(Event) {
+	go Watch(ctx, srv.URL, "", func(Event) {
 		mu.Lock()
 		count++
 		c := count
@@ -214,7 +238,7 @@ func TestWatchStopsOnContextCancel(t *testing.T) {
 	srv := sseServer(t, true, "data: {\"id\":\"evt_1\",\"type\":\"server.connected\"}\n\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Watch(ctx, srv.URL, func(Event) {}) }()
+	go func() { done <- Watch(ctx, srv.URL, "", func(Event) {}) }()
 
 	time.Sleep(100 * time.Millisecond)
 	cancel()

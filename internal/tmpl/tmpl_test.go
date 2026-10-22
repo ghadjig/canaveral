@@ -17,8 +17,12 @@ func vars() Vars {
 		Port:     ports,
 		URL:      URLsFor(ports),
 		Agent: map[string]AgentRef{
-			"main":     {URL: "http://127.0.0.1:4096"},
-			"reviewer": AgentRef{URL: "http://127.0.0.1:4097"}.WithSession("--session abc"),
+			"main": {URL: "http://127.0.0.1:4096", Attach: "opencode --server http://127.0.0.1:4096 /wt/small-fixes"},
+			"reviewer": func() AgentRef {
+				r := AgentRef{URL: "http://127.0.0.1:4097"}.WithSession("--session abc")
+				r.Attach = "opencode --server http://127.0.0.1:4097 /wt/small-fixes --session abc"
+				return r
+			}(),
 		},
 		DBSuffix: "_small_fixes",
 	}
@@ -26,20 +30,21 @@ func vars() Vars {
 
 func TestRenderPortsAndURLs(t *testing.T) {
 	cases := map[string]string{
-		"bin/rails server -p {{.Port.web}}":                               "bin/rails server -p 3001",
-		"{{.URL.web}}/up":                                                 "http://localhost:3001/up",
-		"localhost:{{.Port.vite}}":                                        "localhost:5174",
-		"opencode attach {{.Agent.main}}":                                 "opencode attach http://127.0.0.1:4096",
-		"opencode attach {{.Agent.reviewer}} {{.Agent.reviewer.Session}}": "opencode attach http://127.0.0.1:4097 --session abc",
+		"bin/rails server -p {{.Port.web}}":                                 "bin/rails server -p 3001",
+		"{{.URL.web}}/up":                                                   "http://localhost:3001/up",
+		"localhost:{{.Port.vite}}":                                          "localhost:5174",
+		"opencode --server {{.Agent.main}}":                                 "opencode --server http://127.0.0.1:4096",
+		"opencode --server {{.Agent.reviewer}} {{.Agent.reviewer.Session}}": "opencode --server http://127.0.0.1:4097 --session abc",
 		// Fork is the former spelling of Session and must keep rendering
 		// the same thing, or every manifest written before the rename
 		// silently stops resuming anything.
-		"opencode attach {{.Agent.reviewer}} {{.Agent.reviewer.Fork}}": "opencode attach http://127.0.0.1:4097 --session abc",
-		"attach {{.Agent.main}} {{.Agent.main.Session}}":               "attach http://127.0.0.1:4096 ",
-		"cd {{.Worktree}}":          "cd /wt/small-fixes",
-		"{{.Project}}/{{.Feature}}": "norules/small-fixes",
-		"db{{.DBSuffix}}":           "db_small_fixes",
-		"no placeholders here":      "no placeholders here",
+		"opencode --server {{.Agent.reviewer}} {{.Agent.reviewer.Fork}}": "opencode --server http://127.0.0.1:4097 --session abc",
+		"attach {{.Agent.main}} {{.Agent.main.Session}}":                 "attach http://127.0.0.1:4096 ",
+		"{{.Agent.reviewer.Attach}}":                                     "opencode --server http://127.0.0.1:4097 /wt/small-fixes --session abc",
+		"cd {{.Worktree}}":                                               "cd /wt/small-fixes",
+		"{{.Project}}/{{.Feature}}":                                      "norules/small-fixes",
+		"db{{.DBSuffix}}":                                                "db_small_fixes",
+		"no placeholders here":                                           "no placeholders here",
 	}
 	for in, want := range cases {
 		got, err := Render("t", in, vars())

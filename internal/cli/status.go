@@ -446,7 +446,7 @@ func agentRow(ctx context.Context, f *state.Feature, a state.Agent) row {
 			return r
 		}
 	}
-	h := agent.Probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir})
+	h := agent.Probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir, Password: a.Password})
 	if a.Unit == "" {
 		r.State = unsupervisedState(h)
 	}
@@ -910,9 +910,27 @@ func runAttach(ctx context.Context, args []string) error {
 			return fmt.Errorf("enter %s: %w", a.Dir, err)
 		}
 	}
-	argv := h.AttachArgv(agent.Conn{URL: a.URL, Dir: a.Dir}, *cont)
+	c := agent.Conn{URL: a.URL, Dir: a.Dir, Password: a.Password}
+	argv := h.AttachArgv(c, *cont)
 	// Replace this process so the TUI owns the terminal directly.
-	return syscallExec(bin, argv, os.Environ())
+	return syscallExec(bin, argv, withEnv(os.Environ(), h.ClientEnv(c)))
+}
+
+// withEnv returns environ with extra's variables set, replacing any existing
+// value rather than appending a duplicate — which of two copies a program
+// sees is up to the program.
+func withEnv(environ []string, extra map[string]string) []string {
+	out := make([]string, 0, len(environ)+len(extra))
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, replaced := extra[k]; !replaced {
+			out = append(out, kv)
+		}
+	}
+	for k, v := range extra {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 func runLogs(ctx context.Context, args []string) error {

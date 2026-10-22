@@ -654,3 +654,21 @@ func TestUnsupervisedState(t *testing.T) {
 		}
 	}
 }
+
+// A password already in the caller's shell must be replaced, not shadowed by
+// a second copy the TUI may or may not be the one to read.
+func TestWithEnvReplacesRatherThanDuplicates(t *testing.T) {
+	got := withEnv([]string{"HOME=/h", "OPENCODE_PASSWORD=stale"}, map[string]string{"OPENCODE_PASSWORD": "fresh"})
+	var pw []string
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "OPENCODE_PASSWORD=") {
+			pw = append(pw, kv)
+		}
+	}
+	if len(pw) != 1 || pw[0] != "OPENCODE_PASSWORD=fresh" {
+		t.Errorf("OPENCODE_PASSWORD entries = %v, want exactly the fresh one", pw)
+	}
+	if got[0] != "HOME=/h" {
+		t.Errorf("env = %v, want the rest kept", got)
+	}
+}

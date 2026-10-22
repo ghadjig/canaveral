@@ -1,8 +1,8 @@
 package feature
 
-// Agent clients that outlive the agent they were talking to: an `opencode
-// attach` running in a terminal canaveral did not open, still pointed at a
-// server that has since been stopped.
+// Agent clients that outlive the agent they were talking to: an opencode TUI
+// running in a terminal canaveral did not open, still pointed at a server
+// that has since been stopped.
 
 import (
 	"context"

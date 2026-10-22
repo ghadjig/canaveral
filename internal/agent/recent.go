@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,8 +44,8 @@ func invalidateRecent(base string) {
 	}
 }
 
-func recentMessages(ctx context.Context, base string, session sessionInfo) ([]sessionMessage, error) {
-	key := base + "/" + session.ID
+func recentMessages(ctx context.Context, c Conn, session sessionInfo) ([]sessionMessage, error) {
+	key := c.URL + "/" + session.ID
 	recentCache.Lock()
 	entry, ok := recentCache.entries[key]
 	recentCache.Unlock()
@@ -59,9 +60,13 @@ func recentMessages(ctx context.Context, base string, session sessionInfo) ([]se
 			return entry.msgs, nil
 		}
 	}
-	u := base + "/session/" + url.PathEscape(session.ID) + "/message?limit=16"
-	var msgs []sessionMessage
-	if err := getBoundedJSON(ctx, u, &msgs); err != nil {
+	// Newest first, because that is the only order in which a limit keeps
+	// the recent end of a long conversation rather than its opening.
+	u := fmt.Sprintf("/api/session/%s/message?limit=%d&order=desc", url.PathEscape(session.ID), recentMessageLimit)
+	var page struct {
+		Data []sessionMessage `json:"data"`
+	}
+	if err := getBoundedJSON(ctx, c, u, &page); err != nil {
 		recentCache.Lock()
 		if len(recentCache.entries) < 128 {
 			recentCache.entries[key] = recentEntry{updated: session.Time.Updated, at: time.Now(), err: err}
@@ -69,30 +74,13 @@ func recentMessages(ctx context.Context, base string, session sessionInfo) ([]se
 		recentCache.Unlock()
 		return nil, err
 	}
+	msgs := page.Data
 	if len(msgs) > recentMessageLimit {
-		msgs = msgs[len(msgs)-recentMessageLimit:]
+		msgs = msgs[:recentMessageLimit]
 	}
-	// Keep only the projection used by status, not full prompts, reasoning,
-	// or tool inputs such as apply_patch's complete file contents.
-	for i := range msgs {
-		var parts []messagePart
-		for _, p := range msgs[i].Parts {
-			switch p.Type {
-			case "text":
-				p.Text = previewText(p.Text)
-			case "tool":
-				if p.State.Title == "" {
-					p.State.Title = describeInput(p.State.Input)
-				}
-				p.State.Title = previewText(p.State.Title)
-				p.State.Input = nil
-			default:
-				continue
-			}
-			parts = append(parts, p)
-		}
-		msgs[i].Parts = parts
-	}
+	// Everything downstream reads oldest-first, as a conversation does.
+	slices.Reverse(msgs)
+	projectMessages(msgs)
 	recentCache.Lock()
 	// Bound server/session churn in a long-running watcher.
 	if len(recentCache.entries) >= 128 {
@@ -113,8 +101,61 @@ func recentMessages(ctx context.Context, base string, session sessionInfo) ([]se
 	return msgs, nil
 }
 
-func getBoundedJSON(ctx context.Context, u string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+// projectMessages reduces msgs, in place, to what status needs: not full
+// prompts, reasoning, or tool inputs such as a patch's complete file
+// contents, which would otherwise sit in the cache for every agent.
+//
+// A tool's input is read here, once, for the two things anything later
+// wants from it — a title for the call, and a todowrite call's list — and
+// then dropped.
+func projectMessages(msgs []sessionMessage) {
+	for i := range msgs {
+		msgs[i].Text = previewText(msgs[i].Text)
+		var parts []messagePart
+		for _, p := range msgs[i].Content {
+			switch p.Type {
+			case "text":
+				p.Text = previewText(p.Text)
+			case "tool":
+				input := toolInput(p.State.Input)
+				p.Title = previewText(describeInput(input))
+				if strings.EqualFold(p.Name, "todowrite") {
+					p.Todos = todowriteItems(p.State.Input)
+				}
+				p.State.Input = nil
+			default:
+				continue
+			}
+			parts = append(parts, p)
+		}
+		msgs[i].Content = parts
+	}
+}
+
+// toolInput decodes a tool call's arguments, nil when they are not an
+// object yet — while the model is still streaming them they arrive as the
+// raw partial string.
+func toolInput(raw json.RawMessage) map[string]any {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// todowriteItems reads the list out of a todowrite call's arguments.
+func todowriteItems(raw json.RawMessage) []todoItem {
+	var in struct {
+		Todos []todoItem `json:"todos"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return nil
+	}
+	return in.Todos
+}
+
+func getBoundedJSON(ctx context.Context, c Conn, path string, out any) error {
+	req, err := newRequest(ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
@@ -124,14 +165,17 @@ func getBoundedJSON(ctx context.Context, u string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
+		return fmt.Errorf("GET %s: status %d", path, resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxRecentBytes+1))
 	if err != nil {
 		return err
 	}
 	if len(b) > maxRecentBytes {
-		return fmt.Errorf("GET %s: status response exceeds %d bytes", u, maxRecentBytes)
+		return fmt.Errorf("GET %s: status response exceeds %d bytes", path, maxRecentBytes)
 	}
-	return json.Unmarshal(b, out)
+	if err := json.Unmarshal(b, out); err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	return nil
 }

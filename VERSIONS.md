@@ -12,6 +12,39 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- Features with an opencode agent launch again under opencode 2. Its window
+  ran `opencode attach`, which opencode 2 removed, so the window printed
+  opencode's help and closed; and every status read went to API paths
+  opencode 2 no longer has, so `status`, `watch`, waiting detection and
+  forking a namespace sibling's conversation all saw nothing. The agent is
+  now opened with `opencode --server <url> <dir>`, and canaveral reads it
+  through opencode 2's `/api` endpoints.
+- canaveral now authenticates to the agent server, which opencode 2 refuses
+  to serve without a password. The server generates one per start; canaveral
+  reads it from the agent's log with the address, keeps it in the feature's
+  state, and gives it to the windows that attach to the agent and to
+  `canaveral attach` through `OPENCODE_PASSWORD` in their environment, never
+  on a command line. An agent started by an earlier canaveral needs
+  `canaveral reset` to pick one up.
+
+**Added**
+
+- `{{.Agent.<name>.Attach}}` renders the whole command that opens an agent,
+  session flags included, in its own tool's spelling:
+  `opencode --server <url> <dir> --session <id>` or `claude --resume <id>`.
+  New manifests from `canaveral init` use it. Existing manifests that spell
+  out `opencode attach {{.Agent.main}} ...` must change their window's `run`,
+  and `run = "{{.Agent.main.Attach}}"` is the replacement.
+
+**Removed**
+
+- opencode 1 is no longer supported. An agent whose opencode announces no
+  server password fails to start with a message saying opencode 2 is needed.
+
 ## v0.16.2 — 2026-10-20
 
 **Fixed**

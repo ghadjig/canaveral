@@ -37,8 +37,8 @@ type Vars struct {
 	URL map[string]string
 	// Agent maps agent names to their servers. Populated only after agents
 	// have started. {{.Agent.main}} renders as the URL, which is empty for a
-	// harness that has no server; {{.Agent.main.Session}} renders extra
-	// flags to splice into the same window's own command (see AgentRef).
+	// harness that has no server; {{.Agent.main.Attach}} renders the whole
+	// command that opens it (see AgentRef).
 	Agent map[string]AgentRef
 	// DBSuffix is the per-feature database suffix, empty when shared.
 	DBSuffix string
@@ -56,17 +56,30 @@ type Vars struct {
 // advanced use.
 //
 // {{.Agent.main}} renders as the URL — String() is what text/template calls
-// to print a non-basic value directly — while {{.Agent.main.Session}}
-// accesses Session specifically.
+// to print a non-basic value directly — while {{.Agent.main.Attach}}
+// accesses Attach specifically.
 type AgentRef struct {
 	URL string
+	// Attach is the whole command that opens this agent in a terminal,
+	// session flags included, spelled however its harness needs it:
+	//
+	//	run = "{{.Agent.main.Attach}}"
+	//
+	// renders as "opencode --server <url> <dir> --session <id>" for
+	// opencode and "claude --resume <id>" for Claude Code. It is the form
+	// to prefer, because it is the one that keeps working when a tool
+	// changes how it is invoked — opencode 2 removed the `opencode attach`
+	// every earlier manifest spelled out by hand.
+	//
+	// Any credentials the command needs are not in it: canaveral puts them
+	// in the window's environment, where other users cannot read them.
+	Attach string
 	// Session is the flags that make this agent open an existing
 	// conversation rather than start a new one, and "" when it should not.
 	// The spelling is the harness's own — "--session <id>" for opencode,
-	// "--resume <id>" for Claude Code — so a manifest window splices it in
-	// without knowing which tool it got:
+	// "--resume <id>" for Claude Code — for a window that builds its own
+	// command rather than using Attach:
 	//
-	//	run = "opencode attach {{.Agent.main}} {{.Agent.main.Session}}"
 	//	run = "claude {{.Agent.main.Session}}"
 	//
 	// Two situations fill it, and they are mutually exclusive because they

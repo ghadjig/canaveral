@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/hypr"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
@@ -197,9 +198,33 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 		Terminal:   m.Terminal,
 		Cmd:        cmd,
 		Hold:       w.Hold,
-		Env:        base,
+		Env:        manifest.MergeEnv(base, agentClientEnv(f, cmd)),
 	}
 	return rec, &pendingSpawn{name: w.Name, spec: spec, match: match}, nil
+}
+
+// agentClientEnv is the environment a window needs to talk to the agents its
+// command names: opencode's server password, for one.
+//
+// A window that attaches to an agent says so by carrying that agent's URL,
+// which is the same test isStale uses. Matching on it, rather than giving
+// every window every agent's credentials, keeps them out of the shells and
+// editors that have no use for them — and a feature with two agents could
+// not hand both passwords to one window under the one variable anyway.
+func agentClientEnv(f *state.Feature, cmd string) map[string]string {
+	for _, a := range f.Agents {
+		if a.URL == "" || !strings.Contains(cmd, a.URL) {
+			continue
+		}
+		h, err := agent.For(a.Tool)
+		if err != nil {
+			continue
+		}
+		if env := h.ClientEnv(agentConn(f, a)); len(env) > 0 {
+			return env
+		}
+	}
+	return nil
 }
 
 // isStale reports whether an already-open window is still attached to an
@@ -208,7 +233,7 @@ func buildWindowSpec(ctx context.Context, m *manifest.Manifest, f *state.Feature
 // Agents are started with `--port 0` (see agent.ServeCmd), so an agent that
 // restarts for any reason — a crash, `restart`, or simply being stopped
 // between two opens — comes back on a different port. The window still
-// running `opencode attach` against the old one is talking to a closed
+// running an opencode TUI against the old one is talking to a closed
 // socket: the TUI paints, then the first keystroke fails with "Creating a
 // session failed". Nothing caught this, because a window was adopted purely
 // on its class.

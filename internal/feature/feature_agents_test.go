@@ -92,7 +92,7 @@ func TestForkedSessionForPrefersMoreRecentLiveSibling(t *testing.T) {
 	sibWorktree := t.TempDir()
 	sessions := `{"data":[{"id":"ses_live","location":{"directory":"` + sibWorktree + `"},"time":{"updated":` +
 		strconv.FormatInt(time.Now().UnixMilli(), 10) + `}}]}`
-	srv := agentFakeServer(t, sessions, `[]`)
+	srv := agentFakeServer(t, sessions, `{"data":[]}`)
 
 	sib := &state.Feature{
 		Project: "norules", Name: "onboarding/step1", Worktree: sibWorktree,
@@ -160,30 +160,23 @@ func forkFakeServer(t *testing.T, sessions, newID string, moved *string) *httpte
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(sessions))
 	})
-	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/session/{id}/fork", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/fork") {
-			_, _ = w.Write([]byte(`{"id":"` + newID + `"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`[]`))
+		_, _ = w.Write([]byte(`{"data":{"id":"` + newID + `"}}`))
 	})
-	mux.HandleFunc("/experimental/control-plane/move-session", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/session/{id}/move", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			SessionID   string `json:"sessionID"`
-			Destination struct {
-				Directory string `json:"directory"`
-			} `json:"destination"`
+			Directory string `json:"directory"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if moved != nil {
-			*moved = body.SessionID + " -> " + body.Destination.Directory
+			*moved = r.PathValue("id") + " -> " + body.Directory
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`[]`))
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -253,10 +246,10 @@ func TestReconcileAgentsAdoptsAnAlreadyRunningUnit(t *testing.T) {
 		unit.Reset(context.Background(), unitName)
 	})
 
-	// unit.Start truncates LogPath; write the line DiscoverURL looks for
+	// unit.Start truncates LogPath; write the lines Discover looks for
 	// only now, simulating an agent that already announced its address in
 	// a previous reconcile.
-	if err := os.WriteFile(logPath, []byte("listening on http://127.0.0.1:9999\n"), 0o644); err != nil {
+	if err := os.WriteFile(logPath, []byte("server listening on http://127.0.0.1:9999\nserver password pw\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,6 +264,9 @@ func TestReconcileAgentsAdoptsAnAlreadyRunningUnit(t *testing.T) {
 	}
 	if f.Agents[0].URL != "http://127.0.0.1:9999" {
 		t.Errorf("adopted URL = %q, want recovered from the log", f.Agents[0].URL)
+	}
+	if f.Agents[0].Password != "pw" {
+		t.Errorf("adopted password = %q, want recovered from the log", f.Agents[0].Password)
 	}
 	if len(res.StartedAgent) != 0 {
 		t.Errorf("StartedAgent = %v, adopting a running unit must not report a fresh start", res.StartedAgent)
@@ -364,5 +360,50 @@ func TestVarsForUsesTheHarnessesOwnSessionFlag(t *testing.T) {
 				t.Errorf("Fork = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// {{.Agent.main.Attach}} is the whole command, so a manifest stops having to
+// know how each tool is opened — which is what broke every manifest when
+// opencode 2 dropped `opencode attach`.
+func TestVarsForRendersTheAttachCommand(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cases := map[string]state.Agent{
+		"opencode --server http://127.0.0.1:4096 /wt/f --session ses_1": {
+			Name: "main", Tool: "opencode", URL: "http://127.0.0.1:4096", Password: "pw",
+		},
+		"claude --resume ses_1": {Name: "main", Tool: "claude"},
+	}
+	for want, a := range cases {
+		t.Run(a.Tool, func(t *testing.T) {
+			f := &state.Feature{Project: "p", Name: "f", Worktree: "/wt/f", Agents: []state.Agent{a}}
+			v := varsFor(context.Background(), &manifest.Manifest{}, f, false,
+				map[string]string{"main": "ses_1"})
+			got := v.Agent["main"].Attach
+			if got != want {
+				t.Errorf("Attach = %q, want %q", got, want)
+			}
+			if strings.Contains(got, "pw") {
+				t.Errorf("Attach = %q carries the password, which belongs in the environment", got)
+			}
+		})
+	}
+}
+
+// A window attached to an agent gets the password it needs in its
+// environment; one that is not attached to anything gets nothing.
+func TestAgentClientEnvFollowsTheURLInTheCommand(t *testing.T) {
+	f := &state.Feature{
+		Project: "p", Name: "f", Worktree: "/wt",
+		Agents: []state.Agent{
+			{Name: "main", Tool: "opencode", URL: "http://127.0.0.1:4096", Password: "main-pw"},
+			{Name: "review", Tool: "opencode", URL: "http://127.0.0.1:5000", Password: "review-pw"},
+		},
+	}
+	if got := agentClientEnv(f, "opencode --server http://127.0.0.1:5000 /wt"); got["OPENCODE_PASSWORD"] != "review-pw" {
+		t.Errorf("attached to review: env = %v, want review's password", got)
+	}
+	if got := agentClientEnv(f, ""); len(got) != 0 {
+		t.Errorf("plain shell: env = %v, want nothing", got)
 	}
 }

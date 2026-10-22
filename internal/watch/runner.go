@@ -264,7 +264,7 @@ func (r *Runner) resubscribe(ctx context.Context) {
 			key := f.Key() + "/" + a.Name
 			live[key] = true
 
-			c := agent.Conn{URL: a.URL, Dir: a.Dir}
+			c := agent.Conn{URL: a.URL, Dir: a.Dir, Password: a.Password}
 			r.mu.Lock()
 			old, watching := r.subs[key]
 			r.mu.Unlock()
@@ -352,7 +352,7 @@ func (r *Runner) refreshSelected(ctx context.Context, all bool) (Snapshot, bool)
 			}
 			f, a := f, a
 			key := f.Key() + "/" + a.Name
-			conn := agent.Conn{URL: a.URL, Dir: a.Dir}
+			conn := agent.Conn{URL: a.URL, Dir: a.Dir, Password: a.Password}
 			nextConnections[key] = conn
 			if !all && !dirty[key] && r.connections[key] == conn {
 				if h, ok := cached[f.Key()][a.Name]; ok {
@@ -368,7 +368,7 @@ func (r *Runner) refreshSelected(ctx context.Context, all bool) (Snapshot, bool)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				h := r.probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir})
+				h := r.probe(ctx, a.Tool, agent.Conn{URL: a.URL, Dir: a.Dir, Password: a.Password})
 				mu.Lock()
 				if results[f.Key()] == nil {
 					results[f.Key()] = map[string]agent.Health{}
