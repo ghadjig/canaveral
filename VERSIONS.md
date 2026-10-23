@@ -12,6 +12,16 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+**Fixed**
+
+- A new feature in a namespace only continues a sibling's conversation when
+  both use the same agent tool. After a project switched from opencode to
+  Claude Code, the namespace's recorded opencode session was handed to
+  `claude --resume`, which could not open it, and could shadow a Claude Code
+  sibling that it could have continued.
+
 ## v0.18.2 — 2026-10-22
 
 **Fixed**

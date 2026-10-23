@@ -313,7 +313,7 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 		h := agent.Probe(ctx, a.Tool, agentConn(f, a))
 		if h.Reachable && h.SessionID != "" {
 			_ = skills.RecordSession(f.Project, ns, a.Name, skills.SessionRecord{
-				Feature: f.Name, SessionID: h.SessionID,
+				Feature: f.Name, SessionID: h.SessionID, Tool: a.Tool,
 				Worktree: f.Worktree, UpdatedAt: h.Updated,
 			})
 		}

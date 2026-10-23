@@ -174,12 +174,17 @@ func Link(worktree, project, namespace string) (rel string, created bool, err er
 	return rel, true, nil
 }
 
-// SessionRecord is the last known opencode session for one agent in a
-// namespace, recorded so a later sibling feature can fork it — even after
-// the feature that had it is long gone.
+// SessionRecord is the last known session for one agent in a namespace,
+// recorded so a later sibling feature can fork it — even after the feature
+// that had it is long gone.
 type SessionRecord struct {
 	Feature   string `json:"feature"`
 	SessionID string `json:"session_id"`
+	// Tool is the harness the session belongs to. A session id only means
+	// something to the tool that wrote it, so a namespace whose manifest
+	// switched from opencode to Claude Code must not hand an opencode id to
+	// claude --resume. Empty on records written before this was tracked.
+	Tool string `json:"tool,omitempty"`
 	// Worktree is where the session was created. opencode fixes a
 	// session's directory at creation — a fork inherits it, and --dir does
 	// not override it — so a session is only safe to resume while this
@@ -187,6 +192,16 @@ type SessionRecord struct {
 	// which are therefore treated as unusable.
 	Worktree  string    `json:"worktree,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Harness returns the tool the session belongs to. A record that predates
+// Tool was written by opencode: it was the only harness canaveral could run
+// at the time.
+func (r SessionRecord) Harness() string {
+	if r.Tool == "" {
+		return "opencode"
+	}
+	return r.Tool
 }
 
 // sessionsPath lives alongside SKILL.md in the same namespace directory —

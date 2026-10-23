@@ -407,3 +407,72 @@ func TestAgentClientEnvFollowsTheURLInTheCommand(t *testing.T) {
 		t.Errorf("plain shell: env = %v, want nothing", got)
 	}
 }
+
+// claudeTranscript writes a one-prompt Claude Code session for dir under the
+// test's CLAUDE_CONFIG_DIR, the way Claude Code itself files it.
+func claudeTranscript(t *testing.T, home, dir, id string) {
+	t.Helper()
+	slug := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		}
+		return '-'
+	}, dir)
+	pd := filepath.Join(home, "projects", slug)
+	if err := os.MkdirAll(pd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"user","sessionId":"` + id + `","cwd":"` + dir + `","message":{"role":"user","content":"hello"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(pd, id+".jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestForkedSessionForCopiesARecordedClaudeSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
+
+	// The sibling's worktree is gone by now; its transcript is not, because
+	// Claude Code keeps it under its own home rather than in the checkout.
+	src := filepath.Join(t.TempDir(), "step1")
+	claudeTranscript(t, home, src, "11111111-1111-4111-8111-111111111111")
+	if err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/step1", SessionID: "11111111-1111-4111-8111-111111111111",
+		Tool: "claude", Worktree: src, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "step2")
+	got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step2", Worktree: dst},
+		state.Agent{Name: "main", Tool: "claude", Dir: dst})
+	if got == "" || got == "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("forkedSessionFor = %q, want a fresh copy's id", got)
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, "projects", "*", got+".jsonl"))
+	if len(matches) != 1 || !strings.Contains(matches[0], "step2") {
+		t.Errorf("forked transcript = %v, want one filed under the new worktree", matches)
+	}
+}
+
+func TestForkedSessionForIgnoresAnotherToolsSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
+	// A record with no tool predates Claude Code support, so it is
+	// opencode's, and its id means nothing to claude --resume.
+	if err := skills.RecordSession("norules", "onboarding", "main", skills.SessionRecord{
+		Feature: "onboarding/step1", SessionID: "ses_opencode",
+		Worktree: t.TempDir(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := forkedSessionFor(context.Background(),
+		&state.Feature{Project: "norules", Name: "onboarding/step2", Worktree: "/wt"},
+		state.Agent{Name: "main", Tool: "claude", Dir: "/wt"}); got != "" {
+		t.Errorf("forkedSessionFor = %q, want empty for an opencode session", got)
+	}
+}

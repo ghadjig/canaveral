@@ -48,6 +48,11 @@ func agentConn(f *state.Feature, a state.Agent) agent.Conn {
 // every currently-existing sibling's live agent, for the case where it's
 // still running and has moved on since that was last recorded.
 //
+// Only a session written by the same tool is a candidate: the id is
+// meaningless to any other harness, and a newer one from a tool the
+// namespace has since moved away from would otherwise shadow an older one
+// that could actually be resumed.
+//
 // Only ever consulted when the feature itself was just created (varsFor's
 // fresh argument) — once a feature has its own session building up,
 // re-forking on every later reset would silently discard it in favour of a
@@ -58,8 +63,8 @@ func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) stri
 		return ""
 	}
 
-	best, have := recordedSiblingSession(f.Project, ns, a.Name)
-	best, have = newestLiveSiblingSession(ctx, f.Project, ns, f.Name, a.Name, best, have)
+	best, have := recordedSiblingSession(f.Project, ns, a.Name, a.Tool)
+	best, have = newestLiveSiblingSession(ctx, f.Project, ns, f.Name, a.Name, a.Tool, best, have)
 	if !have {
 		return ""
 	}
@@ -85,20 +90,20 @@ func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) stri
 }
 
 // recordedSiblingSession returns the namespace's recorded newest session for
-// agentName, if any — the fallback used when no sibling feature is live to
-// ask directly.
-func recordedSiblingSession(project, ns, agentName string) (skills.SessionRecord, bool) {
+// agentName, if any and if tool wrote it — the fallback used when no sibling
+// feature is live to ask directly.
+func recordedSiblingSession(project, ns, agentName, tool string) (skills.SessionRecord, bool) {
 	rec, ok, err := skills.LatestSession(project, ns, agentName)
-	if err != nil || !ok {
+	if err != nil || !ok || rec.Harness() != tool {
 		return skills.SessionRecord{}, false
 	}
 	return rec, true
 }
 
 // newestLiveSiblingSession scans every other feature in ns for a reachable
-// agentName, returning the most recently updated session found — best/have
+// agentName running tool, returning the most recently updated session found — best/have
 // if none of them beat it, or if there are none to check.
-func newestLiveSiblingSession(ctx context.Context, project, ns, name, agentName string,
+func newestLiveSiblingSession(ctx context.Context, project, ns, name, agentName, tool string,
 	best skills.SessionRecord, have bool) (skills.SessionRecord, bool) {
 	siblings, err := state.List(project)
 	if err != nil {
@@ -109,7 +114,7 @@ func newestLiveSiblingSession(ctx context.Context, project, ns, name, agentName 
 			continue
 		}
 		rec, ok := siblingSession(ctx, project, sib, agentName)
-		if !ok {
+		if !ok || rec.Harness() != tool {
 			continue
 		}
 		if !have || rec.UpdatedAt.After(best.UpdatedAt) {
@@ -135,7 +140,7 @@ func siblingSession(ctx context.Context, project, sib, agentName string) (skills
 		return skills.SessionRecord{}, false
 	}
 	return skills.SessionRecord{
-		Feature: sib, SessionID: h.SessionID,
+		Feature: sib, SessionID: h.SessionID, Tool: a.Tool,
 		Worktree: sf.Worktree, UpdatedAt: h.Updated,
 	}, true
 }
