@@ -425,3 +425,104 @@ func TestClaudeClearsAnErrorOnceTheModelGetsThrough(t *testing.T) {
 		t.Errorf("LastAssistant = %q", h.LastAssistant)
 	}
 }
+
+// A question is written to the transcript the moment it is asked and stays
+// open until it is answered, so it is the agent waiting on you, not working.
+func TestClaudeWaitingOnAQuestion(t *testing.T) {
+	ask := `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"question":"Which database should it use?","header":"Database","multiSelect":false,"options":[{"label":"Postgres","description":"x"},{"label":"SQLite","description":"y"}]}]}}]}}`
+	h := scan(t, true, claudePrompt, ask)
+	if h.State != StateWaiting {
+		t.Fatalf("State = %q, want waiting on an unanswered question", h.State)
+	}
+	want := Pending{Kind: BlockQuestion, Header: "Database", Detail: "Which database should it use?", Options: []string{"Postgres", "SQLite"}}
+	if h.Pending == nil || h.Pending.Kind != want.Kind || h.Pending.Header != want.Header ||
+		h.Pending.Detail != want.Detail || strings.Join(h.Pending.Options, ",") != "Postgres,SQLite" {
+		t.Errorf("Pending = %+v, want %+v", h.Pending, want)
+	}
+
+	answer := `{"type":"user","isSidechain":false,"uuid":"u2","timestamp":"2026-09-05T10:00:30.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q1","content":"Postgres"}]}}`
+	h = scan(t, true, claudePrompt, ask, answer)
+	if h.State != StateBusy || h.Pending != nil {
+		t.Errorf("State = %q, Pending = %+v, want busy and nothing pending once answered", h.State, h.Pending)
+	}
+}
+
+func TestClaudeWaitingOnPlanApproval(t *testing.T) {
+	plan := `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"p1","name":"ExitPlanMode","input":{"plan":"1. Add the route\n2. Add the form"}}]}}`
+	h := scan(t, true, claudePrompt, plan)
+	if h.State != StateWaiting || h.Pending == nil || h.Pending.Kind != BlockPermission {
+		t.Errorf("State = %q, Pending = %+v, want waiting on a plan approval", h.State, h.Pending)
+	}
+}
+
+// A question left open by a process that has since exited is nobody's to
+// answer any more.
+func TestClaudeNotWaitingWhenNothingIsRunning(t *testing.T) {
+	ask := `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[]}}]}}`
+	if h := scan(t, false, claudePrompt, ask); h.State != StateIdle || h.Pending != nil {
+		t.Errorf("State = %q, Pending = %+v, want idle", h.State, h.Pending)
+	}
+}
+
+// One API response is written as one entry per content block, each carrying
+// the whole response's usage. Summing every entry counted it once per block.
+func TestClaudeCountsEachResponsesUsageOnce(t *testing.T) {
+	thinking := `{"type":"assistant","isSidechain":false,"uuid":"a1","timestamp":"2026-09-05T10:00:03.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}}`
+	text := `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:04.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}}`
+	h := scan(t, true, claudePrompt, thinking, text, claudeTurnDone)
+	if got := h.Tokens.Total(); got != 42 {
+		t.Errorf("Tokens.Total() = %d, want 42: one response, counted once", got)
+	}
+}
+
+// Each run writes its own total when it exits, starting from zero on a
+// resume, so the session's spend is the sum of every run's last total.
+func TestClaudeCostSumsEachRunsFinalCostState(t *testing.T) {
+	run1a := `{"type":"cost-state","startTime":1000,"totalCostUSD":1.25}`
+	run1b := `{"type":"cost-state","startTime":1000,"totalCostUSD":1.5}`
+	run2 := `{"type":"cost-state","startTime":2000,"totalCostUSD":0.25}`
+	h := scan(t, true, claudePrompt, claudeReply, claudeTurnDone, run1a, run1b, run2)
+	if h.Cost != 1.75 {
+		t.Errorf("Cost = %v, want 1.75", h.Cost)
+	}
+}
+
+func TestClaudeWatchFiresWhenTheTranscriptGrows(t *testing.T) {
+	claudeStore(t)
+	wt := "/wt/watched"
+	p := writeTranscript(t, wt, "33333333-3333-4333-8333-333333333333", claudePrompt)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fired := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- (claude{}).Watch(ctx, Conn{Dir: wt}, func() {
+			select {
+			case fired <- struct{}{}:
+			default:
+			}
+		})
+	}()
+
+	// Let the watcher take its baseline before the file changes.
+	time.Sleep(100 * time.Millisecond)
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(claudeReply + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	select {
+	case <-fired:
+	case <-time.After(3 * claudeWatchInterval):
+		t.Fatal("Watch did not fire after the transcript was appended to")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Watch returned %v after cancellation, want nil", err)
+	}
+}

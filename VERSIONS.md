@@ -12,6 +12,21 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- `canaveral watch` picks up a Claude Code agent's state within about a second
+  instead of only on its 30-second safety refresh, so an agent that has just
+  been given a prompt no longer sits at idle while it works.
+- A Claude Code agent asking a question (AskUserQuestion) or waiting for a plan
+  to be approved (ExitPlanMode) is reported as waiting, with the question and
+  its options, rather than as working.
+- Claude Code token counts no longer count each response once per content
+  block, which roughly doubled them.
+- Claude Code spend is reported, from the total Claude Code records as each
+  run of a session exits. The run still in progress is added when it ends.
+
 ## v0.18.3 — 2026-10-23
 
 **Fixed**

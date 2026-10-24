@@ -14,13 +14,21 @@ package agent
 // genuine live view rather than a post-hoc log — the same information the
 // TUI is drawing from, a few milliseconds behind.
 //
-// Two things do not survive the lack of a server, and they are called out
+// Some things do not survive the lack of a server, and they are called out
 // here rather than faked. A permission prompt is drawn and answered entirely
 // in the TUI and never reaches the transcript until it has been resolved, so
-// this harness cannot report StateWaiting: an agent stopped on a permission
-// prompt looks busy, because from the transcript's point of view it is still
-// mid-turn. And there is no push notification of any kind, so `canaveral
-// watch` falls back to its polling interval instead of reacting instantly.
+// an agent stopped on one looks busy: from the transcript's point of view it
+// is still mid-turn. A question (AskUserQuestion) or a plan awaiting approval
+// (ExitPlanMode) is different — the tool call is written as soon as it is
+// made, and stays open until you answer — so those do report StateWaiting.
+//
+// Spend is only partly visible. Claude Code writes no cost per message; it
+// writes a cost-state entry holding the whole run's total when the process
+// exits. So Health.Cost covers every run of the session that has finished,
+// and the run in progress joins it when it ends.
+//
+// There is no push notification of any kind, so Watch polls the transcript
+// directory instead.
 
 import (
 	"bufio"
@@ -89,8 +97,56 @@ func (claude) SessionFlag(id string) string {
 	return "--resume " + id
 }
 
-// Watch has nothing to subscribe to; callers poll instead.
-func (claude) Watch(context.Context, Conn, func()) error { return ErrNoEvents }
+// claudeWatchInterval is how often Watch looks at the transcripts. A stat
+// per session file is all it costs, and a second is well inside the time a
+// person takes to glance at a status bar after typing a prompt.
+const claudeWatchInterval = time.Second
+
+// Watch calls fn whenever a transcript in c.Dir changes.
+//
+// There is no server to push events, but the transcript is appended to as
+// things happen, so a change to it is the event. Without this the watch
+// would only re-probe on its safety interval, and an agent that had just
+// been given a prompt would sit at idle for up to that long.
+func (claude) Watch(ctx context.Context, c Conn, fn func()) error {
+	if c.Dir == "" {
+		return ErrNoEvents
+	}
+	t := time.NewTicker(claudeWatchInterval)
+	defer t.Stop()
+	last := transcriptsFingerprint(c.Dir)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			if fp := transcriptsFingerprint(c.Dir); fp != last {
+				last = fp
+				fn()
+			}
+		}
+	}
+}
+
+// transcriptsFingerprint summarises the state of dir's transcripts, changing
+// whenever one is created or written to. Size is included alongside the
+// modification time because two appends within the filesystem's timestamp
+// granularity would otherwise look like one.
+func transcriptsFingerprint(dir string) string {
+	sessions, err := transcripts(dir)
+	if err != nil || len(sessions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, s := range sessions {
+		info, err := os.Stat(s.path)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "%s:%d:%d;", s.id, info.Size(), info.ModTime().UnixNano())
+	}
+	return b.String()
+}
 
 // claudeHome returns Claude Code's state directory, honouring the
 // CLAUDE_CONFIG_DIR override it reads itself.
@@ -196,13 +252,23 @@ type claudeEntry struct {
 	// in the file, and the source of Worked.
 	DurationMs int64 `json:"durationMs"`
 	// CostUSD is present on older transcripts only; newer ones record no
-	// cost at all, which is why Health.Cost is often zero here.
-	CostUSD           float64        `json:"costUSD"`
+	// cost per message.
+	CostUSD float64 `json:"costUSD"`
+	// TotalCostUSD and StartTime are set on the cost-state entry Claude Code
+	// writes as a process exits: that run's total spend, and when the run
+	// began. The total is per run, not per session — resuming a session
+	// starts it from zero — so runs are told apart by StartTime and summed.
+	TotalCostUSD      float64        `json:"totalCostUSD"`
+	StartTime         int64          `json:"startTime"`
 	IsAPIErrorMessage bool           `json:"isApiErrorMessage"`
 	Message           *claudeMessage `json:"message"`
 }
 
 type claudeMessage struct {
+	// ID is the API response's id. One response is written as several
+	// entries, one per content block, each repeating the response's usage,
+	// so this is what keeps it from being counted once per block.
+	ID    string `json:"id"`
 	Role  string `json:"role"`
 	Model string `json:"model"`
 	// Content is a bare string for a typed prompt and an array of blocks
@@ -317,9 +383,17 @@ type claudeScan struct {
 	// openOrder preserves issue order so the newest open call wins, since a
 	// map has none.
 	openOrder []string
+	// openPending holds the open calls that are waiting on you rather than
+	// running, keyed like openTools.
+	openPending map[string]*Pending
 	// sidechainUUIDs is every subagent entry's uuid, used to tell a subagent
 	// root (parent outside the set) from a subagent continuation.
 	sidechainUUIDs map[string]bool
+	// counted is every API response whose usage has been added already.
+	counted map[string]bool
+	// runCost is each finished run's total, keyed by its start time. A run
+	// can write its cost-state more than once; the last one is its total.
+	runCost map[int64]float64
 
 	sawTurnEnd                      bool
 	lastPromptIdx, lastTurnEndIdx   int
@@ -339,7 +413,10 @@ type claudeScan struct {
 func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 	s := claudeScan{
 		openTools:        map[string]*Activity{},
+		openPending:      map[string]*Pending{},
 		sidechainUUIDs:   map[string]bool{},
+		counted:          map[string]bool{},
+		runCost:          map[int64]float64{},
 		lastPromptIdx:    -1,
 		lastTurnEndIdx:   -1,
 		lastAssistantIdx: -1,
@@ -356,6 +433,8 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 			s.lastActivityAt = e.Timestamp
 		}
 		switch e.Type {
+		case "cost-state":
+			s.runCost[e.StartTime] = e.TotalCostUSD
 		case "system":
 			if e.Subtype == "turn_duration" {
 				s.sawTurnEnd = true
@@ -379,6 +458,10 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 		h.SincePrompt = now.Sub(s.lastPromptAt)
 	}
 
+	for _, c := range s.runCost {
+		h.Cost += c
+	}
+
 	h.Busy = live && s.busy()
 	if h.Busy {
 		h.State = StateBusy
@@ -386,6 +469,10 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 			h.Working = now.Sub(s.lastActivityAt)
 		}
 		h.Activity = s.currentActivity()
+		if p := s.pending(); p != nil {
+			h.State = StateWaiting
+			h.Pending = p
+		}
 	}
 
 	h.Todos = s.todos
@@ -419,7 +506,7 @@ func (s *claudeScan) scanSidechain(e *claudeEntry, h *Health) {
 		h.SubSessions++
 	}
 	if e.Type == "assistant" {
-		addUsage(h, e)
+		s.addUsage(h, e)
 	}
 }
 
@@ -458,7 +545,7 @@ func (s *claudeScan) scanUser(i int, e *claudeEntry) {
 }
 
 func (s *claudeScan) scanAssistant(i int, e *claudeEntry, h *Health) {
-	addUsage(h, e)
+	s.addUsage(h, e)
 	if e.Message == nil {
 		return
 	}
@@ -514,11 +601,65 @@ func (s *claudeScan) openTool(b claudeBlock, at time.Time) {
 		Title: firstLine(describeInput(b.Input)),
 		Since: at,
 	}
+	if p := pendingFor(b); p != nil {
+		s.openPending[b.ID] = p
+	}
 	s.openOrder = append(s.openOrder, b.ID)
 }
 
 func (s *claudeScan) closeTool(id string) {
 	delete(s.openTools, id)
+	delete(s.openPending, id)
+}
+
+// pending returns what the agent is waiting on you for, nil when nothing.
+// The newest open call wins, the same as for currentActivity.
+func (s *claudeScan) pending() *Pending {
+	for i := len(s.openOrder) - 1; i >= 0; i-- {
+		if p, ok := s.openPending[s.openOrder[i]]; ok {
+			return p
+		}
+	}
+	return nil
+}
+
+// pendingFor describes a tool call that blocks on you, nil for any other.
+//
+// These two are the only calls whose being open means "waiting for an
+// answer" rather than "running": the tool's whole job is to put something
+// in front of you, and its result is your reply.
+func pendingFor(b claudeBlock) *Pending {
+	switch b.Name {
+	case "AskUserQuestion":
+		p := &Pending{Kind: BlockQuestion, Header: "question"}
+		qs, _ := b.Input["questions"].([]any)
+		for _, q := range qs {
+			m, ok := q.(map[string]any)
+			if !ok {
+				continue
+			}
+			// Several questions can be asked at once; the first is enough to
+			// say what it is about, and its options are what a widget can show.
+			if h, _ := m["header"].(string); h != "" {
+				p.Header = h
+			}
+			p.Detail, _ = m["question"].(string)
+			opts, _ := m["options"].([]any)
+			for _, o := range opts {
+				if om, ok := o.(map[string]any); ok {
+					if l, _ := om["label"].(string); l != "" {
+						p.Options = append(p.Options, l)
+					}
+				}
+			}
+			break
+		}
+		return p
+	case "ExitPlanMode":
+		plan, _ := b.Input["plan"].(string)
+		return &Pending{Kind: BlockPermission, Header: "approve plan", Detail: previewText(plan)}
+	}
+	return nil
 }
 
 // currentActivity returns the most recently issued tool call that has not
@@ -532,8 +673,15 @@ func (s *claudeScan) currentActivity() *Activity {
 	return nil
 }
 
-func addUsage(h *Health, e *claudeEntry) {
+// addUsage adds an assistant entry's tokens and cost, once per API response.
+func (s *claudeScan) addUsage(h *Health, e *claudeEntry) {
 	if e.Message != nil {
+		if id := e.Message.ID; id != "" {
+			if s.counted[id] {
+				return
+			}
+			s.counted[id] = true
+		}
 		u := e.Message.Usage
 		h.Tokens.Input += u.Input
 		h.Tokens.Output += u.Output

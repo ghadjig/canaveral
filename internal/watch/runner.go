@@ -245,10 +245,12 @@ const phaseRescan = 200 * time.Millisecond
 // resubscribe starts an event watcher for every agent that does not have one
 // and stops watchers for agents that have gone away.
 //
-// A harness with no event stream (Claude Code has none — there is no server
-// to push from) simply never gets a watcher, and its rows refresh on the
-// safety interval instead. That is a slower view, not a wrong one: events
-// only ever trigger a re-read, and the periodic refresh does the same thing.
+// Claude Code has no server to push from, but its harness watches the
+// transcript directory instead, so it is subscribed like any other. A harness
+// whose Watch returns ErrNoEvents at once costs a goroutine that exits, and
+// its rows refresh on the safety interval instead. That is a slower view, not
+// a wrong one: events only ever trigger a re-read, and the periodic refresh
+// does the same thing.
 func (r *Runner) resubscribe(ctx context.Context) {
 	features, err := r.load(r.opt.Project)
 	if err != nil {
@@ -258,7 +260,7 @@ func (r *Runner) resubscribe(ctx context.Context) {
 	for _, f := range features {
 		for _, a := range f.Agents {
 			h, err := agent.For(a.Tool)
-			if err != nil || !h.Serves() || a.URL == "" {
+			if err != nil || !agent.Probeable(a.Tool, a.URL) {
 				continue
 			}
 			key := f.Key() + "/" + a.Name
