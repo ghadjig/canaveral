@@ -34,6 +34,11 @@ const (
 	StatusRetrying Status = "retrying"
 	// StatusWorking means an agent is actively generating.
 	StatusWorking Status = "working"
+	// StatusBackground means an agent has ended its turn but is waiting on
+	// work it started in the background — a long shell command, a subagent —
+	// whose result will wake it again. Not finished, so not idle; not
+	// generating, so not working; and nothing for you to do.
+	StatusBackground Status = "background"
 	// StatusIdle means nothing is pending; work may be finished and waiting
 	// for review.
 	StatusIdle Status = "idle"
@@ -86,14 +91,16 @@ func rank(s Status) int {
 		return 2
 	case StatusWorking:
 		return 3
-	case StatusBooting:
+	case StatusBackground:
 		return 4
-	case StatusRemoving:
+	case StatusBooting:
 		return 5
-	case StatusIdle:
+	case StatusRemoving:
 		return 6
+	case StatusIdle:
+		return 7
 	}
-	return 7
+	return 8
 }
 
 // NeedsAttention reports whether a status is one a person should act on.
@@ -143,6 +150,11 @@ type Agent struct {
 	// Activity is the tool call in flight right now — the most literal
 	// answer to "what is it doing" — absent when nothing is running.
 	Activity *agent.Activity `json:"activity,omitempty"`
+	// Background is the work the agent started in the background and is
+	// still waiting on, oldest first. Present whatever Status is, since it
+	// carries on through later turns; it is what makes Status background
+	// once the turn ends.
+	Background []agent.Activity `json:"background,omitempty"`
 	// LastUser and LastAssistant are the most recent thing said on each
 	// side, collapsed to one line — enough to see what an agent was asked
 	// for and what it last concluded without attaching to it.
@@ -257,6 +269,7 @@ type Summary struct {
 	NeedsAttention int `json:"needs_attention"`
 	Waiting        int `json:"waiting"`
 	Working        int `json:"working"`
+	Background     int `json:"background"`
 	Idle           int `json:"idle"`
 	Errored        int `json:"errored"`
 	// Status is the most urgent status across all features, which is what a
@@ -282,6 +295,8 @@ func statusFor(h agent.Health) Status {
 		return StatusRetrying
 	case agent.StateBusy:
 		return StatusWorking
+	case agent.StateBackground:
+		return StatusBackground
 	}
 	// An errored turn only matters once the agent has stopped; while it is
 	// busy or blocked, those are the more useful things to report.
@@ -332,14 +347,15 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		st := statusFor(h)
 		statuses = append(statuses, st)
 		ag := Agent{
-			Name:      a.Name,
-			Status:    st,
-			URL:       a.URL,
-			Model:     h.Model,
-			Variant:   h.Variant,
-			Provider:  h.Provider,
-			SubAgents: h.SubSessions,
-			Activity:  h.Activity,
+			Name:       a.Name,
+			Status:     st,
+			URL:        a.URL,
+			Model:      h.Model,
+			Variant:    h.Variant,
+			Provider:   h.Provider,
+			SubAgents:  h.SubSessions,
+			Activity:   h.Activity,
+			Background: h.Background,
 
 			LastUser:      h.LastUser,
 			LastAssistant: h.LastAssistant,
@@ -428,6 +444,8 @@ func Summarise(features []Feature, now time.Time) Snapshot {
 			s.Waiting++
 		case StatusWorking:
 			s.Working++
+		case StatusBackground:
+			s.Background++
 		case StatusIdle:
 			s.Idle++
 		case StatusError:

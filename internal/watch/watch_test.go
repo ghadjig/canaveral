@@ -26,6 +26,7 @@ func TestStatusForMapsHealth(t *testing.T) {
 		{agent.Health{Reachable: true, State: agent.StateWaiting}, StatusWaiting},
 		{agent.Health{Reachable: true, State: agent.StateRetrying}, StatusRetrying},
 		{agent.Health{Reachable: true, State: agent.StateBusy}, StatusWorking},
+		{agent.Health{Reachable: true, State: agent.StateBackground}, StatusBackground},
 		{agent.Health{Reachable: true, State: agent.StateIdle}, StatusIdle},
 		{agent.Health{Reachable: true, State: agent.StateIdle, LastError: "boom"}, StatusError},
 		// A failed earlier turn must not mask what the agent is doing now.
@@ -116,12 +117,13 @@ func TestBuildNoAgentsIsOffline(t *testing.T) {
 
 func TestNeedsAttention(t *testing.T) {
 	cases := map[Status]bool{
-		StatusWaiting:  true,
-		StatusError:    true,
-		StatusRetrying: true,
-		StatusWorking:  false,
-		StatusIdle:     false,
-		StatusOffline:  false,
+		StatusWaiting:    true,
+		StatusError:      true,
+		StatusRetrying:   true,
+		StatusWorking:    false,
+		StatusBackground: false,
+		StatusIdle:       false,
+		StatusOffline:    false,
 	}
 	for s, want := range cases {
 		if got := s.NeedsAttention(); got != want {

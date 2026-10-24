@@ -526,3 +526,113 @@ func TestClaudeWatchFiresWhenTheTranscriptGrows(t *testing.T) {
 		t.Errorf("Watch returned %v after cancellation, want nil", err)
 	}
 }
+
+const (
+	claudeBgCall   = `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"bin/rspec --all","run_in_background":true}}]}}`
+	claudeBgResult = `{"type":"user","isSidechain":false,"uuid":"u2","timestamp":"2026-09-05T10:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: bx1."}]},"toolUseResult":{"stdout":"","backgroundTaskId":"bx1"}}`
+	claudeBgReply  = `{"type":"assistant","isSidechain":false,"uuid":"a3","timestamp":"2026-09-05T10:00:07.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Waiting for the suite."}]}}`
+	claudeBgDone   = `{"type":"user","isSidechain":false,"uuid":"u3","timestamp":"2026-09-05T10:09:00.000Z","message":{"role":"user","content":"<task-notification>\n<task-id>bx1</task-id>\n<status>completed</status>\n</task-notification>"}}`
+)
+
+// The turn ends while the shell command it started carries on: the agent is
+// neither working nor finished, and idle would say it was finished.
+func TestClaudeBackgroundWhileATaskItStartedRuns(t *testing.T) {
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone)
+	if h.State != StateBackground || h.Busy {
+		t.Fatalf("State = %q, Busy = %v, want background and not busy", h.State, h.Busy)
+	}
+	if len(h.Background) != 1 || h.Background[0].Tool != "Bash" || h.Background[0].Title != "bin/rspec --all" {
+		t.Errorf("Background = %+v, want the backgrounded rspec run", h.Background)
+	}
+	if want := time.Date(2026, 9, 5, 10, 0, 6, 0, time.UTC); !h.Background[0].Since.Equal(want) {
+		t.Errorf("Background[0].Since = %s, want %s, when it was handed off", h.Background[0].Since, want)
+	}
+}
+
+func TestClaudeBackgroundEndsWithItsNotification(t *testing.T) {
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone, claudeBgDone)
+	// The notification wakes the agent, so it is busy on it now.
+	if h.State != StateBusy || len(h.Background) != 0 {
+		t.Errorf("State = %q, Background = %+v, want busy with nothing outstanding", h.State, h.Background)
+	}
+	h = scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone, claudeBgDone, claudeReply, claudeTurnDone)
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle once the woken turn ends too", h.State)
+	}
+}
+
+// A task that finishes mid-turn is delivered as an attachment rather than a
+// prompt, and has to close the task just the same.
+func TestClaudeBackgroundEndsWithANotificationDeliveredMidTurn(t *testing.T) {
+	absorbed := `{"type":"attachment","isSidechain":false,"uuid":"x1","timestamp":"2026-09-05T10:09:00.000Z","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>bx1</task-id>\n<status>failed</status>\n</task-notification>","commandMode":"task-notification"}}`
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, absorbed, claudeBgReply, claudeTurnDone)
+	if h.State != StateIdle || len(h.Background) != 0 {
+		t.Errorf("State = %q, Background = %+v, want idle", h.State, h.Background)
+	}
+}
+
+func TestClaudeBackgroundEndsWhenStopped(t *testing.T) {
+	stop := `{"type":"user","isSidechain":false,"uuid":"u4","timestamp":"2026-09-05T10:01:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Successfully stopped task: bx1"}]},"toolUseResult":{"message":"Successfully stopped task: bx1","task_id":"bx1","task_type":"local_bash"}}`
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, stop, claudeBgReply, claudeTurnDone)
+	if h.State != StateIdle || len(h.Background) != 0 {
+		t.Errorf("State = %q, Background = %+v, want idle", h.State, h.Background)
+	}
+}
+
+func TestClaudeBackgroundSubagent(t *testing.T) {
+	call := `{"type":"assistant","isSidechain":false,"uuid":"a2","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"description":"Scan the deal APIs","prompt":"Look through...","run_in_background":true}}]}}`
+	result := `{"type":"user","isSidechain":false,"uuid":"u2","timestamp":"2026-09-05T10:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Async agent launched"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a48d"}}`
+	h := scan(t, true, claudePrompt, call, result, claudeBgReply, claudeTurnDone)
+	if h.State != StateBackground || len(h.Background) != 1 || h.Background[0].Title != "Scan the deal APIs" {
+		t.Errorf("State = %q, Background = %+v, want background on the subagent", h.State, h.Background)
+	}
+}
+
+// Background tasks belong to the process. Once it has exited — which the
+// cost-state entry marks — or is simply not running, nothing is left to
+// finish them or to be woken by them.
+func TestClaudeBackgroundDiesWithTheProcess(t *testing.T) {
+	exited := `{"type":"cost-state","startTime":1000,"totalCostUSD":0.5}`
+	if h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone, exited); h.State != StateIdle || len(h.Background) != 0 {
+		t.Errorf("after cost-state: State = %q, Background = %+v, want idle", h.State, h.Background)
+	}
+	if h := scan(t, false, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone); h.State != StateIdle || len(h.Background) != 0 {
+		t.Errorf("not live: State = %q, Background = %+v, want idle", h.State, h.Background)
+	}
+}
+
+// Work left running in the background is still reported while a later turn
+// is busy, so it does not vanish from view just because the agent is talking.
+func TestClaudeBackgroundReportedWhileBusy(t *testing.T) {
+	next := `{"type":"user","isSidechain":false,"uuid":"u9","timestamp":"2026-09-05T10:05:00.000Z","message":{"role":"user","content":"meanwhile, fix the lint"}}`
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone, next)
+	if h.State != StateBusy || len(h.Background) != 1 {
+		t.Errorf("State = %q, Background = %+v, want busy with the task still listed", h.State, h.Background)
+	}
+}
+
+// A server the agent started and left running never finishes. Once you have
+// typed a new prompt the agent has moved on from it, so it no longer holds
+// the feature in background — though it is still listed.
+func TestClaudeBackgroundIgnoresTasksFromBeforeYourLastPrompt(t *testing.T) {
+	next := `{"type":"user","isSidechain":false,"uuid":"u9","timestamp":"2026-09-05T10:05:00.000Z","message":{"role":"user","content":"now look at the flaky specs"}}`
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, claudeBgReply, claudeTurnDone, next, claudeReply, claudeTurnDone)
+	if h.State != StateIdle {
+		t.Errorf("State = %q, want idle: the task predates the prompt being worked on", h.State)
+	}
+	if len(h.Background) != 1 {
+		t.Errorf("Background = %+v, want the old task still listed", h.Background)
+	}
+}
+
+// A turn woken by a task-notification carries on the same work, so a task
+// started in the turn before it is still being waited on.
+func TestClaudeBackgroundSurvivesATurnWokenByAnotherTask(t *testing.T) {
+	call2 := `{"type":"assistant","isSidechain":false,"uuid":"a4","timestamp":"2026-09-05T10:00:08.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"bin/replay","run_in_background":true}}]}}`
+	result2 := `{"type":"user","isSidechain":false,"uuid":"u5","timestamp":"2026-09-05T10:00:09.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Command running in background with ID: bx2."}]},"toolUseResult":{"backgroundTaskId":"bx2"}}`
+	bx2Done := `{"type":"user","isSidechain":false,"uuid":"u6","timestamp":"2026-09-05T10:04:00.000Z","message":{"role":"user","content":"<task-notification>\n<task-id>bx2</task-id>\n<status>completed</status>\n</task-notification>"}}`
+	h := scan(t, true, claudePrompt, claudeBgCall, claudeBgResult, call2, result2, claudeBgReply, claudeTurnDone, bx2Done, claudeReply, claudeTurnDone)
+	if h.State != StateBackground || len(h.Background) != 1 || h.Background[0].Title != "bin/rspec --all" {
+		t.Errorf("State = %q, Background = %+v, want background on the rspec run", h.State, h.Background)
+	}
+}

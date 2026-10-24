@@ -27,6 +27,16 @@ package agent
 // exits. So Health.Cost covers every run of the session that has finished,
 // and the run in progress joins it when it ends.
 //
+// Background work is visible too. A shell command or subagent started in
+// the background returns at once with a task id, the turn ends, and a
+// task-notification naming that id arrives when it finishes, waking the
+// agent. Between the two the agent is reported as StateBackground rather
+// than idle — but only for tasks started since the last prompt you typed.
+// A dev server the agent started an hour ago and left running would
+// otherwise hold the feature in StateBackground for as long as it ran,
+// although nothing is waiting on it; once you have moved the conversation
+// on, the agent has too. Such tasks are still listed in Health.Background.
+//
 // There is no push notification of any kind, so Watch polls the transcript
 // directory instead.
 
@@ -38,6 +48,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -262,6 +273,69 @@ type claudeEntry struct {
 	StartTime         int64          `json:"startTime"`
 	IsAPIErrorMessage bool           `json:"isApiErrorMessage"`
 	Message           *claudeMessage `json:"message"`
+	// ToolUseResult is the structured result of the tool call a user entry
+	// answers. An object for most tools and a bare string for some, so it is
+	// decoded on demand by launchedTask and stoppedTask.
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	// Attachment carries, among much else, a prompt that arrived while the
+	// agent was mid-turn — which is how a task-notification is delivered
+	// when the agent is busy at the moment its task finishes.
+	Attachment *claudeAttachment `json:"attachment"`
+}
+
+type claudeAttachment struct {
+	Type   string `json:"type"`
+	Prompt string `json:"prompt"`
+}
+
+// claudeToolResult is the part of a toolUseResult that concerns background
+// work.
+type claudeToolResult struct {
+	// BackgroundTaskID is set when a shell command was started in the
+	// background, or moved there after outliving its timeout.
+	BackgroundTaskID string `json:"backgroundTaskId"`
+	// AgentID and Status ("async_launched") are set when a subagent was
+	// started in the background.
+	AgentID string `json:"agentId"`
+	Status  string `json:"status"`
+	// TaskID is set on TaskStop's result: the task it stopped.
+	TaskID string `json:"task_id"`
+}
+
+func (e *claudeEntry) toolResult() claudeToolResult {
+	var r claudeToolResult
+	if len(e.ToolUseResult) > 0 && e.ToolUseResult[0] == '{' {
+		_ = json.Unmarshal(e.ToolUseResult, &r)
+	}
+	return r
+}
+
+// launchedTask returns the id of the background task this entry's tool
+// result started, "" when it started none.
+func (e *claudeEntry) launchedTask() string {
+	r := e.toolResult()
+	if r.BackgroundTaskID != "" {
+		return r.BackgroundTaskID
+	}
+	if r.Status == "async_launched" {
+		return r.AgentID
+	}
+	return ""
+}
+
+// taskNotification matches the task id in the message Claude Code feeds the
+// model when a background task ends, however it ended: completed, failed
+// and stopped are all written the same way.
+var taskNotification = regexp.MustCompile(`(?s)<task-notification>.*?<task-id>([^<]+)</task-id>`)
+
+// finishedTasks returns the ids of the background tasks text reports as
+// ended.
+func finishedTasks(text string) []string {
+	var ids []string
+	for _, m := range taskNotification.FindAllStringSubmatch(text, -1) {
+		ids = append(ids, strings.TrimSpace(m[1]))
+	}
+	return ids
 }
 
 type claudeMessage struct {
@@ -394,6 +468,17 @@ type claudeScan struct {
 	// runCost is each finished run's total, keyed by its start time. A run
 	// can write its cost-state more than once; the last one is its total.
 	runCost map[int64]float64
+	// background holds the background tasks that have been started and not
+	// reported finished, keyed by task id, with bgOrder keeping launch order
+	// for the same reason openOrder exists.
+	background map[string]Activity
+	bgOrder    []string
+	// launchIdx is the entry index each background task was started at, and
+	// lastTypedIdx that of the last prompt you typed — a task-notification
+	// excluded, since the turn it starts carries on the same piece of work.
+	// A task started after lastTypedIdx is one the agent is waiting on.
+	launchIdx    map[string]int
+	lastTypedIdx int
 
 	sawTurnEnd                      bool
 	lastPromptIdx, lastTurnEndIdx   int
@@ -417,6 +502,9 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 		sidechainUUIDs:   map[string]bool{},
 		counted:          map[string]bool{},
 		runCost:          map[int64]float64{},
+		background:       map[string]Activity{},
+		launchIdx:        map[string]int{},
+		lastTypedIdx:     -1,
 		lastPromptIdx:    -1,
 		lastTurnEndIdx:   -1,
 		lastAssistantIdx: -1,
@@ -435,6 +523,13 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 		switch e.Type {
 		case "cost-state":
 			s.runCost[e.StartTime] = e.TotalCostUSD
+			// Written as the process exits, and background tasks are the
+			// process's children: none of them outlived it.
+			s.background = map[string]Activity{}
+		case "attachment":
+			if e.Attachment != nil {
+				s.finish(finishedTasks(e.Attachment.Prompt))
+			}
 		case "system":
 			if e.Subtype == "turn_duration" {
 				s.sawTurnEnd = true
@@ -472,6 +567,19 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 		if p := s.pending(); p != nil {
 			h.State = StateWaiting
 			h.Pending = p
+		}
+	}
+
+	if live {
+		awaited := false
+		for _, id := range s.bgOrder {
+			if act, ok := s.background[id]; ok {
+				h.Background = append(h.Background, act)
+				awaited = awaited || s.launchIdx[id] > s.lastTypedIdx
+			}
+		}
+		if !h.Busy && awaited {
+			h.State = StateBackground
 		}
 	}
 
@@ -514,12 +622,35 @@ func (s *claudeScan) scanSidechain(e *claudeEntry, h *Health) {
 // result of a tool call being fed back to the model. Only the former counts
 // as a prompt.
 func (s *claudeScan) scanUser(i int, e *claudeEntry) {
-	if e.IsMeta || e.Message == nil {
+	if e.Message == nil {
 		return
 	}
+	blocks := e.Message.blocks()
+	// Background bookkeeping comes before the meta check: a notification can
+	// arrive in an entry that is not something you typed.
+	launched := e.launchedTask()
+	if stopped := e.toolResult().TaskID; stopped != "" {
+		s.finish([]string{stopped})
+	}
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_result":
+			if launched != "" {
+				if act, ok := s.openTools[b.ToolUseID]; ok {
+					s.launch(i, launched, *act, e.Timestamp)
+				}
+			}
+		case "text":
+			s.finish(finishedTasks(b.Text))
+		}
+	}
+	if e.IsMeta {
+		return
+	}
+
 	var text string
 	prompt := true
-	for _, b := range e.Message.blocks() {
+	for _, b := range blocks {
 		switch b.Type {
 		case "tool_result":
 			// A tool result is the harness talking to the model, not you
@@ -539,6 +670,9 @@ func (s *claudeScan) scanUser(i int, e *claudeEntry) {
 	}
 	s.lastUserText = previewText(text)
 	s.lastPromptIdx = i
+	if !strings.Contains(text, "<task-notification>") {
+		s.lastTypedIdx = i
+	}
 	if !e.Timestamp.IsZero() {
 		s.lastPromptAt = e.Timestamp
 	}
@@ -610,6 +744,26 @@ func (s *claudeScan) openTool(b claudeBlock, at time.Time) {
 func (s *claudeScan) closeTool(id string) {
 	delete(s.openTools, id)
 	delete(s.openPending, id)
+}
+
+// launch records a background task started by the call act describes. Its
+// clock starts when the task was handed off, which is when the call that
+// started it returned.
+func (s *claudeScan) launch(i int, id string, act Activity, at time.Time) {
+	s.launchIdx[id] = i
+	if !at.IsZero() {
+		act.Since = at
+	}
+	if _, ok := s.background[id]; !ok {
+		s.bgOrder = append(s.bgOrder, id)
+	}
+	s.background[id] = act
+}
+
+func (s *claudeScan) finish(ids []string) {
+	for _, id := range ids {
+		delete(s.background, id)
+	}
 }
 
 // pending returns what the agent is waiting on you for, nil when nothing.

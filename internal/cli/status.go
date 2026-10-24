@@ -681,6 +681,8 @@ func stateWord(r row) (text, colorCode string) {
 				return "waiting", cYellow
 			case r.AgentState == string(agent.StateBusy), r.Busy:
 				return "busy", cCyan
+			case r.AgentState == string(agent.StateBackground):
+				return "background", cOrange
 			}
 			return "idle", cGreen
 		}

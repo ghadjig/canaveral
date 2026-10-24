@@ -12,6 +12,18 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Added
+
+- A `background` status for a Claude Code agent that has ended its turn but is
+  waiting on a shell command or subagent it started in the background, instead
+  of reporting it idle. Only tasks started since your last prompt count, so a
+  dev server the agent started earlier and left running does not hold the
+  feature there. `canaveral watch` lists every outstanding task under each
+  agent's `background` and counts such features in `summary.background`;
+  `canaveral status` shows it in orange.
+
 ## v0.19.0 — 2026-10-24
 
 ### Fixed

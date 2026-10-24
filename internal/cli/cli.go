@@ -327,6 +327,10 @@ const (
 	cGreen  = "\033[32m"
 	cYellow = "\033[33m"
 	cCyan   = "\033[36m"
+	// cOrange is from the 256-colour palette, which the basic eight lack an
+	// orange in. Background work needs a colour of its own: yellow already
+	// means waiting on you, and the two must not read as the same thing.
+	cOrange = "\033[38;5;208m"
 )
 
 var useColor = os.Getenv("NO_COLOR") == "" && isTTY(os.Stdout)

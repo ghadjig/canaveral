@@ -237,7 +237,8 @@ func (t Tokens) Total() int64 {
 
 // State classifies what an agent is doing right now: waiting (blocked on a
 // question or permission request that only you can answer), retrying (hit a
-// provider error and is auto-retrying), busy (actively generating), idle
+// provider error and is auto-retrying), busy (actively generating),
+// background (the turn is over, but work it started is still running), idle
 // (nothing pending).
 //
 // Waiting deliberately outranks busy. opencode keeps a session's own status
@@ -255,6 +256,12 @@ const (
 	StateBusy     State = "busy"
 	StateWaiting  State = "waiting"
 	StateRetrying State = "retrying"
+	// StateBackground means the agent has finished its turn and is waiting
+	// for work it started in the background — a long shell command, a
+	// subagent — whose completion will wake it again. Nothing is needed from
+	// you, but the feature is not finished either, which is what idle would
+	// claim.
+	StateBackground State = "background"
 )
 
 // BlockKind distinguishes the two things an agent can be blocked on.
@@ -398,6 +405,11 @@ type Health struct {
 	Todos Todos
 	// Activity is the tool call in flight, nil when none is running.
 	Activity *Activity
+	// Background is the work the agent started to run on its own and has not
+	// heard back from yet, oldest first. It does not stop with the turn, so
+	// it is reported whatever State says — including tasks too old to make
+	// the state StateBackground; see the claude harness for which count.
+	Background []Activity
 	// LastUser is the most recent thing you said to this agent, and
 	// LastAssistant the most recent thing it has said in reply to that
 	// prompt — each collapsed to a single line for display.
