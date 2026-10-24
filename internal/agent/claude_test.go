@@ -127,6 +127,21 @@ func TestClaudeIdleOnceTheTurnHasEnded(t *testing.T) {
 	}
 }
 
+// Claude Code compacts idle sessions too, and writes the summary as a user
+// entry with no turn after it. It is not a prompt, so it neither opens a turn
+// nor replaces what you last said.
+func TestClaudeCompactionSummaryIsNotAPrompt(t *testing.T) {
+	boundary := `{"type":"system","subtype":"compact_boundary","isSidechain":false,"uuid":"c1","timestamp":"2026-09-05T11:00:00.000Z","compactMetadata":{"trigger":"auto"}}`
+	summary := `{"type":"user","isSidechain":false,"isCompactSummary":true,"isVisibleInTranscriptOnly":true,"uuid":"c2","timestamp":"2026-09-05T11:00:01.000Z","message":{"role":"user","content":"This session is being continued from a previous conversation."}}`
+	h := scan(t, true, claudePrompt, claudeReply, claudeTurnDone, boundary, summary)
+	if h.Busy || h.State != StateIdle {
+		t.Errorf("Busy = %v, State = %q, want idle after an idle compaction", h.Busy, h.State)
+	}
+	if strings.Contains(h.LastUser, "continued") {
+		t.Errorf("LastUser = %q, want the prompt before the compaction", h.LastUser)
+	}
+}
+
 // The turn marker is the authoritative signal: a prompt newer than the last
 // one means the agent is still going, however much it has already said.
 func TestClaudeBusyWhileATurnIsOpen(t *testing.T) {

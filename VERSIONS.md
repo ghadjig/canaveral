@@ -12,6 +12,13 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- `watch` no longer reports a Claude Code agent as working for good after it
+  compacts its conversation while idle.
+
 ## v0.20.0 — 2026-10-24
 
 ### Added

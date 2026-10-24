@@ -255,9 +255,15 @@ type claudeEntry struct {
 	// IsSidechain marks the entries belonging to a Task subagent. They share
 	// the parent's transcript file rather than getting one of their own,
 	// which is the main structural difference from opencode.
-	IsSidechain bool      `json:"isSidechain"`
-	IsMeta      bool      `json:"isMeta"`
-	Timestamp   time.Time `json:"timestamp"`
+	IsSidechain bool `json:"isSidechain"`
+	IsMeta      bool `json:"isMeta"`
+	// IsCompactSummary marks the user entry Claude Code writes after
+	// compacting the conversation: the summary it continues from, dressed as
+	// a prompt. Compaction also happens while the agent sits idle, and no
+	// turn follows to close it, so taken for a prompt it reads as busy for
+	// good.
+	IsCompactSummary bool      `json:"isCompactSummary"`
+	Timestamp        time.Time `json:"timestamp"`
 	// DurationMs is set on the system/turn_duration entry Claude Code writes
 	// when a turn ends: the one unambiguous "the agent has stopped" marker
 	// in the file, and the source of Worked.
@@ -644,7 +650,7 @@ func (s *claudeScan) scanUser(i int, e *claudeEntry) {
 			s.finish(finishedTasks(b.Text))
 		}
 	}
-	if e.IsMeta {
+	if e.IsMeta || e.IsCompactSummary {
 		return
 	}
 
