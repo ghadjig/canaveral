@@ -7,7 +7,7 @@ stamps the binary from `git describe`. A build between releases reports the last
 tag plus how far past it you are, like `v0.1.0-3-gbb9dacf`, so you can always map
 a running binary back to an entry below.
 
-Add to `## Unreleased` in the same commit as the change itself — see AGENTS.md.
+Add to `## v0.20.1 — 2026-10-24` in the same commit as the change itself — see AGENTS.md.
 On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
@@ -18,6 +18,11 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
 - `watch` no longer reports a Claude Code agent as working for good after it
   compacts its conversation while idle.
+- Slash commands that never reach the model (`/model`, `/login`, `/exit`) and
+  `!` shell commands no longer leave a Claude Code agent reported as working.
+  The last thing you did shows as the command's name instead of its raw markup.
+- A Claude Code turn that ends in an API error no longer stays working, and the
+  error stops being the agent's state once you have done something since.
 
 ## v0.20.0 — 2026-10-24
 

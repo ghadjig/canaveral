@@ -486,6 +486,12 @@ type claudeScan struct {
 	launchIdx    map[string]int
 	lastTypedIdx int
 
+	// lastCommandIdx is the last slash command you ran, which only opens a
+	// turn when the model answers it (lastReplyIdx is any reply at all), and
+	// lastErrorIdx the last API error, which ends a turn without the
+	// turn_duration marker.
+	lastCommandIdx, lastReplyIdx    int
+	lastErrorIdx                    int
 	sawTurnEnd                      bool
 	lastPromptIdx, lastTurnEndIdx   int
 	lastAssistantIdx, lastTodoIdx   int
@@ -511,6 +517,9 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 		background:       map[string]Activity{},
 		launchIdx:        map[string]int{},
 		lastTypedIdx:     -1,
+		lastCommandIdx:   -1,
+		lastReplyIdx:     -1,
+		lastErrorIdx:     -1,
 		lastPromptIdx:    -1,
 		lastTurnEndIdx:   -1,
 		lastAssistantIdx: -1,
@@ -550,6 +559,11 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 	}
 
 	h.LastUser = s.lastUserText
+	// An error belongs to the turn that hit it; anything you have done since
+	// has moved on from it.
+	if s.lastErrorIdx < max(s.lastPromptIdx, s.lastCommandIdx) {
+		h.LastError = ""
+	}
 	// Only report what the agent said if it said it after the latest prompt;
 	// see Health.LastAssistant for why.
 	if s.lastAssistantIdx > s.lastPromptIdx {
@@ -604,11 +618,20 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 // Transcripts written by versions that predate the marker fall back to the
 // shape of the conversation — an unanswered prompt, or a tool call with no
 // result yet.
+//
+// A slash command counts as the prompt only once the model has replied to
+// it: most (/login, /model, /exit) never reach the model at all. An API error
+// closes a turn as surely as the marker does, and Claude Code writes none
+// after one.
 func (s *claudeScan) busy() bool {
-	if s.sawTurnEnd {
-		return s.lastPromptIdx > s.lastTurnEndIdx
+	open := s.lastPromptIdx
+	if s.lastCommandIdx > open && s.lastReplyIdx > s.lastCommandIdx {
+		open = s.lastCommandIdx
 	}
-	return s.lastPromptIdx > s.lastAssistantIdx || len(s.openTools) > 0
+	if s.sawTurnEnd {
+		return open > max(s.lastTurnEndIdx, s.lastErrorIdx)
+	}
+	return open > max(s.lastAssistantIdx, s.lastErrorIdx) || len(s.openTools) > 0
 }
 
 // scanSidechain accounts for a Task subagent's entry. Its tokens are real
@@ -674,6 +697,13 @@ func (s *claudeScan) scanUser(i int, e *claudeEntry) {
 	if !prompt || text == "" {
 		return
 	}
+	if local, ok := localCommand(text); ok {
+		if local != "" {
+			s.lastUserText = local
+			s.lastCommandIdx = i
+		}
+		return
+	}
 	s.lastUserText = previewText(text)
 	s.lastPromptIdx = i
 	if !strings.Contains(text, "<task-notification>") {
@@ -689,7 +719,9 @@ func (s *claudeScan) scanAssistant(i int, e *claudeEntry, h *Health) {
 	if e.Message == nil {
 		return
 	}
-	if e.Message.Model != "" {
+	// Claude Code stamps the messages it makes up itself, API errors among
+	// them, with a model of "<synthetic>"; it is not the one in use.
+	if e.Message.Model != "" && e.Message.Model != "<synthetic>" {
 		h.Model = e.Message.Model
 	}
 	blocks := e.Message.blocks()
@@ -698,7 +730,9 @@ func (s *claudeScan) scanAssistant(i int, e *claudeEntry, h *Health) {
 	// something the agent said. A later assistant message means the model
 	// got through, so an earlier error stops being the current state —
 	// without this it would be reported for the rest of the conversation.
+	s.lastReplyIdx = i
 	if e.IsAPIErrorMessage {
+		s.lastErrorIdx = i
 		h.LastError = previewText(firstText(blocks))
 		return
 	}
@@ -720,6 +754,28 @@ func (s *claudeScan) scanAssistant(i int, e *claudeEntry, h *Health) {
 			}
 		}
 	}
+}
+
+var commandName = regexp.MustCompile(`<command-name>([^<]*)</command-name>`)
+
+// localCommand recognises the entries Claude Code writes for what you run in
+// its prompt rather than say to the model: a slash command, its output, and a
+// ! shell command with its output. For a command it returns what to show as
+// the last thing you did; for output it returns "" and true.
+func localCommand(text string) (string, bool) {
+	t := strings.TrimSpace(text)
+	if m := commandName.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "<command-") {
+		return m[1], true
+	}
+	if strings.HasPrefix(t, "<bash-input>") {
+		return previewText("! " + strings.TrimSuffix(strings.TrimPrefix(t, "<bash-input>"), "</bash-input>")), true
+	}
+	for _, p := range []string{"<local-command-stdout>", "<local-command-stderr>", "<bash-stdout>", "<bash-stderr>"} {
+		if strings.HasPrefix(t, p) {
+			return "", true
+		}
+	}
+	return "", false
 }
 
 // firstText returns the first non-blank text block, "" when there is none.

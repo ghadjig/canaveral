@@ -142,6 +142,67 @@ func TestClaudeCompactionSummaryIsNotAPrompt(t *testing.T) {
 	}
 }
 
+func claudeUser(uuid, text string) string {
+	b, _ := json.Marshal(text)
+	return `{"type":"user","isSidechain":false,"uuid":"` + uuid + `","timestamp":"2026-09-05T11:00:00.000Z","message":{"role":"user","content":` + string(b) + `}}`
+}
+
+// Slash commands that never reach the model, like /model and /exit, are not
+// prompts: no turn follows them to close.
+func TestClaudeLocalCommandsAreNotPrompts(t *testing.T) {
+	h := scan(t, true, claudePrompt, claudeReply, claudeTurnDone,
+		claudeUser("l1", "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"),
+		claudeUser("l2", "<local-command-stdout>Set model to Opus</local-command-stdout>"),
+		claudeUser("l3", "<command-name>/agents</command-name>"),
+	)
+	if h.Busy || h.State != StateIdle {
+		t.Errorf("Busy = %v, State = %q, want idle after local commands", h.Busy, h.State)
+	}
+	if h.LastUser != "/agents" {
+		t.Errorf("LastUser = %q, want the command's name", h.LastUser)
+	}
+}
+
+// A command the model does answer, like a skill, opens a turn like a prompt.
+func TestClaudeCommandTheModelAnswersIsBusy(t *testing.T) {
+	cmd := claudeUser("k1", "<command-message>review</command-message>\n<command-name>/review</command-name>")
+	reply := `{"type":"assistant","isSidechain":false,"uuid":"k2","timestamp":"2026-09-05T11:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Reviewing."}]}}`
+	h := scan(t, true, claudePrompt, claudeReply, claudeTurnDone, cmd, reply)
+	if !h.Busy {
+		t.Errorf("Busy = false, want busy while the model answers a command")
+	}
+}
+
+// Claude Code writes no turn_duration after an API error, so the error itself
+// has to end the turn.
+func TestClaudeAPIErrorEndsTheTurn(t *testing.T) {
+	failed := `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"uuid":"e2","timestamp":"2026-09-05T11:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"API Error: 400"}]}}`
+	for _, lines := range [][]string{
+		{claudeUser("e1", "hello"), failed},
+		{claudePrompt, claudeReply, claudeTurnDone, claudeUser("e1", "hello"), failed},
+	} {
+		if h := scan(t, true, lines...); h.Busy {
+			t.Errorf("Busy = true after an API error, want idle (%d entries)", len(lines))
+		}
+	}
+}
+
+// The error is the state only until you do something else.
+func TestClaudeAPIErrorClearsOnceYouMoveOn(t *testing.T) {
+	failed := `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"uuid":"e2","timestamp":"2026-09-05T11:00:02.000Z","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"API Error: 400"}]}}`
+	h := scan(t, true, claudePrompt, claudeReply, claudeTurnDone, claudeUser("e1", "hello"), failed)
+	if h.LastError == "" {
+		t.Errorf("LastError empty, want the API error while it is the latest thing")
+	}
+	if h.Model == "<synthetic>" {
+		t.Errorf("Model = %q, want the real model", h.Model)
+	}
+	h = scan(t, true, claudeUser("e1", "hello"), failed, claudeUser("e3", "<command-name>/model</command-name>"))
+	if h.LastError != "" {
+		t.Errorf("LastError = %q, want it cleared by a later command", h.LastError)
+	}
+}
+
 // The turn marker is the authoritative signal: a prompt newer than the last
 // one means the agent is still going, however much it has already said.
 func TestClaudeBusyWhileATurnIsOpen(t *testing.T) {
