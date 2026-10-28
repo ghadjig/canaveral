@@ -7,10 +7,21 @@ stamps the binary from `git describe`. A build between releases reports the last
 tag plus how far past it you are, like `v0.1.0-3-gbb9dacf`, so you can always map
 a running binary back to an entry below.
 
-Add to `## v0.20.1 — 2026-10-24` in the same commit as the change itself — see AGENTS.md.
+Add to `## Unreleased` in the same commit as the change itself — see AGENTS.md.
 On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
+
+## Unreleased
+
+### Fixed
+
+- `watch` now reports a Claude Code agent as waiting while a question, a plan
+  or a permission dialog is on screen, instead of as working. Claude Code writes
+  none of these to its transcript until they are answered, so canaveral starts
+  its agents with hooks that report them (`--settings`, merged with your own),
+  run through a new internal `canaveral claude-hook`. Agents started before this
+  version need restarting to get them.
 
 ## v0.20.1 — 2026-10-24
 

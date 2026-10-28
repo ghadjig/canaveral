@@ -401,11 +401,13 @@ func TestClaudeAttachAndSessionFlags(t *testing.T) {
 	if got, want := h.SessionFlag("abc"), "--resume abc"; got != want {
 		t.Errorf("SessionFlag = %q, want %q", got, want)
 	}
-	if got := strings.Join(h.AttachArgv(Conn{Dir: "/wt"}, true), " "); got != "claude --continue" {
-		t.Errorf("AttachArgv --continue = %q", got)
+	pinHookBin(t, "/bin/canaveral")
+	settings := claudeSettings()
+	if got, want := h.AttachArgv(Conn{Dir: "/wt"}, true), []string{"claude", "--settings", settings, "--continue"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("AttachArgv --continue = %q, want %q", got, want)
 	}
-	if got := strings.Join(h.AttachArgv(Conn{Dir: "/wt"}, false), " "); got != "claude" {
-		t.Errorf("AttachArgv fresh = %q", got)
+	if got, want := h.AttachArgv(Conn{Dir: "/wt"}, false), []string{"claude", "--settings", settings}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("AttachArgv fresh = %q, want %q", got, want)
 	}
 }
 

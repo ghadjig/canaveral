@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -366,6 +367,8 @@ func TestVarsForUsesTheHarnessesOwnSessionFlag(t *testing.T) {
 // {{.Agent.main.Attach}} is the whole command, so a manifest stops having to
 // know how each tool is opened — which is what broke every manifest when
 // opencode 2 dropped `opencode attach`.
+var settingsFlag = regexp.MustCompile(`--settings '[^']*' `)
+
 func TestVarsForRendersTheAttachCommand(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	cases := map[string]state.Agent{
@@ -380,6 +383,9 @@ func TestVarsForRendersTheAttachCommand(t *testing.T) {
 			v := varsFor(context.Background(), &manifest.Manifest{}, f, false,
 				map[string]string{"main": "ses_1"})
 			got := v.Agent["main"].Attach
+			// Claude Code's hooks name the test binary; the agent package
+			// tests them.
+			got = settingsFlag.ReplaceAllString(got, "")
 			if got != want {
 				t.Errorf("Attach = %q, want %q", got, want)
 			}

@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/bandito/canaveral/internal/agent"
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/registry"
 )
@@ -69,6 +70,7 @@ func commands() []command {
 		{"complete", "list completion candidates for a partial command line", runComplete},
 		{"ws-slot", "map a stable slot number to a feature's workspace (for status bars)", runWSSlot},
 		{"watch", "stream feature/agent state as JSON for a status widget", runWatch},
+		{agent.ClaudeHookCommand, "record a Claude Code hook event (run by the agent's hooks)", runClaudeHook},
 	}
 }
 

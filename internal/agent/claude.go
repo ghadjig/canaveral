@@ -90,8 +90,15 @@ func (claude) EnvFor(sel Selection) map[string]string {
 // AttachArgv starts Claude Code itself. There is no --dir equivalent: the
 // working directory the process is started in is what scopes its session
 // history, which is why the caller runs this in c.Dir.
+//
+// The --settings add the hooks that tell canaveral when a question or a
+// permission dialog is up; see claudehook.go. They are merged with your own
+// settings, not a replacement for them.
 func (claude) AttachArgv(_ Conn, cont bool) []string {
 	argv := []string{"claude"}
+	if settings := claudeSettings(); settings != "" {
+		argv = append(argv, "--settings", settings)
+	}
 	if cont {
 		argv = append(argv, "--continue")
 	}
@@ -450,8 +457,23 @@ func (claude) Probe(_ context.Context, c Conn) Health {
 		out.Err = err
 		return out
 	}
-	scanClaude(entries, time.Now(), out.Live, &out)
+	s := scanClaude(entries, time.Now(), out.Live, &out)
+	applyClaudeHooks(newest.id, s, &out)
 	return out
+}
+
+// applyClaudeHooks reports the question or permission dialog the hooks say
+// is up, which the transcript cannot show; see claudehook.go. Only an open
+// turn can be waiting on one, which also rules out a state file left behind
+// by a process that was killed mid-dialog.
+func applyClaudeHooks(sessionID string, s *claudeScan, h *Health) {
+	if !h.Busy || h.Pending != nil {
+		return
+	}
+	if p := claudeHookPending(sessionID, func(id string) bool { return s.answered[id] }); p != nil {
+		h.State = StateWaiting
+		h.Pending = p
+	}
 }
 
 // claudeScan is the running state of a transcript walk.
@@ -466,6 +488,9 @@ type claudeScan struct {
 	// openPending holds the open calls that are waiting on you rather than
 	// running, keyed like openTools.
 	openPending map[string]*Pending
+	// answered is every tool call with a result, open in the walk or not:
+	// Claude Code writes a call and its result together, so most never are.
+	answered map[string]bool
 	// sidechainUUIDs is every subagent entry's uuid, used to tell a subagent
 	// root (parent outside the set) from a subagent continuation.
 	sidechainUUIDs map[string]bool
@@ -500,17 +525,19 @@ type claudeScan struct {
 	todos                           Todos
 }
 
-// scanClaude walks a transcript oldest-first and fills in h.
+// scanClaude walks a transcript oldest-first and fills in h, returning the
+// walk's state for what Probe reads alongside the transcript.
 //
 // live says whether a Claude Code process is actually running in the
 // directory. It gates the busy determination: a transcript whose last turn
 // never ended — because the program was killed, or the machine rebooted —
 // would otherwise report an agent as busy forever, with nothing left running
 // to ever finish the turn.
-func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
-	s := claudeScan{
+func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) *claudeScan {
+	s := &claudeScan{
 		openTools:        map[string]*Activity{},
 		openPending:      map[string]*Pending{},
+		answered:         map[string]bool{},
 		sidechainUUIDs:   map[string]bool{},
 		counted:          map[string]bool{},
 		runCost:          map[int64]float64{},
@@ -609,6 +636,7 @@ func scanClaude(entries []claudeEntry, now time.Time, live bool, h *Health) {
 	if h.Todos.resolved() && s.lastPromptIdx > s.lastTodoIdx {
 		h.Todos = Todos{}
 	}
+	return s
 }
 
 // busy reports whether the newest turn is still open.
@@ -687,6 +715,7 @@ func (s *claudeScan) scanUser(i int, e *claudeEntry) {
 			prompt = false
 			if b.ToolUseID != "" {
 				s.closeTool(b.ToolUseID)
+				s.answered[b.ToolUseID] = true
 			}
 		case "text":
 			if strings.TrimSpace(b.Text) != "" {

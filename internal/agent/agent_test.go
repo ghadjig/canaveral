@@ -770,8 +770,9 @@ func TestAttachCommandQuotesOnlyWhatNeedsIt(t *testing.T) {
 	if got != want {
 		t.Errorf("AttachCommand = %q, want %q", got, want)
 	}
-	if got := AttachCommand(claude{}, Conn{Dir: "/wt"}, ""); got != "claude" {
-		t.Errorf("AttachCommand(claude) = %q, want %q", got, "claude")
+	pinHookBin(t, "/bin/canaveral")
+	if got, want := AttachCommand(claude{}, Conn{Dir: "/wt"}, ""), "claude --settings '"; !strings.HasPrefix(got, want) {
+		t.Errorf("AttachCommand(claude) = %q, want it to start %q", got, want)
 	}
 }
 
