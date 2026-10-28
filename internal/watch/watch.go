@@ -129,9 +129,13 @@ type Agent struct {
 	// SubAgents is how many subagent sessions the current conversation has
 	// spawned. Their tokens and cost are already folded into the totals
 	// below.
-	SubAgents int     `json:"subagents,omitempty"`
-	Tokens    int64   `json:"tokens,omitempty"`
-	Cost      float64 `json:"cost,omitempty"`
+	SubAgents int `json:"subagents,omitempty"`
+	// SubAgentsRunning is how many of those are running now; SubAgents
+	// keeps counting them after they finish. Absent, not 0, when the agent's
+	// harness cannot tell (opencode).
+	SubAgentsRunning *int    `json:"subagents_running,omitempty"`
+	Tokens           int64   `json:"tokens,omitempty"`
+	Cost             float64 `json:"cost,omitempty"`
 	// Pending is what this agent is blocked on, when Status is waiting.
 	Pending *agent.Pending `json:"pending,omitempty"`
 	// Error is the last turn's failure message, when Status is error.
@@ -347,15 +351,16 @@ func Build(f *state.Feature, healths map[string]agent.Health, prev *Feature, now
 		st := statusFor(h)
 		statuses = append(statuses, st)
 		ag := Agent{
-			Name:       a.Name,
-			Status:     st,
-			URL:        a.URL,
-			Model:      h.Model,
-			Variant:    h.Variant,
-			Provider:   h.Provider,
-			SubAgents:  h.SubSessions,
-			Activity:   h.Activity,
-			Background: h.Background,
+			Name:             a.Name,
+			Status:           st,
+			URL:              a.URL,
+			Model:            h.Model,
+			Variant:          h.Variant,
+			Provider:         h.Provider,
+			SubAgents:        h.SubSessions,
+			SubAgentsRunning: h.SubRunning,
+			Activity:         h.Activity,
+			Background:       h.Background,
 
 			LastUser:      h.LastUser,
 			LastAssistant: h.LastAssistant,

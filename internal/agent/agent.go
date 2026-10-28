@@ -235,6 +235,14 @@ func (t Tokens) Total() int64 {
 	return t.Input + t.Output + t.Reasoning + t.Cache.Read + t.Cache.Write
 }
 
+func (t *Tokens) add(o Tokens) {
+	t.Input += o.Input
+	t.Output += o.Output
+	t.Reasoning += o.Reasoning
+	t.Cache.Read += o.Cache.Read
+	t.Cache.Write += o.Cache.Write
+}
+
 // State classifies what an agent is doing right now: waiting (blocked on a
 // question or permission request that only you can answer), retrying (hit a
 // provider error and is auto-retrying), busy (actively generating),
@@ -366,8 +374,12 @@ type Health struct {
 	// has spawned. They are separate sessions sharing the directory, which
 	// is why a single conversation can look like four.
 	SubSessions int
-	Tokens      Tokens
-	Cost        float64
+	// SubRunning is how many of those are running right now, which
+	// SubSessions cannot say: it keeps counting them long after they finish.
+	// Nil when the harness cannot tell, so that reads differently from none.
+	SubRunning *int
+	Tokens     Tokens
+	Cost       float64
 	// Model is the model used by the most recent assistant message.
 	Model string
 	// Variant is the provider-specific reasoning effort ("high", "low", ...)

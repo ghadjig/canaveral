@@ -162,6 +162,14 @@ func transcriptsFingerprint(dir string) string {
 			continue
 		}
 		fmt.Fprintf(&b, "%s:%d:%d;", s.id, info.Size(), info.ModTime().UnixNano())
+		// A subagent writes to its own file, and says it has finished in
+		// another, neither of which touches the conversation's.
+		subs, _ := os.ReadDir(subagentsDir(s.path))
+		for _, e := range subs {
+			if info, err := e.Info(); err == nil {
+				fmt.Fprintf(&b, "%s:%d:%d;", e.Name(), info.Size(), info.ModTime().UnixNano())
+			}
+		}
 	}
 	return b.String()
 }
@@ -458,6 +466,7 @@ func (claude) Probe(_ context.Context, c Conn) Health {
 		return out
 	}
 	s := scanClaude(entries, time.Now(), out.Live, &out)
+	scanSubagents(newest.path, out.Live, &out)
 	applyClaudeHooks(newest.id, s, &out)
 	return out
 }

@@ -12,6 +12,22 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- Claude Code subagents are counted again. Claude Code now writes each one to
+  its own file rather than into the conversation's transcript, so `watch` and
+  `status` saw none of them, and left their tokens out of the agent's total.
+- `watch` notices a subagent starting or finishing, and an agent busy on one
+  shows it as what it is doing rather than nothing.
+
+### Added
+
+- `watch` reports `subagents_running` for Claude Code agents: how many
+  subagents are running now, where `subagents` counts every one the
+  conversation has started.
+
 ## v0.21.0 — 2026-10-28
 
 ### Fixed

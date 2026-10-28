@@ -714,3 +714,59 @@ func TestClaudeBackgroundSurvivesATurnWokenByAnotherTask(t *testing.T) {
 		t.Errorf("State = %q, Background = %+v, want background on the rspec run", h.State, h.Background)
 	}
 }
+
+// writeSubagent lays down one subagent's transcript and meta file next to
+// session's transcript, the way Claude Code now keeps them.
+func writeSubagent(t *testing.T, transcript, id, meta string, lines ...string) {
+	t.Helper()
+	dir := subagentsDir(transcript)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(dir, "agent-"+id)
+	if err := os.WriteFile(base+".jsonl", []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base+".meta.json", []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeSubagentFilesAreCounted(t *testing.T) {
+	claudeStore(t)
+	path := writeTranscript(t, "/wt", "s1", claudePrompt)
+	sub := `{"type":"assistant","isSidechain":true,"agentId":"x","uuid":"b1","timestamp":"2026-09-05T10:00:02.000Z","message":{"id":"msg_sub","role":"assistant","content":[{"type":"text","text":"found it"}],"usage":{"input_tokens":100,"output_tokens":50}}}`
+	writeSubagent(t, path, "done", `{"description":"Map the API","finished":true}`, sub)
+	writeSubagent(t, path, "busy", `{"description":"Classify batch 3"}`)
+
+	for _, live := range []bool{true, false} {
+		h := Health{Busy: live}
+		scanSubagents(path, live, &h)
+		if h.SubSessions != 2 {
+			t.Errorf("live=%v: SubSessions = %d, want 2", live, h.SubSessions)
+		}
+		if got := h.Tokens.Total(); got != 150 {
+			t.Errorf("live=%v: tokens = %d, want the subagent's 150", live, got)
+		}
+		want := 0
+		if live {
+			want = 1
+		}
+		if h.SubRunning == nil || *h.SubRunning != want {
+			t.Errorf("live=%v: SubRunning = %v, want %d", live, h.SubRunning, want)
+		}
+		if live && (h.Activity == nil || h.Activity.Title != "Classify batch 3" || h.Activity.Since.IsZero()) {
+			t.Errorf("activity = %+v, want the running subagent", h.Activity)
+		}
+	}
+}
+
+func TestClaudeSubagentChangesFireTheWatch(t *testing.T) {
+	claudeStore(t)
+	path := writeTranscript(t, "/wt", "s1", claudePrompt)
+	before := transcriptsFingerprint("/wt")
+	writeSubagent(t, path, "a", `{"description":"x"}`)
+	if transcriptsFingerprint("/wt") == before {
+		t.Error("a new subagent left the fingerprint unchanged")
+	}
+}
