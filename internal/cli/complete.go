@@ -190,7 +190,7 @@ var commandArgs = map[string][]argKind{
 // command — add it here when you add it there.
 var commandFlags = map[string]map[string]string{
 	"init":        {"--force": "overwrite an existing canaveral.toml"},
-	"new":         {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for the new feature branch"},
+	"new":         {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for the new feature branch", "--continue": "copy the newest sibling's conversation"},
 	"scratch":     {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for the scratch branch"},
 	"open":        {"--no-windows": "skip spawning windows", "--no-services": "skip starting services", "--no-agents": "skip starting agents", "--focus": "switch to the workspace once ready", "--base": "base ref for a new feature branch"},
 	"reset":       {"--all": "reset every feature of the project", "--no-windows": "skip windows"},

@@ -94,10 +94,17 @@ func (claude) EnvFor(sel Selection) map[string]string {
 // The --settings add the hooks that tell canaveral when a question or a
 // permission dialog is up; see claudehook.go. They are merged with your own
 // settings, not a replacement for them.
-func (claude) AttachArgv(_ Conn, cont bool) []string {
+//
+// The brief goes in --append-system-prompt rather than as a first prompt:
+// it then costs no turn, sits outside the conversation, and is given again
+// each time the window starts, so it stays current as siblings come and go.
+func (claude) AttachArgv(c Conn, cont bool) []string {
 	argv := []string{"claude"}
 	if settings := claudeSettings(); settings != "" {
 		argv = append(argv, "--settings", settings)
+	}
+	if c.Brief != "" {
+		argv = append(argv, "--append-system-prompt", c.Brief)
 	}
 	if cont {
 		argv = append(argv, "--continue")
@@ -204,6 +211,26 @@ func projectSlug(dir string) string {
 		}
 		return '-'
 	}, dir)
+}
+
+// HistoryHint says where an agent of tool working in dir keeps its
+// conversations, for another agent to read; "" when there are none to read,
+// or they are not in files (opencode keeps them behind its server).
+func HistoryHint(tool, dir string) string {
+	if tool != "claude" {
+		return ""
+	}
+	pd, err := projectDir(dir)
+	if err != nil {
+		return ""
+	}
+	if info, err := os.Stat(pd); err != nil || !info.IsDir() {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(pd, home+"/") {
+		pd = "~" + strings.TrimPrefix(pd, home)
+	}
+	return "Claude Code transcripts in " + pd + "/ (JSONL, newest file is the latest conversation)"
 }
 
 // projectDir returns the directory holding dir's transcripts.

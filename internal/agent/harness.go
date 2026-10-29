@@ -23,6 +23,11 @@ type Conn struct {
 	// Password authenticates to the agent's server, for a harness whose
 	// server requires one. opencode 2 refuses every request without it.
 	Password string
+	// Brief is context for a new conversation that is not a prompt: what
+	// the feature is and where its namespace siblings left their history.
+	// Only AttachArgv reads it, and a harness with nowhere to put it
+	// ignores it.
+	Brief string
 }
 
 // Endpoint is what a serving harness announces once its server is up: where

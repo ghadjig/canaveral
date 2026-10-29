@@ -12,6 +12,24 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Changed
+
+- A new feature in a namespace no longer starts its agent on a copy of the
+  newest sibling's conversation. The copy opened looking exactly like the
+  sibling it came from, and was easily taken for that sibling's own session.
+  The agent now starts a conversation of its own and is told, out of band, which
+  features share its namespace, that the namespace's skill holds their notes,
+  and where each one's Claude Code transcripts are, to read when their history
+  would help.
+
+### Added
+
+- `canaveral new --continue` starts a new feature's agent on a copy of the
+  newest namespace sibling's conversation, as every new namespaced feature used
+  to.
+
 ## v0.22.0 — 2026-10-28
 
 ### Fixed

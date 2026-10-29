@@ -55,6 +55,10 @@ type Options struct {
 	Base string
 	// Scratch creates a disposable workspace on its own generated branch.
 	Scratch bool
+	// Continue starts a newly created feature's agents on a copy of the
+	// newest namespace sibling's conversation, instead of a fresh one that
+	// is only told where the siblings' history is.
+	Continue bool
 	// Resume maps agent name to an opencode session that agent's window
 	// should reopen instead of starting a fresh conversation. Set by Pop
 	// from the stash record; nil everywhere else.
@@ -219,7 +223,8 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		opt.Resume = f.RestoreSessions
 	}
 
-	vars := varsFor(ctx, m, f, created, opt.Resume)
+	fork := created && opt.Continue
+	vars := varsFor(ctx, m, f, fork, opt.Resume)
 	tcMode := m.ToolchainMode()
 
 	// Progress is published from here on. The record already exists, so a
@@ -273,7 +278,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 		// A service may have discovered its own ports, which agents and their
 		// environment must see. Cheap when nothing did: varsFor only reads the
 		// record, and f.Agents is still empty so it makes no requests.
-		vars = varsFor(ctx, m, f, created, opt.Resume)
+		vars = varsFor(ctx, m, f, fork, opt.Resume)
 	}
 	if !opt.NoAgents {
 		if err := reconcileAgents(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
@@ -287,7 +292,7 @@ func Reconcile(ctx context.Context, m *manifest.Manifest, name string, opt Optio
 
 	if !opt.NoWindows {
 		// Agent URLs are only known after agents start, so windows render last.
-		vars = varsFor(ctx, m, f, res.Created, opt.Resume)
+		vars = varsFor(ctx, m, f, res.Created && opt.Continue, opt.Resume)
 		if err := reconcileWindows(ctx, m, f, vars, baseEnv, res, r, prog); err != nil {
 			res.abort(ctx, r)
 			return nil, err
@@ -460,12 +465,19 @@ func dbSuffixFor(m *manifest.Manifest, name string) string {
 // `canaveral pop`. It takes precedence over forking a namespace sibling's:
 // a popped feature already has its own history, and handing it a neighbour's
 // instead would be a strictly worse answer to the same question.
-func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh bool, resume map[string]string) tmpl.Vars {
+//
+// fork is set only for a feature just created with Options.Continue: then
+// each agent starts on a copy of the newest sibling's conversation. Without
+// it the agent starts fresh and is briefed on where the siblings are, since
+// a copy opens looking exactly like the sibling it came from, and is easily
+// taken for that sibling's own session.
+func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fork bool, resume map[string]string) tmpl.Vars {
 	agents := map[string]tmpl.AgentRef{}
+	brief := namespaceBrief(f)
 	for _, a := range f.Agents {
 		ref := tmpl.AgentRef{URL: a.URL}
 		session := resume[a.Name]
-		if session == "" && fresh {
+		if session == "" && fork {
 			session = forkedSessionFor(ctx, f, a)
 		}
 		// The flag that reopens a session is the harness's to spell:
@@ -473,7 +485,9 @@ func varsFor(ctx context.Context, m *manifest.Manifest, f *state.Feature, fresh 
 		if h, err := agent.For(a.Tool); err == nil {
 			flags := h.SessionFlag(session)
 			ref = ref.WithSession(flags)
-			ref.Attach = agent.AttachCommand(h, agentConn(f, a), flags)
+			c := agentConn(f, a)
+			c.Brief = brief
+			ref.Attach = agent.AttachCommand(h, c, flags)
 		}
 		agents[a.Name] = ref
 	}

@@ -87,7 +87,7 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 		if scratch {
 			fmt.Fprintln(os.Stderr, "Usage: canaveral scratch [flags]\n\nCreate a fresh disposable workspace with an automatically generated name and\nbranch. Starts from the project's default branch; use --base to choose another\nref. Pass --focus to switch to it once ready.\n\nRemove it with `canaveral rm` from inside it, or `canaveral rm <name>`.\nRemoval discards uncommitted changes and the branch, even if unmerged.\n\nFlags:")
 		} else if create {
-			fmt.Fprintln(os.Stderr, "Usage: canaveral new <feature> [flags]\n\nCreate a feature workspace — worktree, branch, services, agent and windows —\nin the background, without switching your view to it. Pass --focus to jump\nthere once it's ready.\n\nFlags:")
+			fmt.Fprintln(os.Stderr, "Usage: canaveral new <feature> [flags]\n\nCreate a feature workspace — worktree, branch, services, agent and windows —\nin the background, without switching your view to it. Pass --focus to jump\nthere once it's ready.\n\nIn a namespace (`canaveral new mcp/fix`), the agent starts a conversation of\nits own and is told where its siblings' conversations are, to read as it\nneeds. --continue starts it on a copy of the newest sibling's instead.\n\nFlags:")
 		} else {
 			fmt.Fprintln(os.Stderr, "Usage: canaveral <feature> [flags]\n\nReconcile an existing feature, bringing up whatever is missing, without\nswitching your view to it. Pass --focus to jump there once it's ready.\nUse `canaveral new <feature>` to create one.\n\nFlags:")
 		}
@@ -99,6 +99,7 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 		noAgents   = fs.Bool("no-agents", false, "skip starting agents")
 		focus      = fs.Bool("focus", false, "switch to the workspace once everything is ready")
 		base       = fs.String("base", "", "base ref for a new feature branch (default: the project's default branch)")
+		cont       = fs.Bool("continue", false, "start a new feature's agents on a copy of the newest namespace sibling's conversation")
 	)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -130,7 +131,7 @@ func openFeature(ctx context.Context, verb string, args []string, create, allowS
 	}
 	opt := feature.Options{
 		NoWindows: *noWindows, NoServices: *noServices, NoAgents: *noAgents, Base: *base,
-		Scratch: scratch,
+		Scratch: scratch, Continue: *cont,
 	}
 
 	m, err := loadManifest()

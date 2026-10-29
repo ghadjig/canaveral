@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,8 +54,8 @@ func agentConn(f *state.Feature, a state.Agent) agent.Conn {
 // namespace has since moved away from would otherwise shadow an older one
 // that could actually be resumed.
 //
-// Only ever consulted when the feature itself was just created (varsFor's
-// fresh argument) — once a feature has its own session building up,
+// Only ever consulted when the feature itself was just created with
+// Options.Continue (varsFor's fork argument) — once a feature has its own session building up,
 // re-forking on every later reset would silently discard it in favour of a
 // sibling's, possibly stale, history.
 func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) string {
@@ -87,6 +88,91 @@ func forkedSessionFor(ctx context.Context, f *state.Feature, a state.Agent) stri
 		return ""
 	}
 	return forked
+}
+
+// briefSiblingMax bounds how many siblings a brief lists, newest first. It is
+// sent with every start of the agent, and a namespace that has been in use
+// for months would otherwise list every feature it ever had.
+const briefSiblingMax = 8
+
+// namespaceBrief is what an agent in f is told about its namespace: that its
+// siblings exist, that the namespace's skill holds their shared notes, and
+// where each sibling's conversation can be read should its history help. ""
+// for a feature outside any namespace.
+//
+// This, not a copy of a sibling's conversation, is the default way history
+// crosses between features: the agent reads what it needs, when it needs
+// it, and its own session is unmistakably its own.
+func namespaceBrief(f *state.Feature) string {
+	ns := Namespace(f.Name)
+	if ns == "" {
+		return ""
+	}
+	type sibling struct {
+		name, branch string
+		at           time.Time
+		hints        []string
+	}
+	var sibs []sibling
+	seen := map[string]bool{f.Name: true}
+	names, _ := state.List(f.Project)
+	for _, name := range names {
+		if seen[name] || Namespace(name) != ns {
+			continue
+		}
+		sf, err := state.Load(f.Project, name)
+		if err != nil {
+			continue
+		}
+		seen[name] = true
+		sib := sibling{name: name, branch: sf.Branch, at: sf.CreatedAt}
+		for _, a := range sf.Agents {
+			if h := agent.HistoryHint(a.Tool, agentConn(sf, a).Dir); h != "" {
+				sib.hints = append(sib.hints, h)
+			}
+		}
+		// An agent can be run in a worktree without canaveral having a
+		// record of it, by hand or from a feature created --no-agents.
+		// Claude Code's history is found by directory alone, so look there.
+		if len(sib.hints) == 0 {
+			if h := agent.HistoryHint("claude", sf.Worktree); h != "" {
+				sib.hints = append(sib.hints, h)
+			}
+		}
+		sibs = append(sibs, sib)
+	}
+	// A removed sibling leaves its last session on record, and its
+	// transcripts on disk.
+	if rec, ok, err := skills.LatestSession(f.Project, ns, "main"); err == nil && ok && !seen[rec.Feature] {
+		if h := agent.HistoryHint(rec.Harness(), rec.Worktree); h != "" {
+			sibs = append(sibs, sibling{name: rec.Feature + " (removed)", at: rec.UpdatedAt, hints: []string{h}})
+		}
+	}
+	sort.Slice(sibs, func(i, j int) bool { return sibs[i].at.After(sibs[j].at) })
+	if len(sibs) > briefSiblingMax {
+		sibs = sibs[:briefSiblingMax]
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are working in the canaveral feature %q", f.Name)
+	if f.Branch != "" {
+		fmt.Fprintf(&b, " (branch %s)", f.Branch)
+	}
+	fmt.Fprintf(&b, ", one of the features in the %q namespace. Each is its own piece of related work, with its own worktree, branch and conversation; this conversation is this feature's own.\n\n", ns)
+	fmt.Fprintf(&b, "The %s skill holds notes shared between the namespace's features. Read it before starting, and add to it what the next feature should know.", skills.FlattenName(ns))
+	if len(sibs) > 0 {
+		b.WriteString("\n\nOther features in the namespace, newest first. Their conversations are there to read when their history would help; they are large, so search them rather than reading them whole.")
+		for _, s := range sibs {
+			fmt.Fprintf(&b, "\n- %s", s.name)
+			if s.branch != "" && s.branch != s.name {
+				fmt.Fprintf(&b, " (branch %s)", s.branch)
+			}
+			for _, h := range s.hints {
+				fmt.Fprintf(&b, ": %s", h)
+			}
+		}
+	}
+	return b.String()
 }
 
 // recordedSiblingSession returns the namespace's recorded newest session for

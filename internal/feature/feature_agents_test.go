@@ -482,3 +482,70 @@ func TestForkedSessionForIgnoresAnotherToolsSession(t *testing.T) {
 		t.Errorf("forkedSessionFor = %q, want empty for an opencode session", got)
 	}
 }
+
+// A new feature in a namespace starts fresh by default: the sibling's
+// conversation is pointed at, not copied, so the agent cannot be mistaken for
+// the sibling it would otherwise have resumed.
+func TestVarsForBriefsRatherThanForksUnlessAskedTo(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
+
+	src := filepath.Join(t.TempDir(), "bugs")
+	claudeTranscript(t, home, src, "11111111-1111-4111-8111-111111111111")
+	sib := &state.Feature{Project: "yogurt", Name: "mcp/bugs", Branch: "mcp/bugs", Worktree: src,
+		CreatedAt: time.Now().Add(-time.Hour), Agents: []state.Agent{{Name: "main", Tool: "claude"}}}
+	if err := state.Save(sib); err != nil {
+		t.Fatal(err)
+	}
+	if err := skills.RecordSession("yogurt", "mcp", "main", skills.SessionRecord{
+		Feature: "mcp/bugs", SessionID: "11111111-1111-4111-8111-111111111111",
+		Tool: "claude", Worktree: src, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "fix")
+	f := &state.Feature{Project: "yogurt", Name: "mcp/fix", Branch: "mcp/fix", Worktree: dst,
+		Agents: []state.Agent{{Name: "main", Tool: "claude"}}}
+
+	attach := varsFor(context.Background(), &manifest.Manifest{}, f, false, nil).Agent["main"].Attach
+	if strings.Contains(attach, "--resume") {
+		t.Errorf("Attach = %q resumes a session, want a fresh one", attach)
+	}
+	for _, want := range []string{"--append-system-prompt", `"mcp/fix"`, "mcp skill", "- mcp/bugs: Claude Code transcripts in "} {
+		if !strings.Contains(attach, want) {
+			t.Errorf("Attach is missing %q:\n%s", want, attach)
+		}
+	}
+
+	attach = varsFor(context.Background(), &manifest.Manifest{}, f, true, nil).Agent["main"].Attach
+	if !strings.Contains(attach, "--resume ") || strings.Contains(attach, "11111111-1111-4111-8111-111111111111") {
+		t.Errorf("Attach with fork = %q, want it to resume a copy of the sibling's session", attach)
+	}
+}
+
+func TestNamespaceBrief(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	if got := namespaceBrief(&state.Feature{Project: "p", Name: "solo"}); got != "" {
+		t.Errorf("brief outside a namespace = %q, want empty", got)
+	}
+
+	for i, name := range []string{"mcp/old", "mcp/new", "other/x"} {
+		sf := &state.Feature{Project: "p", Name: name, Worktree: "/wt/" + name,
+			CreatedAt: time.Now().Add(time.Duration(i) * time.Minute),
+			Agents:    []state.Agent{{Name: "main", Tool: "claude"}}}
+		if err := state.Save(sf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := namespaceBrief(&state.Feature{Project: "p", Name: "mcp/me", Branch: "mcp/me"})
+	iNew, iOld := strings.Index(got, "- mcp/new"), strings.Index(got, "- mcp/old")
+	if iNew < 0 || iOld < 0 || iNew > iOld {
+		t.Errorf("brief should list mcp/new before mcp/old:\n%s", got)
+	}
+	if strings.Contains(got, "other/x") || strings.Contains(got, "- mcp/me") {
+		t.Errorf("brief lists a feature outside the namespace, or itself:\n%s", got)
+	}
+}

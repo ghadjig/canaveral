@@ -770,3 +770,12 @@ func TestClaudeSubagentChangesFireTheWatch(t *testing.T) {
 		t.Error("a new subagent left the fingerprint unchanged")
 	}
 }
+
+func TestClaudeAttachArgvCarriesTheBrief(t *testing.T) {
+	pinHookBin(t, "/bin/canaveral")
+	argv := (claude{}).AttachArgv(Conn{Dir: "/wt", Brief: "you are in mcp/fix"}, false)
+	n := len(argv)
+	if n < 2 || argv[n-2] != "--append-system-prompt" || argv[n-1] != "you are in mcp/fix" {
+		t.Errorf("AttachArgv = %q, want the brief as --append-system-prompt", argv)
+	}
+}
