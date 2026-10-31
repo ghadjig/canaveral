@@ -24,6 +24,9 @@ Categories: **Added**, **Changed**, **Fixed**, **Removed**.
   the branch row. The lookup goes through `gh` and is cached in
   `merged-prs.json` in the state directory: a merge is remembered until the
   branch moves, "not merged" for two minutes.
+- `canaveral watch` reports the same in each feature's `git` object, as
+  `merged` and `merged_pr`, so a status bar can show a merged branch as merged
+  rather than as unmerged commits.
 
 ### Fixed
 

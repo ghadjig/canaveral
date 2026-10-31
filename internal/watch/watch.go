@@ -203,6 +203,12 @@ type Git struct {
 	// Uncommitted counts working-tree changes, which the commit-based
 	// counts above cannot see.
 	Uncommitted int `json:"uncommitted"`
+	// Merged is set once a merged GitHub pull request carried the branch's
+	// tip, which the counts above cannot show: a merge queue's merge reads
+	// as Ahead until the base is pulled, and a squash merge forever.
+	Merged bool `json:"merged,omitempty"`
+	// MergedPR is that pull request's number.
+	MergedPR int `json:"merged_pr,omitempty"`
 }
 
 // Feature is one feature's live state.

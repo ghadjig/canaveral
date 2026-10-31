@@ -103,3 +103,34 @@ func TestGitCacheZeroIsDistinctFromUnmeasured(t *testing.T) {
 		t.Fatalf("expected zeros, got %+v", got)
 	}
 }
+
+func TestGitCacheReportsAMergedPullRequest(t *testing.T) {
+	c := newGitCache()
+	c.status = func(ctx context.Context, dir string, _ []string) (worktree.BranchStatus, error) {
+		// What a merge queue leaves behind before master is pulled: the
+		// branch still looks like unmerged work.
+		return worktree.BranchStatus{Base: "origin/main", Ahead: 2}, nil
+	}
+	merged := false
+	c.merged = func(ctx context.Context, repo, branch string) (int, bool) {
+		if merged {
+			return 42, true
+		}
+		return 0, false
+	}
+	f := gitFeature("p", "f", "/tmp/x")
+	f.Branch = "f"
+	fs := []*state.Feature{f}
+
+	c.refresh(context.Background(), fs)
+	if got := c.get("p/f"); got.Merged {
+		t.Fatal("merged before the pull request merged")
+	}
+	merged = true
+	if !c.refresh(context.Background(), fs) {
+		t.Error("a merge landing should count as a change worth a snapshot")
+	}
+	if got := c.get("p/f"); !got.Merged || got.MergedPR != 42 {
+		t.Errorf("got merged=%v pr=%d, want true, 42", got.Merged, got.MergedPR)
+	}
+}

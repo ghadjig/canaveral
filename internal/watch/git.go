@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bandito/canaveral/internal/feature"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/worktree"
 )
@@ -28,12 +29,16 @@ type gitCache struct {
 
 	// status is swappable so tests do not need real git repositories.
 	status func(ctx context.Context, dir string, provisioned []string) (worktree.BranchStatus, error)
+	// merged is swappable for the same reason, and so tests never reach
+	// GitHub through whatever gh is installed.
+	merged func(ctx context.Context, repo, branch string) (int, bool)
 }
 
 func newGitCache() *gitCache {
 	return &gitCache{
 		byKey:  map[string]*Git{},
 		status: worktree.Status,
+		merged: feature.MergedPR,
 	}
 }
 
@@ -79,6 +84,15 @@ func (c *gitCache) refresh(ctx context.Context, features []*state.Feature) bool 
 				}
 				return
 			}
+			// The same question `status` asks, through the same cache, so
+			// the refresh only reaches GitHub when an answer has gone
+			// stale. Without it, work landed by a merge queue reads as
+			// unmerged commits until master is pulled.
+			if f.Branch != "" {
+				pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				s.MergedPR, s.Merged = c.merged(pctx, f.Root, f.Branch)
+				cancel()
+			}
 			g := &Git{
 				Base:         s.Base,
 				Ahead:        s.Ahead,
@@ -87,6 +101,8 @@ func (c *gitCache) refresh(ctx context.Context, features []*state.Feature) bool 
 				Insertions:   s.Insertions,
 				Deletions:    s.Deletions,
 				Uncommitted:  s.Uncommitted,
+				Merged:       s.Merged,
+				MergedPR:     s.MergedPR,
 			}
 			mu.Lock()
 			next[f.Key()] = g
