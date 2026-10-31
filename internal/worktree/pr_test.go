@@ -69,3 +69,70 @@ func TestMergedPRWithNoPullRequests(t *testing.T) {
 		t.Error("MergedPR matched with no pull requests")
 	}
 }
+
+// gitRun runs git in repo, failing the test on error.
+func gitRun(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestMergedLocallyAfterAMergeCommit(t *testing.T) {
+	repo, _ := prRepo(t)
+	gitRun(t, repo, "checkout", "-q", "main")
+	gitRun(t, repo, "merge", "-q", "--no-ff", "-m", "merge feat", "feat")
+	if !MergedLocally(context.Background(), repo, "feat") {
+		t.Error("a branch merged into main is merged")
+	}
+}
+
+func TestMergedLocallyAfterAFastForward(t *testing.T) {
+	// Indistinguishable from a branch that never had a commit by ancestry
+	// alone: main now points at feat's tip.
+	repo, _ := prRepo(t)
+	gitRun(t, repo, "checkout", "-q", "main")
+	gitRun(t, repo, "merge", "-q", "--ff-only", "feat")
+	if !MergedLocally(context.Background(), repo, "feat") {
+		t.Error("a branch fast-forwarded into main is merged")
+	}
+}
+
+func TestMergedLocallyIntoOriginOnly(t *testing.T) {
+	repo, _ := prRepo(t)
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/main", "feat")
+	if !MergedLocally(context.Background(), repo, "feat") {
+		t.Error("a branch contained in origin/main is merged")
+	}
+}
+
+func TestMergedLocallyNotForUnmergedWork(t *testing.T) {
+	repo, _ := prRepo(t)
+	if MergedLocally(context.Background(), repo, "feat") {
+		t.Error("a branch with a commit main lacks is not merged")
+	}
+}
+
+func TestMergedLocallyNotForABranchWithNoCommits(t *testing.T) {
+	// Its tip is a commit of main, so ancestry says merged; it has simply
+	// not been worked on yet.
+	repo, _ := prRepo(t)
+	gitRun(t, repo, "branch", "fresh", "main")
+	if MergedLocally(context.Background(), repo, "fresh") {
+		t.Error("a branch with no commits of its own is not merged")
+	}
+}
+
+func TestMergedLocallyNotForAnEmptyBranchRebasedForward(t *testing.T) {
+	// Rebasing moves the tip without any work having been done, so it must
+	// not count as a commit of the branch's own.
+	repo, _ := prRepo(t)
+	gitRun(t, repo, "branch", "fresh", "main")
+	gitRun(t, repo, "checkout", "-q", "main")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "upstream")
+	gitRun(t, repo, "checkout", "-q", "fresh")
+	gitRun(t, repo, "rebase", "-q", "main")
+	if MergedLocally(context.Background(), repo, "fresh") {
+		t.Error("an empty branch rebased onto main is not merged")
+	}
+}

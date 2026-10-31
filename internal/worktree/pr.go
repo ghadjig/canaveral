@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/bandito/canaveral/internal/agent"
@@ -86,4 +87,48 @@ func MergedPRAt(ctx context.Context, repo, branch, tip string) (number int, ok b
 		}
 	}
 	return 0, false, nil
+}
+
+// MergedLocally reports whether branch has work of its own and all of it is
+// in the repo's default branch, locally or as last fetched from origin: the
+// case MergedPR cannot see, a branch merged by hand or by `canaveral merge
+// --keep` with no pull request anywhere.
+//
+// Ancestry alone would also call a branch with no commits merged, since its
+// tip is a commit of the default branch it forked from. So it must have work
+// of its own first, which the branch's reflog records: an entry for a commit
+// made on it. That survives the merge, unlike any count of commits ahead,
+// and a branch that was only ever created, rebased or reset has none.
+// A branch whose reflog has expired or was never kept reads as not merged.
+func MergedLocally(ctx context.Context, repo, branch string) bool {
+	if !hasOwnCommits(ctx, repo, branch) {
+		return false
+	}
+	def, err := DefaultBranch(ctx, repo)
+	if err != nil || def == branch {
+		return false
+	}
+	for _, target := range []string{"refs/heads/" + def, "refs/remotes/origin/" + def} {
+		if m, err := IsMerged(ctx, repo, "refs/heads/"+branch, target); err == nil && m {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOwnCommits reports whether anything was ever committed on branch,
+// according to its reflog. Entries read "commit: …", "commit (amend): …",
+// "commit (merge): …", "cherry-pick: …" and so on; a rebase's own entries
+// do not count, since rebasing an empty branch gives it nothing of its own.
+func hasOwnCommits(ctx context.Context, repo, branch string) bool {
+	out, err := gitOutput(ctx, repo, "reflog", "show", "--format=%gs", "refs/heads/"+branch, "--")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "commit") || strings.HasPrefix(line, "cherry-pick") {
+			return true
+		}
+	}
+	return false
 }

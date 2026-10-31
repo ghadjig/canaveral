@@ -220,6 +220,7 @@ type row struct {
 	Insertions   *int   `json:"insertions,omitempty"`
 	Deletions    *int   `json:"deletions,omitempty"`
 	Uncommitted  *int   `json:"uncommitted,omitempty"`
+	Merged       bool   `json:"merged,omitempty"`
 	MergedPR     int    `json:"merged_pr,omitempty"`
 }
 
@@ -247,6 +248,7 @@ func branchRows(features []*state.Feature, branches map[string]worktree.BranchSt
 			Insertions:   &bs.Insertions,
 			Deletions:    &bs.Deletions,
 			Uncommitted:  &bs.Uncommitted,
+			Merged:       bs.Merged,
 			MergedPR:     bs.MergedPR,
 		})
 	}
@@ -563,13 +565,14 @@ func collectBranchStatus(ctx context.Context, features []*state.Feature) map[str
 			}
 			// Work that merged on GitHub — through a merge queue, or
 			// squashed — otherwise reads as still ahead, or as merely
-			// behind, until the default branch is pulled. Cached, so
+			// behind, until the default branch is pulled; work merged
+			// locally reads as ahead of origin until pushed. Cached, so
 			// this is a GitHub call only now and then; bounded more
 			// tightly than rm's, since a status that hangs is worse
 			// than one that has not noticed a merge yet.
 			if f.Branch != "" {
 				pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				s.MergedPR, s.Merged = feature.MergedPR(pctx, f.Root, f.Branch)
+				s.MergedPR, s.Merged = feature.Merged(pctx, f.Root, f.Branch)
 				cancel()
 			}
 			mu.Lock()
