@@ -88,7 +88,7 @@ func TestScratchRemovalCanBeRetriedAfterBranchDeletion(t *testing.T) {
 	if _, err := worktree.Ensure(ctx, f.Root, f.Worktree, f.Branch, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeWorktreeAndBranch(ctx, f, false, false, false, quietReporter{}); err != nil {
+	if err := removeWorktreeAndBranch(ctx, f, false, false, false, false, quietReporter{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Remove(ctx, f, false, false, false, quietReporter{}); err != nil {

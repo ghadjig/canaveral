@@ -86,8 +86,19 @@ func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) (deferr
 	return deferred, failed
 }
 
+// mergedPR is worktree.MergedPR, swapped out in tests so they never reach
+// GitHub through whatever gh happens to be installed.
+var mergedPR = worktree.MergedPR
+
 // mergeTarget reports whether a feature's branch has landed in the repo's
 // default branch, and what that branch is called.
+//
+// Landed means any of: merged into the local default branch, merged into its
+// remote-tracking counterpart, or carried by a merged GitHub pull request.
+// The last two are for work that merges on GitHub — through a merge queue in
+// particular — where the local branch only learns of it on the next pull,
+// and a squash or rebase merge leaves no ancestry to find even then. Cheapest
+// first, so the network is only asked when git alone says no.
 //
 // ok is false when the question cannot be answered — no discoverable default
 // branch, a branch git no longer knows about. Callers treat that as "do not
@@ -110,7 +121,35 @@ func mergeTarget(ctx context.Context, f *state.Feature) (merged bool, target str
 	if err != nil {
 		return false, def, false
 	}
-	return m, def, true
+	if m {
+		return true, def, true
+	}
+	// An error here is most often a repo with no remote; that is not an
+	// answer either way, so it falls through rather than giving up.
+	if m, err := worktree.IsMerged(ctx, f.Root, f.Branch, "refs/remotes/origin/"+def); err == nil && m {
+		return true, def, true
+	}
+	if _, ok := mergedPR(ctx, f.Root, f.Branch); ok {
+		return true, def, true
+	}
+	return false, def, true
+}
+
+// landing is mergeTarget's answer, kept together so a teardown asks once.
+type landing struct {
+	merged, ok bool
+	target     string
+}
+
+// landed asks mergeTarget about f, unless nothing in the teardown ahead
+// would use the answer: a kept worktree is neither guarded nor followed by
+// a branch deletion, and a space has no branch at all.
+func landed(ctx context.Context, f *state.Feature, keepWorktree bool) landing {
+	if keepWorktree || f.Space || f.Worktree == "" {
+		return landing{}
+	}
+	merged, target, ok := mergeTarget(ctx, f)
+	return landing{merged: merged, ok: ok, target: target}
 }
 
 // ErrUnmerged reports a teardown refused because the work has not landed.
@@ -160,9 +199,10 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 	// Checked before anything else: every step below this point is
 	// destructive, and stopping a feature's services only to then refuse to
 	// remove it would leave it half torn down.
+	land := landed(ctx, f, keepWorktree)
 	if !force && !f.Scratch && !keepWorktree && !f.Space && f.Worktree != "" {
-		if merged, target, ok := mergeTarget(ctx, f); ok && !merged {
-			return &unmergedError{feature: f.Name, branch: f.Branch, target: target}
+		if land.ok && !land.merged {
+			return &unmergedError{feature: f.Name, branch: f.Branch, target: land.target}
 		}
 	}
 
@@ -206,7 +246,7 @@ func Remove(ctx context.Context, f *state.Feature, keepWorktree, force, keepBran
 
 	prog.done()
 	prog.start("removing worktree")
-	if err := removeWorktreeAndBranch(ctx, f, keepWorktree, force, keepBranch, r); err != nil {
+	if err := removeWorktreeAndBranch(ctx, f, land.merged, keepWorktree, force, keepBranch, r); err != nil {
 		return err
 	}
 
@@ -327,7 +367,10 @@ func recordNamespaceSession(ctx context.Context, f *state.Feature) {
 // regardless of keepBranch. keepBranch exists purely to opt out of deletion
 // even when merged, e.g. to keep it around for a while longer. Scratch
 // workspaces instead discard both changes and unmerged branches by default.
-func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree, force, keepBranch bool, r Reporter) error {
+//
+// merged is the caller's answer from landed, passed in rather than asked
+// again here because asking can mean a round trip to GitHub.
+func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, merged, keepWorktree, force, keepBranch bool, r Reporter) error {
 	// Space is asked before Worktree, and that order is the whole safety
 	// property here: a space's directory is one you already keep — your home
 	// directory by default — and it is recorded in the same field a feature's
@@ -350,13 +393,15 @@ func removeWorktreeAndBranch(ctx context.Context, f *state.Feature, keepWorktree
 	}
 
 	deleted := false
-	if !keepBranch {
+	if !keepBranch && merged {
 		if def, err := worktree.DefaultBranch(ctx, f.Root); err == nil && def != f.Branch {
-			if merged, err := worktree.IsMerged(ctx, f.Root, f.Branch, def); err == nil && merged {
-				if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, false); err == nil {
-					deleted = true
-					r.OK("deleted merged branch %s", f.Branch)
-				}
+			// Forced, because mergeTarget has already established that the
+			// work landed, and `git branch -d` only knows to look at the
+			// local branch: it refuses a branch merged on GitHub but not yet
+			// pulled, and a squash-merged one forever.
+			if err := worktree.DeleteBranch(ctx, f.Root, f.Branch, true); err == nil {
+				deleted = true
+				r.OK("deleted merged branch %s", f.Branch)
 			}
 		}
 	}

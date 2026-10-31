@@ -124,6 +124,9 @@ func gitFeature(t *testing.T, merge bool) *state.Feature {
 	// this suite executes inside a real canaveral worktree where XDG_STATE_HOME
 	// points at the live one. Isolate it.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// No GitHub for these repos: the real lookup would shell out to whatever
+	// gh is installed. Tests that want a merged pull request say so.
+	stubMergedPR(t, false)
 	repo := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
@@ -154,6 +157,54 @@ func gitFeature(t *testing.T, merge bool) *state.Feature {
 	return &state.Feature{
 		Project: "p", Name: "feat", Root: repo, Branch: "feat",
 		Worktree: filepath.Join(repo, "wt"),
+	}
+}
+
+// stubMergedPR makes mergedPR answer merged for the rest of the test.
+func stubMergedPR(t *testing.T, merged bool) {
+	t.Helper()
+	prev := mergedPR
+	mergedPR = func(context.Context, string, string) (int, bool) { return 1, merged }
+	t.Cleanup(func() { mergedPR = prev })
+}
+
+// gitIn runs git in repo, failing the test on error.
+func gitIn(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestMergeTargetSeesAMergeOnlyTheRemoteHas(t *testing.T) {
+	// A merge queue lands work on GitHub; until the next pull, only
+	// origin/main knows. Local main stays exactly where it was.
+	f := gitFeature(t, false)
+	gitIn(t, f.Root, "checkout", "-q", "-b", "queue", "main")
+	gitIn(t, f.Root, "merge", "-q", "--no-ff", "-m", "merge feat", "feat")
+	gitIn(t, f.Root, "update-ref", "refs/remotes/origin/main", "queue")
+	gitIn(t, f.Root, "checkout", "-q", "main")
+	gitIn(t, f.Root, "branch", "-q", "-D", "queue")
+
+	merged, target, ok := mergeTarget(context.Background(), f)
+	if !ok || !merged {
+		t.Errorf("merged = %v, ok = %v, want both true", merged, ok)
+	}
+	if target != "main" {
+		t.Errorf("target = %q, want main", target)
+	}
+}
+
+func TestRemoveDeletesABranchItsPullRequestMerged(t *testing.T) {
+	// A squash merge leaves no ancestry anywhere; only the pull request
+	// knows. The branch must still go, which `git branch -d` would refuse.
+	f := gitFeature(t, false)
+	stubMergedPR(t, true)
+	if err := Remove(context.Background(), f, false, false, false, quietReporter{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if gitBranchExists(t, f.Root, f.Branch) {
+		t.Error("a branch whose pull request merged should have been deleted")
 	}
 }
 

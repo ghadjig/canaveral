@@ -12,6 +12,18 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- `rm` no longer refuses a feature whose pull request was merged on GitHub
+  (through a merge queue, say) just because the local default branch has not
+  been pulled since. It now also counts a merge into `origin/<default>`, or a
+  merged pull request whose head carries the branch's tip (asked through `gh`,
+  when it is installed), and that also covers squash and rebase merges. The
+  branch is deleted afterwards as for any other merged one. Applies to
+  discarding a stashed feature too.
+
 ## v0.23.0 — 2026-10-29
 
 ### Changed

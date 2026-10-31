@@ -215,12 +215,13 @@ func Pop(ctx context.Context, m *manifest.Manifest, name string, opt Options, r 
 // was stashed.
 func DiscardStash(ctx context.Context, s *state.Stash, keepWorktree, force, keepBranch bool, r Reporter) error {
 	f := s.Feature
+	land := landed(ctx, f, keepWorktree)
 	if !force && !f.Scratch && !keepWorktree && !f.Space && f.Worktree != "" {
-		if merged, target, ok := mergeTarget(ctx, f); ok && !merged {
-			return &unmergedError{feature: f.Name, branch: f.Branch, target: target, stashed: true}
+		if land.ok && !land.merged {
+			return &unmergedError{feature: f.Name, branch: f.Branch, target: land.target, stashed: true}
 		}
 	}
-	if err := removeWorktreeAndBranch(ctx, f, keepWorktree, force, keepBranch, r); err != nil {
+	if err := removeWorktreeAndBranch(ctx, f, land.merged, keepWorktree, force, keepBranch, r); err != nil {
 		return err
 	}
 	// Stash kept the browser profiles so a pop would come back logged in;
