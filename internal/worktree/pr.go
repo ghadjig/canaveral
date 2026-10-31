@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -23,12 +24,30 @@ import (
 // on the branch name alone would accept a branch that has gained commits
 // since its pull request merged, or a name reused from an older one.
 func MergedPR(ctx context.Context, repo, branch string) (number int, ok bool) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	tip, err := BranchTip(ctx, repo, branch)
+	if err != nil {
 		return 0, false
 	}
+	n, ok, _ := MergedPRAt(ctx, repo, branch, tip)
+	return n, ok
+}
+
+// BranchTip returns the commit a local branch points at.
+func BranchTip(ctx context.Context, repo, branch string) (string, error) {
 	tip, err := gitOutput(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
-	if err != nil || tip == "" {
-		return 0, false
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", branch, err)
+	}
+	return tip, nil
+}
+
+// MergedPRAt is MergedPR for a tip the caller has already resolved, so a
+// cache keyed on the tip does not resolve it twice. err is set when GitHub
+// could not be asked at all, which unlike "no merged pull request" is not an
+// answer worth remembering.
+func MergedPRAt(ctx context.Context, repo, branch, tip string) (number int, ok bool, err error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return 0, false, fmt.Errorf("find gh: %w", err)
 	}
 
 	// Bounded: this runs on the way to tearing a feature down, and a hung
@@ -40,25 +59,25 @@ func MergedPR(ctx context.Context, repo, branch string) (number int, ok bool) {
 	cmd.Dir = repo
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, false
+		return 0, false, fmt.Errorf("gh pr list: %w", err)
 	}
 	var prs []struct {
 		Number     int    `json:"number"`
 		HeadRefOid string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(out, &prs); err != nil {
-		return 0, false
+		return 0, false, fmt.Errorf("parse gh pr list: %w", err)
 	}
 	for _, pr := range prs {
 		if pr.HeadRefOid == tip {
-			return pr.Number, true
+			return pr.Number, true, nil
 		}
 		// The pull request may have moved on after this branch was last
 		// pulled, e.g. a fixup pushed from elsewhere; it still carried this
 		// work. An unknown object errors out here and simply does not count.
 		if in, err := IsMerged(ctx, repo, tip, pr.HeadRefOid); err == nil && in {
-			return pr.Number, true
+			return pr.Number, true, nil
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }

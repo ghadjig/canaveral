@@ -220,6 +220,7 @@ type row struct {
 	Insertions   *int   `json:"insertions,omitempty"`
 	Deletions    *int   `json:"deletions,omitempty"`
 	Uncommitted  *int   `json:"uncommitted,omitempty"`
+	MergedPR     int    `json:"merged_pr,omitempty"`
 }
 
 // branchRows renders each feature's git status as its own row, so --json
@@ -246,6 +247,7 @@ func branchRows(features []*state.Feature, branches map[string]worktree.BranchSt
 			Insertions:   &bs.Insertions,
 			Deletions:    &bs.Deletions,
 			Uncommitted:  &bs.Uncommitted,
+			MergedPR:     bs.MergedPR,
 		})
 	}
 	return out
@@ -559,6 +561,17 @@ func collectBranchStatus(ctx context.Context, features []*state.Feature) map[str
 			if err != nil {
 				return
 			}
+			// Work that merged on GitHub — through a merge queue, or
+			// squashed — otherwise reads as still ahead, or as merely
+			// behind, until the default branch is pulled. Cached, so
+			// this is a GitHub call only now and then; bounded more
+			// tightly than rm's, since a status that hangs is worse
+			// than one that has not noticed a merge yet.
+			if f.Branch != "" {
+				pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				s.MergedPR, s.Merged = feature.MergedPR(pctx, f.Root, f.Branch)
+				cancel()
+			}
 			mu.Lock()
 			out[f.Name] = s
 			mu.Unlock()
@@ -626,7 +639,9 @@ func featureHeaderLine(f *state.Feature) string {
 // ahead/behind counts, and how big the diff is when there is one.
 func branchStatusLine(bs worktree.BranchStatus) string {
 	line := fmt.Sprintf("  vs %s: %s", bs.Base, bs.Label())
-	if bs.FilesChanged > 0 {
+	// Once merged, the diff against the base is only what others landed
+	// since, which reads as this branch's own work and is not.
+	if bs.FilesChanged > 0 && !bs.Merged {
 		line += fmt.Sprintf("  +%d/-%d across %d file(s)", bs.Insertions, bs.Deletions, bs.FilesChanged)
 	}
 	if bs.Uncommitted > 0 {

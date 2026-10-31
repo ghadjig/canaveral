@@ -12,7 +12,18 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
-## Unreleased
+## v0.24.0 — 2026-10-31
+
+### Changed
+
+- `canaveral status` says `merged (#N)` for a feature whose pull request has
+  merged on GitHub, instead of reading as still ahead (before the default
+  branch is pulled, or forever after a squash merge) or as merely behind. The
+  diff summary is dropped for such a branch, since it then only counts what
+  others landed upstream since. `--json` carries the number as `merged_pr` on
+  the branch row. The lookup goes through `gh` and is cached in
+  `merged-prs.json` in the state directory: a merge is remembered until the
+  branch moves, "not merged" for two minutes.
 
 ### Fixed
 

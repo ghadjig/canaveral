@@ -32,11 +32,25 @@ type BranchStatus struct {
 	// so work in progress is invisible to them; this is the only field that
 	// reflects the working tree itself.
 	Uncommitted int
+	// Merged is set when a merged pull request carried this branch's tip.
+	// Status never sets it: asking means asking GitHub, which the caller
+	// decides whether to pay for (see MergedPR). Ahead/Behind cannot answer
+	// it — a squash merge leaves the branch ahead forever, and a fresh
+	// branch with no commits is "merged" by ancestry before any work exists.
+	Merged bool
+	// MergedPR is the number of that pull request.
+	MergedPR int
 }
 
-// Label summarises Ahead/Behind as a short phrase.
+// Label summarises Ahead/Behind as a short phrase, or says the branch has
+// merged when it has, which outranks the counts: they then describe what
+// landed upstream since, not work waiting to.
 func (s BranchStatus) Label() string {
 	switch {
+	case s.Merged && s.MergedPR > 0:
+		return fmt.Sprintf("merged (#%d)", s.MergedPR)
+	case s.Merged:
+		return "merged"
 	case s.Ahead == 0 && s.Behind == 0:
 		return "up to date"
 	case s.Ahead > 0 && s.Behind == 0:

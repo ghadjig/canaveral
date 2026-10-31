@@ -202,6 +202,8 @@ func TestBranchStatusLabel(t *testing.T) {
 		{BranchStatus{Ahead: 3}, "ahead 3"},
 		{BranchStatus{Behind: 5}, "behind 5"},
 		{BranchStatus{Ahead: 2, Behind: 4}, "diverged (ahead 2, behind 4)"},
+		{BranchStatus{Ahead: 2, Behind: 4, Merged: true, MergedPR: 73640}, "merged (#73640)"},
+		{BranchStatus{Behind: 3, Merged: true}, "merged"},
 	}
 	for _, c := range cases {
 		if got := c.s.Label(); got != c.want {

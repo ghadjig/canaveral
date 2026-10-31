@@ -86,9 +86,9 @@ func stopFeatureUnits(ctx context.Context, f *state.Feature, r Reporter) (deferr
 	return deferred, failed
 }
 
-// mergedPR is worktree.MergedPR, swapped out in tests so they never reach
+// mergedPR is MergedPR, swapped out in tests so they never reach
 // GitHub through whatever gh happens to be installed.
-var mergedPR = worktree.MergedPR
+var mergedPR = MergedPR
 
 // mergeTarget reports whether a feature's branch has landed in the repo's
 // default branch, and what that branch is called.
