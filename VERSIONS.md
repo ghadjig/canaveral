@@ -12,6 +12,17 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.24.2 — 2026-10-31
+
+### Fixed
+
+- `canaveral status` and the status bar now also show a branch as merged when
+  it was merged into the default branch with no pull request at all — by hand,
+  or with `canaveral merge --keep` — instead of "ahead N" until it is pushed,
+  or "up to date" after. A branch only counts once something has been
+  committed on it, according to its reflog, so a fresh branch that has not
+  been worked on yet never reads as merged.
+
 ## v0.24.1 — 2026-10-31
 
 ### Fixed

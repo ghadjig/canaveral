@@ -78,6 +78,19 @@ func MergedPR(ctx context.Context, repo, branch string) (int, bool) {
 	return n, ok
 }
 
+// Merged reports whether a branch has landed, for display: through a
+// merged pull request, or merged into the default branch with none (by hand,
+// or `canaveral merge --keep`). pr is the pull request's number, 0 when there
+// was none. The pull request is asked about first so a branch that has both —
+// a queue's merge commit, since pulled — still shows which one it was; the
+// answer is cached, so that costs nothing most of the time.
+func Merged(ctx context.Context, repo, branch string) (pr int, merged bool) {
+	if n, ok := MergedPR(ctx, repo, branch); ok {
+		return n, true
+	}
+	return 0, worktree.MergedLocally(ctx, repo, branch)
+}
+
 func mergedCachePath() (string, error) {
 	dir, err := state.Dir()
 	if err != nil {

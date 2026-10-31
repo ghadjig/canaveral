@@ -38,7 +38,7 @@ func newGitCache() *gitCache {
 	return &gitCache{
 		byKey:  map[string]*Git{},
 		status: worktree.Status,
-		merged: feature.MergedPR,
+		merged: feature.Merged,
 	}
 }
 
