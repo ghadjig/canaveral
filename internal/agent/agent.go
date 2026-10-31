@@ -49,6 +49,13 @@ func resolveBin(name string) (string, error) {
 	return "", &NotInstalledError{Bin: name}
 }
 
+// LookPath finds any executable the way resolveBin finds a harness's: on
+// PATH, then on the PATH a real terminal would have. For tools canaveral runs
+// itself from processes a session started — `watch` under the status bar,
+// say — where the version-managed ones (gh from mise, for one) are otherwise
+// invisible.
+func LookPath(name string) (string, error) { return resolveBin(name) }
+
 // NotInstalledError reports that a harness's executable is nowhere on PATH.
 type NotInstalledError struct{ Bin string }
 

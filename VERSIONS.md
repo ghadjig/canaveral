@@ -12,6 +12,15 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## v0.24.1 — 2026-10-31
+
+### Fixed
+
+- The status bar never showed a merged branch as merged: `canaveral watch` runs
+  with the session's PATH, which lacks `gh` when mise provides it, so every
+  pull-request lookup quietly failed. `gh` is now found the way agent binaries
+  are, on the PATH a terminal would have.
+
 ## v0.24.0 — 2026-10-31
 
 ### Changed

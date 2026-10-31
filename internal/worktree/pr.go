@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/bandito/canaveral/internal/agent"
 )
 
 // MergedPR reports the number of a merged GitHub pull request that carried
@@ -46,7 +48,11 @@ func BranchTip(ctx context.Context, repo, branch string) (string, error) {
 // could not be asked at all, which unlike "no merged pull request" is not an
 // answer worth remembering.
 func MergedPRAt(ctx context.Context, repo, branch, tip string) (number int, ok bool, err error) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	// Not exec.LookPath: the status bar's `watch` runs with the session's
+	// PATH, which lacks mise and with it gh, so every branch read as not
+	// merged there while `canaveral status` in a terminal said merged.
+	gh, err := agent.LookPath("gh")
+	if err != nil {
 		return 0, false, fmt.Errorf("find gh: %w", err)
 	}
 
@@ -54,7 +60,7 @@ func MergedPRAt(ctx context.Context, repo, branch, tip string) (number int, ok b
 	// network call should cost the user a refusal, not a stuck terminal.
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list", "--head", branch,
+	cmd := exec.CommandContext(ctx, gh, "pr", "list", "--head", branch,
 		"--state", "merged", "--json", "number,headRefOid", "--limit", "20")
 	cmd.Dir = repo
 	out, err := cmd.Output()
