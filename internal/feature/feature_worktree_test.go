@@ -2,13 +2,16 @@ package feature
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/bandito/canaveral/internal/manifest"
 	"github.com/bandito/canaveral/internal/state"
 	"github.com/bandito/canaveral/internal/tmpl"
+	"github.com/bandito/canaveral/internal/worktree"
 )
 
 func TestLinkNamespaceSkillNoopWithoutANamespace(t *testing.T) {
@@ -95,5 +98,39 @@ func TestProvisionWorktreeRunsItsSetupCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "installed")); err != nil {
 		t.Errorf("worktree setup did not run: %v", err)
+	}
+}
+
+// switchedBranchFeature returns a feature whose worktree exists but has been
+// moved onto another branch, the way an agent leaves it after starting the
+// next part of a stacked series.
+func switchedBranchFeature(t *testing.T) func(created bool) error {
+	t.Helper()
+	f := gitFeature(t, false)
+	ctx := context.Background()
+	if _, err := worktree.Ensure(ctx, f.Root, f.Worktree, f.Branch, ""); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", f.Worktree, "checkout", "-q", "-b", "feat-part-2").CombinedOutput(); err != nil {
+		t.Fatalf("checkout: %v\n%s", err, out)
+	}
+	m := &manifest.Manifest{Name: f.Project, Root: f.Root, Toolchain: "none"}
+	return func(created bool) error {
+		return ensureWorktree(ctx, m, f, tmpl.Vars{}, Options{}, created, quietReporter{})
+	}
+}
+
+func TestEnsureWorktreeKeepsAnExistingFeatureOnItsSwitchedBranch(t *testing.T) {
+	ensure := switchedBranchFeature(t)
+	if err := ensure(false); err != nil {
+		t.Fatalf("reset refused a feature whose worktree switched branches: %v", err)
+	}
+}
+
+func TestEnsureWorktreeStillRefusesANewFeatureOnAnotherBranch(t *testing.T) {
+	ensure := switchedBranchFeature(t)
+	var mismatch *worktree.BranchMismatchError
+	if err := ensure(true); !errors.As(err, &mismatch) {
+		t.Fatalf("a new feature landing on another branch's worktree should be refused, got %v", err)
 	}
 }

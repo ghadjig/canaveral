@@ -12,6 +12,16 @@ On release, rename that heading to the new version and date, then tag it.
 
 Categories: **Added**, **Changed**, **Fixed**, **Removed**.
 
+## Unreleased
+
+### Fixed
+
+- Reopening or resetting a feature whose worktree has been switched to another
+  branch (an agent starting the next part of a stacked series, say) brings it
+  up on that branch with a warning instead of refusing. From the bar the
+  refusal was invisible: Reset did nothing at all. A *new* feature that lands
+  on a worktree checked out on another branch is still refused.
+
 ## v0.24.2 — 2026-10-31
 
 ### Fixed

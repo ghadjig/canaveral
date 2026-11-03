@@ -63,6 +63,24 @@ type Result struct {
 	Created bool
 }
 
+// BranchMismatchError reports an existing worktree checked out on a branch
+// other than the one asked for.
+//
+// Typed so the caller can tell the two situations that produce it apart: a
+// new feature landing on somebody else's worktree is a name clash and must
+// stop, while an existing feature whose agent switched branches is just
+// work in progress and must not.
+type BranchMismatchError struct {
+	Path   string
+	Branch string // what the worktree is on
+	Want   string // what was asked for
+}
+
+func (e *BranchMismatchError) Error() string {
+	return fmt.Sprintf("worktree %s is on branch %q, expected %q; "+
+		"remove it or pick another feature name", e.Path, e.Branch, e.Want)
+}
+
 // Ensure creates (or reuses) a worktree at path checked out on branch.
 //
 // Reusing an existing worktree is deliberate: re-running `canaveral up` after a
@@ -93,8 +111,7 @@ func ensure(ctx context.Context, repo, path, branch, base string, reuse bool) (R
 			return res, err
 		}
 		if cur != branch {
-			return res, fmt.Errorf("worktree %s is on branch %q, expected %q; "+
-				"remove it or pick another feature name", path, cur, branch)
+			return res, &BranchMismatchError{Path: path, Branch: cur, Want: branch}
 		}
 		return res, nil
 	}

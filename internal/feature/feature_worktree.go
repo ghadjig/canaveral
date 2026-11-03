@@ -5,6 +5,7 @@ package feature
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -51,6 +52,16 @@ func ensureWorktree(ctx context.Context, m *manifest.Manifest, f *state.Feature,
 		ensure = worktree.EnsureNew
 	}
 	res, err := ensure(ctx, m.Root, f.Worktree, f.Branch, base)
+	var mismatch *worktree.BranchMismatchError
+	if !created && errors.As(err, &mismatch) {
+		// The worktree is this feature's own; the record says so. Its agent
+		// (or you) checked out another branch in it, typically the next one
+		// of a stacked series, and that is no reason to refuse to bring the
+		// feature back up. Refusing here was invisible from the bar, whose
+		// Reset runs detached: the click simply did nothing.
+		r.Warn("worktree is on branch %s, not %s; leaving it there", mismatch.Branch, f.Branch)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
